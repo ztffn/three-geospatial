@@ -2,13 +2,13 @@
   "name": "ocean-ifft",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "packages/ocean-ifft/src",
-  "projectType": "application",
-  "tags": ["type:app"],
+  "projectType": "library",
+  "tags": ["type:lib"],
   "targets": {
     "lint": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "echo \"ocean-ifft: lint skipped for imported prototype\""
+        "command": "pnpm exec eslint packages/ocean-ifft/components --ext .ts,.tsx"
       }
     },
     "build": {

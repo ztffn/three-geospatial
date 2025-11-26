@@ -42,8 +42,7 @@ import {
 import { useGuardedFrame } from '../hooks/useGuardedFrame'
 import { useResource } from '../hooks/useResource'
 import { useTransientControl } from '../hooks/useTransientControl'
-import WaveGenerator from '@three-geospatial/ocean-ifft/components/WaveGenerator'
-import OceanChunks from '@three-geospatial/ocean-ifft/components/OceanChunks'
+import { WaveGenerator, OceanChunks } from '@three-geospatial/ocean-ifft'
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
