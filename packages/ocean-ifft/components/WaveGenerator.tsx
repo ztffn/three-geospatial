@@ -1,71 +1,77 @@
-'use client';
+'use client'
 
-import { useThree } from '@react-three/fiber';
-import { useEffect, useRef } from 'react';
-// @ts-ignore - JS module
-import { wave_generator } from '../src/waves/wave-generator.js';
-import { GUIAdapter } from './GUIAdapter';
+import { useThree } from '@react-three/fiber'
+import { useEffect, useRef, type ReactElement } from 'react'
+import { wave_generator } from '../src/waves/wave-generator.js'
+import { GUIAdapter } from './GUIAdapter'
 
-interface WaveGeneratorProps {
-  onInitialized: (waveGen: any) => void;
+interface WaveGeneratorInstance {
+  Init: (params: {
+    scene: unknown
+    camera: unknown
+    renderer: unknown
+    gui: GUIAdapter
+  }) => Promise<void>
+  Update_?: (deltaMs: number) => void | Promise<void>
+  params_?: {
+    gui?: unknown
+  }
+  cascades?: unknown
+  size?: unknown
 }
 
-export default function WaveGenerator({ onInitialized }: WaveGeneratorProps) {
-  const { gl, scene, camera } = useThree();
-  const waveGenRef = useRef<any>(null);
-  const guiRef = useRef<GUIAdapter | null>(null);
-  const initializedRef = useRef(false);
+interface WaveGeneratorProps {
+  onInitialized: (waveGen: WaveGeneratorInstance) => void
+}
+
+export default function WaveGenerator({ onInitialized }: WaveGeneratorProps): ReactElement | null {
+  const { gl, scene, camera } = useThree()
+  const waveGenRef = useRef<WaveGeneratorInstance | null>(null)
+  const guiRef = useRef<GUIAdapter | null>(null)
+  const initializedRef = useRef(false)
 
   useEffect(() => {
-    if (initializedRef.current || !gl) return;
+    if (initializedRef.current || gl == null) return
 
-    const initWaveGenerator = async () => {
+    const initWaveGenerator = async (): Promise<void> => {
       try {
-        // Create GUI adapter (compatible with existing code, but Leva will be used separately)
-        const gui = new GUIAdapter();
-        gui.close(); // Start closed
-        guiRef.current = gui;
+        const gui = new GUIAdapter()
+        gui.close()
+        guiRef.current = gui
 
-        // Create wave generator
-        const waveGen = new wave_generator.WaveGenerator();
+        const waveGen = new wave_generator.WaveGenerator() as WaveGeneratorInstance
 
-        // Initialize with WebGPU renderer
         await waveGen.Init({
           scene,
           camera,
           renderer: gl,
-          gui,
-        });
+          gui
+        })
 
-        waveGenRef.current = waveGen;
-        initializedRef.current = true;
+        waveGenRef.current = waveGen
+        initializedRef.current = true
 
-        console.log('Wave generator initialized:', waveGen);
+        console.log('Wave generator initialized:', waveGen)
         console.log('Wave generator properties:', {
           hasUpdate: typeof waveGen.Update_ === 'function',
-          hasParams: !!waveGen.params_,
+          hasParams: waveGen.params_ != null,
           cascades: waveGen.cascades,
-          size: waveGen.size,
-        });
+          size: waveGen.size
+        })
 
-        // Notify parent component
-        onInitialized(waveGen);
+        onInitialized(waveGen)
       } catch (error) {
-        console.error('Failed to initialize wave generator:', error);
-        console.error('Error stack:', error instanceof Error ? error.stack : 'No stack');
+        console.error('Failed to initialize wave generator:', error)
+        console.error('Error stack:', error instanceof Error ? error.stack : 'No stack')
       }
-    };
+    }
 
-    initWaveGenerator();
+    void initWaveGenerator()
 
     return () => {
-      // Cleanup GUI on unmount
-      if (guiRef.current) {
-        guiRef.current.destroy();
-      }
-    };
-  }, [gl, scene, camera, onInitialized]);
+      guiRef.current?.destroy()
+    }
+  }, [gl, scene, camera, onInitialized])
 
-  // Update wave generator each frame (will be called from parent via useFrame)
-  return null;
+  return null
 }
