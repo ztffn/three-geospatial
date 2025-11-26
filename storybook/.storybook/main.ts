@@ -18,7 +18,8 @@ const config: StorybookConfig = {
     { from: '../assets', to: '/public' },
     { from: '../../packages/core/assets', to: '/core' },
     { from: '../../packages/atmosphere/assets', to: '/atmosphere' },
-    { from: '../../packages/clouds/assets', to: '/clouds' }
+    { from: '../../packages/clouds/assets', to: '/clouds' },
+    { from: '../../packages/ocean-ifft/public', to: '/ocean-ifft' }
   ],
 
   previewHead: head => `

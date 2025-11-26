@@ -22,9 +22,11 @@ class OceanMaterial extends entity.Component {
 
 
 		const cubeTextureLoader = new THREE.CubeTextureLoader();
-		cubeTextureLoader.setPath(new URL('../../resources/textures/cube/sky/', import.meta.url).href);
-		const environmentTexture = cubeTextureLoader.load(['px.jpg', 'nx.jpg', 'py.jpg', 'ny.jpg', 'pz.jpg', 'nz.jpg']);
-		//const environmentTexture = cubeTextureLoader.load(['px.png', 'nx.png', 'py.png', 'ny.png', 'pz.png', 'nz.png']);
+		const cubeFaces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map(
+			face => new URL(`../../resources/textures/cube/sky/${face}.jpg`, import.meta.url).href
+		);
+		const environmentTexture = cubeTextureLoader.load(cubeFaces);
+		//const environmentTexture = cubeTextureLoader.load(cubeFaces.map(f => f.replace('.jpg', '.png')));
 		environmentTexture.minFilter = THREE.LinearFilter;
 		environmentTexture.magFilter = THREE.LinearFilter;
     

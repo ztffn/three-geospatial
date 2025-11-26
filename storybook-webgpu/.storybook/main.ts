@@ -1,11 +1,14 @@
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin'
 import type { StorybookConfig } from '@storybook/react-vite'
 import react from '@vitejs/plugin-react'
 import { mergeConfig } from 'vite'
 
 const require = createRequire(import.meta.url)
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const repoRoot = resolve(__dirname, '..', '..')
 
 const config: StorybookConfig = {
   stories: ['../src/**/*.@(mdx|stories.@(js|jsx|ts|tsx))'],
@@ -19,7 +22,11 @@ const config: StorybookConfig = {
     interactions: false
   },
 
-  staticDirs: [{ from: '../assets', to: '/public' }],
+  staticDirs: [
+    { from: '../assets', to: '/public' },
+    { from: '../../packages/ocean-ifft/public', to: '/ocean-ifft' },
+    { from: '../../packages/ocean-ifft/resources', to: '/ocean-ifft-resources' }
+  ],
 
   viteFinal: config =>
     mergeConfig(config, {
@@ -29,6 +36,16 @@ const config: StorybookConfig = {
       },
       build: {
         sourcemap: process.env.NODE_ENV !== 'production'
+      },
+      resolve: {
+        alias: {
+          '@three-geospatial/ocean-ifft': resolve(repoRoot, 'packages/ocean-ifft')
+        }
+      },
+      server: {
+        fs: {
+          allow: [repoRoot]
+        }
       }
     })
 }

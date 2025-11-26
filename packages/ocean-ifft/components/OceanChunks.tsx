@@ -1,25 +1,28 @@
 'use client';
 
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
+import type { AtmosphereContextNode } from '@takram/three-atmosphere/webgpu';
 // @ts-ignore - JS module
 import OceanChunkManager from '../src/ocean/ocean.js';
 
 interface OceanChunksProps {
   waveGenerator: any;
-  sunDirection: THREE.Vector3 | null;
   onOceanManagerReady?: (oceanManager: any) => void;
   parent?: THREE.Object3D | null;
   cameraOverride?: THREE.PerspectiveCamera | null;
+  atmosphereContext?: AtmosphereContextNode | null;
 }
 
-export default function OceanChunks({ waveGenerator, sunDirection, onOceanManagerReady, parent, cameraOverride }: OceanChunksProps) {
+export default function OceanChunks({ waveGenerator, onOceanManagerReady, parent, cameraOverride, atmosphereContext }: OceanChunksProps) {
   const { gl, scene: defaultScene, camera: defaultCamera } = useThree();
   const oceanManagerRef = useRef<any>(null);
   const initializedRef = useRef(false);
   const scene = parent ?? defaultScene;
   const camera = cameraOverride ?? defaultCamera;
+  const matrixECEFToWorld = useMemo(() => new THREE.Matrix4(), []);
+  const worldSun = useMemo(() => new THREE.Vector3(), []);
 
   useEffect(() => {
     if (initializedRef.current || !waveGenerator || !gl) {
@@ -99,11 +102,6 @@ export default function OceanChunks({ waveGenerator, sunDirection, onOceanManage
     };
   }, [waveGenerator, gl, scene, camera, onOceanManagerReady]);
 
-  useEffect(() => {
-    if (!sunDirection || !oceanManagerRef.current?.SetSunDirection) return;
-    oceanManagerRef.current.SetSunDirection(sunDirection);
-  }, [sunDirection]);
-
   // Update ocean chunks each frame
   useFrame(async (state, delta) => {
     if (!oceanManagerRef.current || !waveGenerator) return;
@@ -116,6 +114,14 @@ export default function OceanChunks({ waveGenerator, sunDirection, onOceanManage
 
       // Update ocean geometry
       oceanManagerRef.current.Update_?.(deltaTime);
+      if (atmosphereContext?.sunDirectionECEF && atmosphereContext.matrixWorldToECEF) {
+        matrixECEFToWorld.copy(atmosphereContext.matrixWorldToECEF.value).invert();
+        worldSun
+          .copy(atmosphereContext.sunDirectionECEF.value)
+          .applyMatrix4(matrixECEFToWorld)
+          .normalize();
+        oceanManagerRef.current.SetSunDirection?.(worldSun);
+      }
       
       // Debug: Check if chunks are being created
       if (oceanManagerRef.current.chunks_) {
