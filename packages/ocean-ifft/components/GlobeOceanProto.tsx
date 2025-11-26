@@ -147,9 +147,12 @@ const Scene: FC<SceneProps> = ({ oceanOffset }) => {
   }, [camera, renderer, scene]);
 
   useEffect(() => {
-    const cesiumToken = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN;
+    // Use STORYBOOK_ION_API_TOKEN (for Storybook) or VITE_CESIUM_ION_TOKEN (for Vite examples)
+    const cesiumToken = 
+      import.meta.env.STORYBOOK_ION_API_TOKEN ?? 
+      import.meta.env.VITE_CESIUM_ION_TOKEN;
     if (!cesiumToken) {
-      console.warn('Set NEXT_PUBLIC_CESIUM_ION_TOKEN to load Cesium tiles.');
+      console.warn('Set STORYBOOK_ION_API_TOKEN (for Storybook) or VITE_CESIUM_ION_TOKEN (for Vite examples) to load Cesium tiles.');
       return;
     }
 

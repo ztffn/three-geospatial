@@ -117,7 +117,10 @@ const TilesAtmosphereWebGPU: FC = () => {
       controls.enableDamping = true;
 
       // Set up 3D tiles
-      const cesiumToken = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN;
+      // Use STORYBOOK_ION_API_TOKEN (for Storybook) or VITE_CESIUM_ION_TOKEN (for Vite examples)
+      const cesiumToken = 
+        import.meta.env.STORYBOOK_ION_API_TOKEN ?? 
+        import.meta.env.VITE_CESIUM_ION_TOKEN;
       if (cesiumToken) {
         tilesRenderer = new TilesRendererClass('https://assets.cesium.com/2767062/tileset.json');
         tilesRenderer.setCamera(camera);

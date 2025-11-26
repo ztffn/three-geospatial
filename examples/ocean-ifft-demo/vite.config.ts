@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import path from 'path'
+import path from 'node:path'
 
 export default defineConfig({
   plugins: [react()],
   root: __dirname,
+  envDir: path.resolve(__dirname, '../../'),
+  envPrefix: 'VITE_',
   publicDir: path.resolve(__dirname, '../../packages/ocean-ifft/public'),
   resolve: {
     alias: {

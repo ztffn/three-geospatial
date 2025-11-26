@@ -60,7 +60,11 @@ type TakramControls = {
 };
 
 const controlGroup = 'Takram Atmosphere';
-const defaultToken = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN ?? '';
+// Use STORYBOOK_ION_API_TOKEN (for Storybook) or VITE_CESIUM_ION_TOKEN (for Vite examples)
+const defaultToken = 
+  import.meta.env.STORYBOOK_ION_API_TOKEN ?? 
+  import.meta.env.VITE_CESIUM_ION_TOKEN ?? 
+  '';
 
 export default function TilesAtmosphereTest() {
   const [isWebGPUAvailable, setIsWebGPUAvailable] = useState(false);
