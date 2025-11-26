@@ -60,10 +60,10 @@
         "packages/core/src/webgpu/index.ts"
       ],
       "@three-geospatial/ocean-ifft": [
-        "packages/ocean-ifft"
+        "packages/ocean-ifft/src/index.ts"
       ],
       "@three-geospatial/ocean-ifft/*": [
-        "packages/ocean-ifft/*"
+        "packages/ocean-ifft/src/*"
       ]
     }
   },

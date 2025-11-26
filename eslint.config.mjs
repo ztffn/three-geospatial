@@ -159,6 +159,14 @@ export default defineConfig(
     extends: [tseslint.configs.disableTypeChecked]
   },
   {
+    files: ['packages/ocean-ifft/src/r3f/**/*.{js,jsx,ts,tsx}'],
+    rules: {
+      '@typescript-eslint/strict-boolean-expressions': 'off',
+      '@typescript-eslint/prefer-nullish-coalescing': 'off',
+      '@typescript-eslint/no-unnecessary-boolean-literal-compare': 'off'
+    }
+  },
+  {
     // Legacy ocean-ifft components rely on loose null/boolean handling.
     files: ['packages/ocean-ifft/components/**/*.{js,jsx,ts,tsx}'],
     rules: {

@@ -39,7 +39,10 @@ const config: StorybookConfig = {
       },
       resolve: {
         alias: {
-          '@three-geospatial/ocean-ifft': resolve(repoRoot, 'packages/ocean-ifft')
+          '@three-geospatial/ocean-ifft': resolve(
+            repoRoot,
+            'packages/ocean-ifft/src/index.ts'
+          )
         }
       },
       server: {
