@@ -1,0 +1,235 @@
+import { THREE } from '../three-defs.js';
+import { entity } from '../entity.js';
+import { ocean_constants } from './ocean-constants.js';
+import { ocean_builder_threaded } from './ocean-builder-threaded.js';
+import { quadtree } from './quadtree.js';
+import { utils } from './utils.js';
+import { OceanMaterial } from './ocean-material.js';
+class OceanChunkManager extends entity.Component {
+
+	constructor( params ) {
+
+		super();
+
+	}
+
+
+	async Init( params ) {
+
+		this.params_ = params;
+		this.builder_ = new ocean_builder_threaded.OceanChunkRebuilder_Threaded();
+
+		this.sun = new THREE.Vector3();
+
+		this.cubeRenderTarget = new THREE.WebGLCubeRenderTarget( 256 );
+		this.cubeRenderTarget.texture.format = THREE.RGBAFormat;
+		this.cubeRenderTarget.texture.type = THREE.HalfFloatType;
+		this.cubeRenderTarget.texture.minFilter = THREE.LinearMipMapLinearFilter;
+		this.cubeRenderTarget.texture.magFilter = THREE.LinearFilter;
+		this.cubeRenderTarget.texture.generateMipmaps = true;
+		this.cubeCamera = new THREE.CubeCamera( 1, 1000000, this.cubeRenderTarget );
+		this.cubeCamera.rotation.z = Math.PI/2;
+		this.cubeCamera.layers.set( 2 );
+
+
+		const oceanDatas = {
+			...params,
+			lodScale: this.params_.waveGenerator.lodScale,
+			cascades: this.params_.waveGenerator.cascades,
+			// waveLengths is constructed in OceanMaterial from cascades, not needed here
+			foamStrength: this.params_.waveGenerator.foamStrength,
+			foamThreshold: this.params_.waveGenerator.foamThreshold,
+			ifftResolution: this.params_.waveGenerator.size,
+			depthTexture: this.params_.depthTexture || null,
+			mySampler: this.params_.mySampler || null,
+			environment: this.cubeRenderTarget.texture,
+			sunPosition: this.sun
+		}
+			
+		this.material_ = new OceanMaterial( oceanDatas ).oceanMaterial;
+		//this.material_ = new THREE.MeshBasicNodeMaterial();
+		//this.material_.colorNode = vec4(1, 0, 0, 1);
+
+		this.InitOcean( params );
+
+
+		this.quadTree = new quadtree.Root( {
+			size: ocean_constants.OCEAN_SIZE,
+			min_lod_radius: ocean_constants.QT_OCEAN_MIN_LOD_RADIUS,
+			lod_layers: ocean_constants.QT_OCEAN_MIN_NUM_LAYERS,
+			min_node_size: ocean_constants.QT_OCEAN_MIN_CELL_SIZE,
+		} );
+
+	}
+
+
+	InitOcean( params ) {
+
+		this.group = new THREE.Group();
+		params.scene.add( this.group );
+		this.chunks_ = {};
+
+		params.guiParams.ocean = {
+			wireframe: false,
+		}
+		this.params_.waveGenerator.oceanSet.add( params.guiParams.ocean, "wireframe" ).onChange( () => {
+			this.material_.wireframe = params.guiParams.ocean.wireframe;
+		} );
+
+	}
+
+	SetSunDirection(direction) {
+		if (!direction) {
+			return;
+		}
+		this.sun.copy(direction);
+	}
+
+
+	CreateOceanChunk( group, groupTransform, offset, width, resolution, lod ) {
+
+		const params = {
+			group: group,
+			transform: groupTransform,
+			width: width,
+			offset: offset,
+			resolution: resolution,
+			lod: lod,
+			layer: this.params_.layer,
+			material: this.material_
+		};
+
+		return this.builder_.AllocateChunk( params );
+
+	}
+
+
+	Update_(_) {
+
+		const cameraPosition = new THREE.Vector3();
+		const scenePosition = new THREE.Vector3();
+		this.params_.camera.getWorldPosition( cameraPosition );
+		this.params_.scene.getWorldPosition( scenePosition );
+		const tempCameraPosition = cameraPosition.clone();
+		const relativeCameraPosition = tempCameraPosition.sub( scenePosition );
+
+		this.cubeCamera.update( this.params_.renderer, this.params_.scene );
+
+
+		this.builder_.Update();
+
+		if ( !this.builder_.Busy ) {
+			for (let k in this.chunks_) {
+				this.chunks_[ k ].chunk.Show();
+			}
+			const chunkCountBefore = Object.keys(this.chunks_).length;
+			this.UpdateVisibleChunks_Quadtree_( relativeCameraPosition );
+			const chunkCountAfter = Object.keys(this.chunks_).length;
+			if (chunkCountAfter > chunkCountBefore && !this._loggedChunkCreation) {
+				console.log(`Ocean: Created ${chunkCountAfter - chunkCountBefore} new chunks (total: ${chunkCountAfter})`);
+				this._loggedChunkCreation = true;
+			}
+		} else {
+			if (!this._loggedBusy) {
+				console.log('Ocean: Builder is busy, waiting for workers...');
+				this._loggedBusy = true;
+			}
+		}
+			
+		for ( let k in this.chunks_ ) {
+			this.chunks_[ k ].chunk.Update( relativeCameraPosition );
+
+			this.chunks_[ k ].chunk.mesh_.material.wireframe = this.params_.guiParams.ocean.wireframe;
+		}
+		for ( let c of this.builder_.old_ ) {
+			c.chunk.Update( relativeCameraPosition );
+		}
+
+
+
+		this.material_.positionNode.parameters.cameraPosition.value = relativeCameraPosition;
+		this.material_.colorNode.parameters.cameraPosition.value = relativeCameraPosition;
+  
+	}//end Update
+
+
+
+	Key( c ) {
+
+		return c.position[0] + '/' + c.position[1] + ' [' + c.size + ']';
+
+	}
+
+
+	UpdateVisibleChunks_Quadtree_( cameraPosition ) {
+
+		this.quadTree.Insert( cameraPosition );
+
+		const sides = this.quadTree.GetChildren();
+
+		let newOceanChunks = {};
+		const center = new THREE.Vector3();
+		const dimensions = new THREE.Vector3();
+
+		const _Child = (c) => {
+			c.bounds.getCenter(center);
+			c.bounds.getSize(dimensions);
+
+			const child = {
+				group: this.group,
+				transform: sides.transform,
+				position: [ center.x, center.y, center.z ],
+				bounds: c.bounds,
+				size: dimensions.x,
+				lod: c.lod,
+			};
+			return child;
+		};
+
+
+			for ( let c of sides.children ) {
+				const child = _Child( c );
+				const k = this.Key( child );
+					
+				newOceanChunks[ k ] = child;
+			}
+
+
+		const intersection = utils.DictIntersection( this.chunks_, newOceanChunks );
+		const difference = utils.DictDifference( newOceanChunks, this.chunks_ );
+		const recycle = Object.values(utils.DictDifference( this.chunks_, newOceanChunks ) );
+
+
+		this.builder_.RetireChunks( recycle );
+
+		newOceanChunks = intersection;
+			
+
+		for ( let k in difference ) {
+
+			const [ xp, yp, zp ] = difference[ k ].position;
+
+			const offset = new THREE.Vector3( xp, yp, zp );
+				
+			newOceanChunks[ k ] = {
+				position: [ xp, zp ],
+				chunk: this.CreateOceanChunk(
+					difference[ k ].group, 
+					difference[ k ].transform,
+					offset, 
+					difference[ k ].size,
+					ocean_constants.QT_OCEAN_MIN_CELL_RESOLUTION,
+					difference[ k ].lod,
+				),
+			};
+
+		}
+
+		this.chunks_ = newOceanChunks;
+
+	}
+ 
+}//end class
+
+
+export default OceanChunkManager;
