@@ -1,11 +1,11 @@
-import {THREE} from '../three-defs.js';
-import { texture, cubeTexture, attribute, uniform, vec3, vec4} from "three/tsl";
-import {entity} from '../entity.js';
-import {ocean_constants} from './ocean-constants.js';
-import {vertexStageWGSL} from  '../../resources/shader/ocean/vertexStageWGSL.js';
-import {fragmentStageWGSL} from  '../../resources/shader/ocean/fragmentStageWGSL.js';
+import { THREE } from '../three-defs.js';
+import { texture, cubeTexture, attribute, uniform, vec3, vec4 } from 'three/tsl';
+import { entity } from '../entity.js';
+import { ocean_constants } from './ocean-constants.js';
+import { vertexStageWGSL } from '../../resources/shader/ocean/vertexStageWGSL.js';
+import { fragmentStageWGSL } from '../../resources/shader/ocean/fragmentStageWGSL.js';
 
-
+const assetUrl = path => new URL(path, import.meta.url).href;
 
 class OceanMaterial extends entity.Component {
 	constructor(params) {
@@ -16,13 +16,13 @@ class OceanMaterial extends entity.Component {
 	Init(params) {
   
 		const loader = new THREE.TextureLoader();
-		const noiseTexture = loader.load("/resources/textures/simplex-noise.png");
-		const testTexture = loader.load("/resources/textures/uv_grid_opengl.jpg");
+		const noiseTexture = loader.load(assetUrl('../../resources/textures/simplex-noise.png'));
+		const testTexture = loader.load(assetUrl('../../resources/textures/uv_grid_opengl.jpg'));
 
 
 
 		const cubeTextureLoader = new THREE.CubeTextureLoader();
-		cubeTextureLoader.setPath('/resources/textures/cube/sky/');
+		cubeTextureLoader.setPath(new URL('../../resources/textures/cube/sky/', import.meta.url).href);
 		const environmentTexture = cubeTextureLoader.load(['px.jpg', 'nx.jpg', 'py.jpg', 'ny.jpg', 'pz.jpg', 'nz.jpg']);
 		//const environmentTexture = cubeTextureLoader.load(['px.png', 'nx.png', 'py.png', 'ny.png', 'pz.png', 'nz.png']);
 		environmentTexture.minFilter = THREE.LinearFilter;

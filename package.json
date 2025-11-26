@@ -4,7 +4,9 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "clean": "pnpm exec rimraf --glob dist tmp **/node_modules/.cache"
+    "clean": "pnpm exec rimraf --glob dist tmp **/node_modules/.cache",
+    "dev": "npx vite examples/ocean-ifft-demo --host --config examples/ocean-ifft-demo/vite.config.ts",
+    "dev:ocean-ifft": "npm run dev"
   },
   "dependencies": {
     "@petamoriken/float16": "^3.9.3",

@@ -10,7 +10,7 @@ export const ocean_builder_threaded = (() => {
 	
 	class WorkerThread {
 		constructor(s) {
-			this.worker_ = new Worker(s, {type: 'module'});
+			this.worker_ = new Worker(s, { type: 'module' });
 			this.worker_.onmessage = (e) => {
 				this._OnMessage(e);
 			};
@@ -79,7 +79,10 @@ export const ocean_builder_threaded = (() => {
 			this.pool_ = {};
 			this.old_ = [];
 			
-			this.workerPool_ = new WorkerThreadPool(_NUM_WORKERS, '/src/ocean/ocean-builder-threaded-worker.js');
+			this.workerPool_ = new WorkerThreadPool(
+				_NUM_WORKERS,
+				new URL('./ocean-builder-threaded-worker.js', import.meta.url)
+			);
 			
 			this.params_ = params;
 		}

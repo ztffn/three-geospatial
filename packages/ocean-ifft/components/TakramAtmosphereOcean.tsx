@@ -2,7 +2,7 @@
 
 import { OrbitControls, TorusKnot } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useRef, useState, useMemo, type FC } from 'react';
+import { useEffect, useRef, useState, useMemo, type DependencyList, type FC } from 'react';
 import * as THREE from 'three/webgpu';
 import WebGPU from 'three/examples/jsm/capabilities/WebGPU.js';
 import { AgXToneMapping } from 'three';
@@ -42,7 +42,7 @@ interface AtmosphereSettings {
 }
 
 // Simple resource hook (based on their pattern)
-function useResource<T>(factory: () => T, deps: React.DependencyList): T | null {
+function useResource<T>(factory: () => T, deps: DependencyList): T | null {
   const [resource, setResource] = useState<T | null>(null);
   
   useEffect(() => {
@@ -203,7 +203,10 @@ const Content: FC<ContentProps> = ({ onWaveGeneratorReady, onOceanManagerReady, 
         
         // Set up stars node
         starsNodeRef.current?.dispose();
-        const starsNode = new StarsNode(context, '/atmosphere/stars.bin');
+        const starsNode = new StarsNode(
+          context,
+          new URL('../public/atmosphere/stars.bin', import.meta.url).href
+        );
         starsNode.intensity.value = atmosphereSettings.starsIntensity;
         starsNodeRef.current = starsNode;
         skyNode.starsNode = starsNode;
@@ -449,4 +452,3 @@ const TakramAtmosphereOcean: FC = () => {
 };
 
 export default TakramAtmosphereOcean;
-

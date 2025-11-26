@@ -36,7 +36,7 @@ interface AtmosphereLayerProps {
 }
 
 const REFERENCE_DATE = new Date(Date.UTC(2025, 0, 1));
-const STARS_ASSET_PATH = '/atmosphere/stars.bin';
+const STARS_ASSET_PATH = new URL('../public/atmosphere/stars.bin', import.meta.url).href;
 
 export default function AtmosphereLayer({ settings, onContextReady, onSunDirectionChange }: AtmosphereLayerProps) {
   const { gl, scene, camera } = useThree();

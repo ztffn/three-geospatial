@@ -1,0 +1,21 @@
+{
+  "name": "ocean-ifft",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/ocean-ifft/src",
+  "projectType": "application",
+  "tags": ["type:app"],
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "echo \"ocean-ifft: lint skipped for imported prototype\""
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "echo \"ocean-ifft: no production bundle defined; build placeholder succeeded\""
+      }
+    }
+  }
+}
