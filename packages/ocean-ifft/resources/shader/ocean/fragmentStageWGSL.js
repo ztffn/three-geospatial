@@ -15,6 +15,7 @@ import { reflectionWGSL } from "./fragments/reflection.wgsl.js";
 import { colorWGSL } from "./fragments/color.wgsl.js";
 import { sssWGSL } from "./fragments/sss.wgsl.js";
 import { sparkleWGSL } from "./fragments/sparkle.wgsl.js";
+import { foamSurfaceWGSL } from "./fragments/foam-surface.wgsl.js";
 
 const entrypointWGSL = `
 
@@ -54,6 +55,9 @@ const entrypointWGSL = `
         sssStrength: f32,
         sparkleIntensity: f32,
         sparkleSize: f32,
+        foamTextureScale: f32,
+        foamSpeed: f32,
+        foamMix: f32,
     ) -> vec4<f32> {
 
         var vViewVector = vDisplacedPosition - cameraPosition;
@@ -90,7 +94,9 @@ const entrypointWGSL = `
         var sparkle = oceanSparkle(normalOcean, viewDir, sunDir, noiseSample, sparkleIntensity, sparkleSize);
         oceanColor += vec3<f32>(sparkle);
 
-        oceanColor = mix(oceanColor, vec3<f32>(1.0), foam_mix_factor);
+        var foamNoise = oceanSurfaceFoamNoise(noise, noise_sampler, vMorphedPosition.xz, time, foamTextureScale, foamSpeed);
+        var foamColor = oceanFoamColor(foamNoise, foamMix);
+        oceanColor = mix(oceanColor, foamColor, foam_mix_factor);
 
         // Cascade-0 weight modulates how much detail survives at this LOD;
         // outside the LOD radius we blend toward an atmospheric background so
@@ -116,5 +122,6 @@ export const fragmentStageWGSL = wgslFn(
         colorWGSL,
         sssWGSL,
         sparkleWGSL,
+        foamSurfaceWGSL,
     ].join("\n")
 );

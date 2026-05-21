@@ -47,6 +47,17 @@ function buildSurfaceOpticsUniforms(params, noiseTexture) {
 		sssStrength: uniform(0.4),
 		sparkleIntensity: uniform(2.0),
 		sparkleSize: uniform(256.0),
+		foamTextureScale: uniform(0.02),
+		foamSpeed: uniform(0.05),
+		foamMix: uniform(0.7),
+		// Gerstner: each wave packed as (dirX, dirZ, wavelength, amplitude).
+		// Amplitude = 0 disables the slot. Defaults: one large NW swell, one
+		// medium cross-swell, one short chop. Tune in GUI for hero scenes.
+		gerstnerWave0: uniform(new THREE.Vector4(1.0, 0.3, 120.0, 1.2)),
+		gerstnerWave1: uniform(new THREE.Vector4(0.5, 1.0, 60.0, 0.6)),
+		gerstnerWave2: uniform(new THREE.Vector4(-0.8, 0.6, 30.0, 0.25)),
+		gerstnerSteepness: uniform(0.5),
+		gerstnerStrength: uniform(1.0),
 	};
 }
 
