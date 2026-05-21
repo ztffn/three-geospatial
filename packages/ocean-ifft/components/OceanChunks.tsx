@@ -53,6 +53,9 @@ export default function OceanChunks({
       return
     }
 
+    let cancelled = false
+    let createdOceanManager: OceanManager | null = null
+
     const initOceanChunks = async (): Promise<void> => {
       try {
         console.log('Initializing ocean chunks...')
@@ -67,6 +70,7 @@ export default function OceanChunks({
 
         const sunpos = new THREE.Vector3(100000, 0, 100000)
         const oceanManager = new OceanChunkManager()
+        createdOceanManager = oceanManager
         const gui = waveGenerator.params_?.gui
 
         await oceanManager.Init({
@@ -79,6 +83,11 @@ export default function OceanChunks({
           gui,
           guiParams: {}
         })
+
+        if (cancelled) {
+          oceanManager.Destroy?.()
+          return
+        }
 
         oceanManagerRef.current = oceanManager
         initializedRef.current = true
@@ -98,7 +107,10 @@ export default function OceanChunks({
     void initOceanChunks()
 
     return () => {
-      oceanManagerRef.current?.Destroy?.()
+      cancelled = true
+      ;(oceanManagerRef.current ?? createdOceanManager)?.Destroy?.()
+      oceanManagerRef.current = null
+      initializedRef.current = false
     }
   }, [waveGenerator, gl, scene, camera, onOceanManagerReady])
 

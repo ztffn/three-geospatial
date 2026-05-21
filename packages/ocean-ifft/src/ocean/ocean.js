@@ -78,6 +78,29 @@ class OceanChunkManager extends entity.Component {
 
 	}
 
+	Destroy() {
+		if ( this.chunks_ != null ) {
+			for ( const entry of Object.values( this.chunks_ ) ) {
+				entry.chunk?.Destroy?.();
+			}
+			this.chunks_ = {};
+		}
+
+		if ( this.builder_?.old_ != null ) {
+			for ( const entry of this.builder_.old_ ) {
+				entry.chunk?.Destroy?.();
+			}
+			this.builder_.old_ = [];
+		}
+
+		this.material_?.dispose?.();
+		this.cubeRenderTarget?.dispose?.();
+
+		if ( this.group?.parent != null ) {
+			this.group.parent.remove( this.group );
+		}
+	}
+
 	SetSunDirection(direction) {
 		if (!direction) {
 			return;
@@ -108,10 +131,16 @@ class OceanChunkManager extends entity.Component {
 
 		const cameraPosition = new THREE.Vector3();
 		const scenePosition = new THREE.Vector3();
+		this.params_.camera.updateMatrixWorld?.();
+		this.params_.scene.updateMatrixWorld?.( true, false );
 		this.params_.camera.getWorldPosition( cameraPosition );
 		this.params_.scene.getWorldPosition( scenePosition );
-		const tempCameraPosition = cameraPosition.clone();
-		const relativeCameraPosition = tempCameraPosition.sub( scenePosition );
+		const relativeCameraPosition = cameraPosition.clone();
+		if ( this.params_.scene.worldToLocal ) {
+			this.params_.scene.worldToLocal( relativeCameraPosition );
+		} else {
+			relativeCameraPosition.sub( scenePosition );
+		}
 
 		this.cubeCamera.update( this.params_.renderer, this.params_.scene );
 
