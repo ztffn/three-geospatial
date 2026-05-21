@@ -48,11 +48,13 @@ class SphericalOceanChunkManager extends entity.Component {
 			foamStrength: this.params_.waveGenerator.foamStrength,
 			foamThreshold: this.params_.waveGenerator.foamThreshold,
 			ifftResolution: this.params_.waveGenerator.size,
-			depthTexture: this.params_.depthTexture || null,
-			mySampler: this.params_.mySampler || null,
+			// Scene depth pre-pass texture for contact / depth-based effects.
+			// Falls back to null when no caller is providing one — the shader
+			// branches on a uniform flag so the absence is a no-op.
+			depthTexture: params.depthTexture || null,
+			viewportSize: params.viewportSize || new THREE.Vector2(1, 1),
 			environment: this.cubeRenderTarget.texture,
 			sunPosition: this.sun,
-			// Add mask provider for Sebastian Lague integration
 			maskProvider: this.maskProvider
 		}
 			
@@ -134,6 +136,13 @@ class SphericalOceanChunkManager extends entity.Component {
 		// Create mesh with existing ocean material
 		const mesh = new THREE.Mesh(geometry, this.material_);
 		mesh.frustumCulled = true;
+		// Ocean lives on its own layer so the depth pre-pass (OCEAN_LAYER
+		// excluded) captures only the opaque scene. Main render restores
+		// camera.layers.enableAll() so the user still sees the ocean.
+		const oceanLayer = this.params_?.layer;
+		if (oceanLayer != null) {
+			mesh.layers.set(oceanLayer);
+		}
 		mesh.castShadow = false;
 		mesh.receiveShadow = true;
 

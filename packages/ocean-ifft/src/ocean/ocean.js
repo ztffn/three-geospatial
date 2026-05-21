@@ -41,6 +41,7 @@ class OceanChunkManager extends entity.Component {
 			foamThreshold: this.params_.waveGenerator.foamThreshold,
 			ifftResolution: this.params_.waveGenerator.size,
 			depthTexture: this.params_.depthTexture || null,
+			viewportSize: this.params_.viewportSize || new THREE.Vector2(1, 1),
 			mySampler: this.params_.mySampler || null,
 			environment: this.cubeRenderTarget.texture,
 			sunPosition: this.sun

@@ -694,6 +694,13 @@ const Content: FC = () => {
         maxDistance={100000}
       />
       <CameraFlyTo target={target} />
+      {/* Depth-foam probe — capsule at the fly-to target so the depth pre-pass
+          has visible geometry for the ocean material to sample. Layer 0 (default)
+          so it's included in the depth pre-pass. Sized in world units (meters). */}
+      <mesh position={target.toArray()}>
+        <capsuleGeometry args={[80, 600, 8, 24]} />
+        <meshBasicMaterial color='#ff6b3d' />
+      </mesh>
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}

@@ -164,6 +164,17 @@ const Content: FC<StoryProps> = () => {
         />
       )}
       
+      {/* Depth-foam probe: a tall capsule at the world origin so the
+          ocean depth pre-pass has visible geometry to capture. Sized for
+          this scene's scale (world units = meters). Layer 0 (default) =
+          included in the depth pre-pass. Sphere of influence is what
+          matters; precise sea-level alignment comes once contact foam
+          consumes the depth values. */}
+      <mesh position={[0, 0, 0]}>
+        <capsuleGeometry args={[10, 100, 8, 24]} />
+        <meshBasicMaterial color="#ff6b3d" />
+      </mesh>
+
       {/* Focus camera on ocean level */}
       <OrbitControls target={[0, 0, 0]} minDistance={10} maxDistance={100000} />
     </>

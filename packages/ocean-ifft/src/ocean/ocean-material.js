@@ -5,7 +5,7 @@
 // at the bottom pulls vertex + fragment WGSL from resources/shader/ocean.
 
 import { THREE } from '../three-defs.js';
-import { texture, cubeTexture, attribute, uniform, vec3, vec4 } from 'three/tsl';
+import { texture, cubeTexture, attribute, uniform, vec3, vec4, screenUV } from 'three/tsl';
 import { entity } from '../entity.js';
 import { ocean_constants } from './ocean-constants.js';
 import { vertexStageWGSL } from '../../resources/shader/ocean/vertexStageWGSL.js';
@@ -69,6 +69,32 @@ function buildLightingUniforms(params) {
 	};
 }
 
+// Scene depth pre-pass texture (rendered by OceanSphereRenderer at priority 0.5
+// with the ocean layer masked off). Fragment shader samples it at screenUV via
+// textureLoad — Three.js TSL doesn't auto-create samplers for DepthTexture, so
+// we use textureLoad with integer pixel coords on the WGSL side.
+// When no depth texture is provided, a 1x1 DepthTexture fallback keeps the
+// binding type consistent (texture_depth_2d) and depthTextureEnabled gates the
+// shader from sampling it.
+function buildSceneDepthUniforms(params) {
+	const hasDepth = params.depthTexture != null;
+	const depthSource = hasDepth
+		? params.depthTexture
+		: (buildSceneDepthUniforms._fallback ??= (() => {
+			const t = new THREE.DepthTexture(1, 1);
+			t.type = THREE.FloatType;
+			t.format = THREE.DepthFormat;
+			return t;
+		})());
+	return {
+		depthTexture: texture(depthSource),
+		depthTextureEnabled: uniform(hasDepth ? 1.0 : 0.0),
+		screenUV: screenUV,
+		cameraNear: uniform(0.1),
+		cameraFar: uniform(1e6),
+	};
+}
+
 class OceanMaterial extends entity.Component {
 	constructor(params) {
 		super();
@@ -108,6 +134,7 @@ class OceanMaterial extends entity.Component {
 			...buildCascadeUniforms(params),
 			...buildSurfaceOpticsUniforms(params, noiseTexture),
 			...buildLightingUniforms(params),
+			...buildSceneDepthUniforms(params),
 		};
 
 		this.oceanMaterial = new THREE.MeshStandardNodeMaterial();
@@ -119,4 +146,4 @@ class OceanMaterial extends entity.Component {
 	}
 }
 
-export { OceanMaterial, buildCascadeUniforms, buildSurfaceOpticsUniforms, buildLightingUniforms };
+export { OceanMaterial, buildCascadeUniforms, buildSurfaceOpticsUniforms, buildLightingUniforms, buildSceneDepthUniforms };
