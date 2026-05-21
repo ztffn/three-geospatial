@@ -16,6 +16,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type FC,
 } from 'react';
@@ -53,12 +54,23 @@ declare module '@react-three/fiber' {
   }
 }
 
-const longitude = 139.7671;
-const latitude = 35.6812;
-const height = 20;
 const heading = 180;
 const pitch = -20;
 const distance = 3500;
+const globalTerrainAssetId = 1;
+const japanRegionalTerrainAssetId = 2767062;
+
+const locationPresets = {
+  Tokyo: { longitude: 139.7671, latitude: 35.6812, height: 20 },
+  Oslo: { longitude: 10.7522, latitude: 59.9139, height: 20 },
+  'New York': { longitude: -74.006, latitude: 40.7128, height: 20 },
+  'Cape Town': { longitude: 18.4241, latitude: -33.9249, height: 20 },
+  Sydney: { longitude: 151.2093, latitude: -33.8688, height: 20 },
+  Reykjavik: { longitude: -21.9426, latitude: 64.1466, height: 20 },
+} satisfies Record<
+  string,
+  { longitude: number; latitude: number; height: number }
+>;
 
 interface OceanPreset {
   name: string;
@@ -128,6 +140,26 @@ function updateWaveGenerator(waveGenerator: any): void {
   }
 }
 
+function getLocalDate(
+  longitudeDegrees: number,
+  dayOfYear: number,
+  timeOfDay: number,
+  year: number
+): Date {
+  const epoch = Date.UTC(year, 0, 1, 0, 0, 0, 0);
+  const offset = longitudeDegrees / 15;
+  return new Date(epoch + ((dayOfYear - 1) * 24 + timeOfDay - offset) * 3600000);
+}
+
+function isInsideJapanRegionalTerrain(longitudeDegrees: number, latitudeDegrees: number): boolean {
+  return (
+    longitudeDegrees >= 122 &&
+    longitudeDegrees <= 154 &&
+    latitudeDegrees >= 20 &&
+    latitudeDegrees <= 46
+  );
+}
+
 interface TilesEventTarget {
   addEventListener: (type: string, listener: (event: { scene: THREE.Object3D }) => void) => void;
   removeEventListener: (type: string, listener: (event: { scene: THREE.Object3D }) => void) => void;
@@ -185,48 +217,36 @@ function replaceMaterial(object: THREE.Object3D): void {
   sourceMaterial.dispose();
 }
 
-function usePointOfView(): THREE.Vector3 {
-  const camera = useThree(({ camera }) => camera);
-  const target = useMemo(
+function useTargetECEF(
+  longitudeDegrees: number,
+  latitudeDegrees: number,
+  targetHeight: number
+): THREE.Vector3 {
+  return useMemo(
     () =>
-      new Geodetic(radians(longitude), radians(latitude), height).toECEF(),
-    []
+      new Geodetic(
+        radians(longitudeDegrees),
+        radians(latitudeDegrees),
+        targetHeight
+      ).toECEF(),
+    [latitudeDegrees, longitudeDegrees, targetHeight]
   );
-
-  useLayoutEffect(() => {
-    new PointOfView(distance, radians(heading), radians(pitch)).decompose(
-      target,
-      camera.position,
-      camera.quaternion,
-      camera.up
-    );
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld();
-  }, [camera, target]);
-
-  return target;
 }
 
 const OceanSurface: FC<{
   target: THREE.Vector3;
   atmosphereContext: AtmosphereContextNode;
-  showOceanChunks: boolean;
-  showOceanDebugPlane: boolean;
-  showOceanMarker: boolean;
   onWaveGeneratorReady: (waveGenerator: any) => void;
   onOceanManagerReady: (oceanManager: any) => void;
 }> = ({
   target,
   atmosphereContext,
-  showOceanChunks,
-  showOceanDebugPlane,
-  showOceanMarker,
   onWaveGeneratorReady,
   onOceanManagerReady,
 }) => {
   const [waveGenerator, setWaveGenerator] = useState<any>(null);
   const [oceanParent, setOceanParent] = useState<THREE.Group | null>(null);
-  const { seaLevelOffset, oceanScale, debugPlaneSize } = useControls('Globe Ocean', {
+  const { seaLevelOffset, oceanScale } = useControls('Globe Ocean', {
     seaLevelOffset: {
       value: 50,
       min: -500,
@@ -240,13 +260,6 @@ const OceanSurface: FC<{
       max: 5,
       step: 0.05,
       label: 'Ocean scale',
-    },
-    debugPlaneSize: {
-      value: 20000,
-      min: 1000,
-      max: 200000,
-      step: 1000,
-      label: 'Debug plane size',
     },
   });
   const handleOceanParent = useCallback((group: THREE.Group | null) => {
@@ -272,12 +285,7 @@ const OceanSurface: FC<{
     oceanParent.matrix.copy(matrix);
     oceanParent.matrixWorldNeedsUpdate = true;
     oceanParent.updateMatrixWorld(true);
-    console.info('[GlobeOcean] frame updated', {
-      seaLevelOffset,
-      oceanScale,
-      debugPlaneSize,
-    });
-  }, [debugPlaneSize, matrix, oceanParent, oceanScale, seaLevelOffset]);
+  }, [matrix, oceanParent]);
 
   return (
     <>
@@ -287,34 +295,8 @@ const OceanSurface: FC<{
           onWaveGeneratorReady(waveGenerator);
         }}
       />
-      <group ref={handleOceanParent} matrixAutoUpdate={false}>
-        {showOceanDebugPlane ? (
-          <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
-            <planeGeometry args={[debugPlaneSize, debugPlaneSize]} />
-            <meshBasicMaterial
-              color="#00d5ff"
-              depthWrite={false}
-              opacity={0.35}
-              side={THREE.DoubleSide}
-              transparent
-              wireframe
-            />
-          </mesh>
-        ) : null}
-        {showOceanMarker ? (
-          <>
-            <mesh position={[0, 0, 0]} renderOrder={11}>
-              <sphereGeometry args={[120, 16, 16]} />
-              <meshBasicMaterial color="#ffdd00" depthWrite={false} />
-            </mesh>
-            <mesh position={[0, 750, 0]} renderOrder={11}>
-              <boxGeometry args={[80, 1500, 80]} />
-              <meshBasicMaterial color="#ff3366" depthWrite={false} />
-            </mesh>
-          </>
-        ) : null}
-      </group>
-      {showOceanChunks && oceanParent != null && waveGenerator != null ? (
+      <group ref={handleOceanParent} matrixAutoUpdate={false} />
+      {oceanParent != null && waveGenerator != null ? (
         <OceanChunks
           waveGenerator={waveGenerator}
           parent={oceanParent}
@@ -326,49 +308,144 @@ const OceanSurface: FC<{
   );
 };
 
+const CameraFlyTo: FC<{ target: THREE.Vector3 }> = ({ target }) => {
+  const camera = useThree(({ camera }) => camera);
+  const controls = useThree(({ controls }) => controls as any);
+  const initialized = useRef(false);
+  const flight = useMemo(
+    () => ({
+      active: false,
+      progress: 1,
+      fromPosition: new THREE.Vector3(),
+      toPosition: new THREE.Vector3(),
+      fromTarget: new THREE.Vector3(),
+      toTarget: new THREE.Vector3(),
+      fromQuaternion: new THREE.Quaternion(),
+      toQuaternion: new THREE.Quaternion(),
+      fromUp: new THREE.Vector3(),
+      toUp: new THREE.Vector3(),
+    }),
+    []
+  );
+
+  useLayoutEffect(() => {
+    const nextCamera = new THREE.PerspectiveCamera();
+    new PointOfView(distance, radians(heading), radians(pitch)).decompose(
+      target,
+      nextCamera.position,
+      nextCamera.quaternion,
+      nextCamera.up
+    );
+
+    if (!initialized.current) {
+      initialized.current = true;
+      camera.position.copy(nextCamera.position);
+      camera.quaternion.copy(nextCamera.quaternion);
+      camera.up.copy(nextCamera.up);
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld();
+      if (controls?.target != null) {
+        controls.target.copy(target);
+        controls.update?.();
+      }
+      return;
+    }
+
+    flight.active = true;
+    flight.progress = 0;
+    flight.fromPosition.copy(camera.position);
+    flight.toPosition.copy(nextCamera.position);
+    flight.fromTarget.copy(controls?.target ?? target);
+    flight.toTarget.copy(target);
+    flight.fromQuaternion.copy(camera.quaternion);
+    flight.toQuaternion.copy(nextCamera.quaternion);
+    flight.fromUp.copy(camera.up);
+    flight.toUp.copy(nextCamera.up);
+  }, [camera, controls, flight, target]);
+
+  useFrame((_, delta) => {
+    if (!flight.active) return;
+    flight.progress = Math.min(flight.progress + delta / 2.5, 1);
+    const t = flight.progress * flight.progress * (3 - 2 * flight.progress);
+
+    camera.position.lerpVectors(flight.fromPosition, flight.toPosition, t);
+    camera.quaternion.slerpQuaternions(
+      flight.fromQuaternion,
+      flight.toQuaternion,
+      t
+    );
+    camera.up.lerpVectors(flight.fromUp, flight.toUp, t).normalize();
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+
+    if (controls?.target != null) {
+      controls.target.lerpVectors(flight.fromTarget, flight.toTarget, t);
+      controls.update?.();
+    }
+
+    if (flight.progress >= 1) {
+      flight.active = false;
+    }
+  });
+
+  return null;
+};
+
 const Content: FC = () => {
   const renderer = useThree<THREE.Renderer>(({ gl }) => gl as any);
   const scene = useThree(({ scene }) => scene);
   const camera = useThree(({ camera }) => camera);
-  const target = usePointOfView();
   const [waveGenerator, setWaveGenerator] = useState<any>(null);
   const [oceanManager, setOceanManager] = useState<any>(null);
   const [loadedPresets, setLoadedPresets] = useState<Record<string, OceanPreset>>({});
   const overlayScene = useMemo(() => new Scene(), []);
   const context = useMemo(() => new AtmosphereContextNode(), []);
+  const locationControls = useControls('Location', {
+    preset: {
+      value: 'Tokyo',
+      options: [...Object.keys(locationPresets), 'Custom'],
+      label: 'Fly to',
+    },
+    longitude: {
+      value: locationPresets.Tokyo.longitude,
+      min: -180,
+      max: 180,
+      step: 0.0001,
+    },
+    latitude: {
+      value: locationPresets.Tokyo.latitude,
+      min: -90,
+      max: 90,
+      step: 0.0001,
+    },
+    height: {
+      value: locationPresets.Tokyo.height,
+      min: -500,
+      max: 5000,
+      step: 1,
+    },
+  });
+  const activeLocation =
+    locationControls.preset === 'Custom'
+      ? locationControls
+      : locationPresets[locationControls.preset as keyof typeof locationPresets] ??
+        locationPresets.Tokyo;
+  const target = useTargetECEF(
+    activeLocation.longitude,
+    activeLocation.latitude,
+    activeLocation.height
+  );
   const atmosphereControls = useControls('Atmosphere Controls', {
-    exposure: { value: 3, min: 0, max: 30, step: 0.25 },
+    exposure: { value: 10, min: 0, max: 30, step: 0.25 },
     dayOfYear: { value: 152, min: 0, max: 364, step: 1 },
-    timeOfDay: { value: 3, min: 0, max: 24, step: 0.1 },
+    timeOfDay: { value: 12, min: 0, max: 24, step: 0.1, label: 'Local time' },
+    year: { value: 2025, min: 2000, max: 2050, step: 1 },
     showGround: { value: true },
     showSun: { value: true },
     showMoon: { value: true },
     showStars: { value: true },
     moonIntensity: { value: 25, min: 0, max: 100, step: 1 },
     starsIntensity: { value: 20, min: 0, max: 100, step: 1 },
-  });
-  const {
-    showTerrain,
-    showOceanChunks,
-    showOceanDebugPlane,
-    showOceanMarker,
-  } = useControls('Globe Debug', {
-    showTerrain: {
-      value: true,
-      label: 'Terrain tiles',
-    },
-    showOceanChunks: {
-      value: true,
-      label: 'IFFT ocean chunks',
-    },
-    showOceanDebugPlane: {
-      value: true,
-      label: 'Ocean debug plane',
-    },
-    showOceanMarker: {
-      value: true,
-      label: 'Ocean frame marker',
-    },
   });
   const firstWaveControls = useMemo(
     () =>
@@ -483,13 +560,33 @@ const Content: FC = () => {
     scene,
   ]);
   const atmosphereDate = useMemo(() => {
-    const date = new Date(Date.UTC(2025, 0, 1));
-    date.setUTCDate(atmosphereControls.dayOfYear + 1);
-    const hours = Math.floor(atmosphereControls.timeOfDay);
-    const minutes = Math.round((atmosphereControls.timeOfDay - hours) * 60);
-    date.setUTCHours(hours, minutes, 0, 0);
-    return date;
-  }, [atmosphereControls.dayOfYear, atmosphereControls.timeOfDay]);
+    return getLocalDate(
+      activeLocation.longitude,
+      atmosphereControls.dayOfYear,
+      atmosphereControls.timeOfDay,
+      atmosphereControls.year
+    );
+  }, [
+    activeLocation.longitude,
+    atmosphereControls.dayOfYear,
+    atmosphereControls.timeOfDay,
+    atmosphereControls.year,
+  ]);
+  const terrainControls = useControls('Terrain', {
+    source: {
+      value: 'Auto',
+      options: ['Auto', 'Global', 'Japan Regional'],
+    },
+  });
+  const terrainAssetId =
+    terrainControls.source === 'Japan Regional' ||
+    (terrainControls.source === 'Auto' &&
+      isInsideJapanRegionalTerrain(
+        activeLocation.longitude,
+        activeLocation.latitude
+      ))
+      ? japanRegionalTerrainAssetId
+      : globalTerrainAssetId;
 
   useEffect(() => {
     const loadPresets = async (): Promise<void> => {
@@ -571,10 +668,10 @@ const Content: FC = () => {
       atmosphereDate,
       context.matrixECIToECEF.value
     );
-    getSunDirectionECI(atmosphereDate, context.sunDirectionECEF.value, camera.position).applyMatrix4(
+    getSunDirectionECI(atmosphereDate, context.sunDirectionECEF.value).applyMatrix4(
       matrixECIToECEF
     );
-    getMoonDirectionECI(atmosphereDate, context.moonDirectionECEF.value, camera.position).applyMatrix4(
+    getMoonDirectionECI(atmosphereDate, context.moonDirectionECEF.value).applyMatrix4(
       matrixECIToECEF
     );
   });
@@ -592,30 +689,25 @@ const Content: FC = () => {
       <atmosphereLight args={[context]} />
       <OrbitControls
         makeDefault
-        target={target.toArray()}
         enableDamping
         minDistance={500}
         maxDistance={100000}
       />
-      {showTerrain ? (
-        <TilesRenderer>
-          <TilesPlugin
-            plugin={CesiumIonAuthPlugin}
-            args={{
-              apiToken: ionToken,
-              assetId: 2767062,
-              autoRefreshToken: true,
-            }}
-          />
-          <TilesPlugin plugin={TileMaterialReplacementPlugin} />
-        </TilesRenderer>
-      ) : null}
+      <CameraFlyTo target={target} />
+      <TilesRenderer key={terrainAssetId}>
+        <TilesPlugin
+          plugin={CesiumIonAuthPlugin}
+          args={{
+            apiToken: ionToken,
+            assetId: terrainAssetId,
+            autoRefreshToken: true,
+          }}
+        />
+        <TilesPlugin plugin={TileMaterialReplacementPlugin} />
+      </TilesRenderer>
       <OceanSurface
         target={target}
         atmosphereContext={context}
-        showOceanChunks={showOceanChunks}
-        showOceanDebugPlane={showOceanDebugPlane}
-        showOceanMarker={showOceanMarker}
         onWaveGeneratorReady={setWaveGenerator}
         onOceanManagerReady={setOceanManager}
       />
