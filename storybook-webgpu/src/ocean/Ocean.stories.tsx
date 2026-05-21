@@ -4,10 +4,12 @@ import { createStory } from '../components/createStory'
 import { Story as OceanStory } from './Ocean-Basic-Story'
 import { Story as OceanAerialStory } from './Ocean-AerialPerspective'
 import { Story as GlobePatchStory } from './Ocean-Globe-Patch'
+import { Story as OceanSphereStory } from './Ocean-Sphere-Story'
 
 import OceanCode from './Ocean-Basic-Story?raw'
 import OceanAerialCode from './Ocean-AerialPerspective?raw'
 import GlobePatchCode from './Ocean-Globe-Patch?raw'
+import OceanSphereCode from './Ocean-Sphere-Story?raw'
 
 export default {
   title: 'ocean/Ocean (WebGPU)',
@@ -65,6 +67,19 @@ export const GlobePatch = createStory(GlobePatchStory, {
     docs: {
       source: {
         code: GlobePatchCode
+      }
+    }
+  }
+})
+
+export const OceanSphere = createStory(OceanSphereStory, {
+  parameters: {
+    docs: {
+      source: {
+        code: OceanSphereCode
+      },
+      description: {
+        story: 'Dual sphere architecture: terrain sphere (Google 3D tiles) + ocean sphere (IFFT waves) with atmosphere integration'
       }
     }
   }

@@ -9,6 +9,18 @@ import type { RendererArgs } from '../controls/rendererControls'
 import { useControl } from '../hooks/useControl'
 import { Stats } from './Stats'
 
+const CanvasContainer = styled('div')`
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: 85vw;
+  height: 100vh;
+  max-width: 85vw;
+  max-height: 100vh;
+  overflow: hidden;
+  z-index: 1;
+`
+
 export const availableAtom = atom(
   async () =>
     typeof navigator !== 'undefined' &&
@@ -71,30 +83,32 @@ export const WebGPUCanvas: FC<WebGPUCanvasProps> = ({
 
   return (
     <>
-      <Canvas
-        key={forceWebGL ? 'webgl' : 'webgpu'}
-        {...canvasProps}
-        gl={async props => {
-          const renderer = new WebGPURenderer({
-            ...(props as any),
-            ...otherProps,
-            forceWebGL
-          })
-          ref.current = renderer
-          await renderer.init()
+      <CanvasContainer>
+        <Canvas
+          key={forceWebGL ? 'webgl' : 'webgpu'}
+          {...canvasProps}
+          gl={async props => {
+            const renderer = new WebGPURenderer({
+              ...(props as any),
+              ...otherProps,
+              forceWebGL
+            })
+            ref.current = renderer
+            await renderer.init()
 
-          // Require the model-view matrix premultiplied on the CPU side.
-          // See: https://github.com/mrdoob/three.js/issues/30955
-          renderer.highPrecision = true
+            // Require the model-view matrix premultiplied on the CPU side.
+            // See: https://github.com/mrdoob/three.js/issues/30955
+            renderer.highPrecision = true
 
-          await onInit?.(renderer)
-          return renderer
-        }}
-        dpr={pixelRatio}
-      >
-        {children}
-        <Stats />
-      </Canvas>
+            await onInit?.(renderer)
+            return renderer
+          }}
+          dpr={pixelRatio}
+        >
+          {children}
+          <Stats />
+        </Canvas>
+      </CanvasContainer>
       <Message forceWebGL={forceWebGL} />
     </>
   )
