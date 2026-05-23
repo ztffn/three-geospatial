@@ -93,3 +93,16 @@ export type {
   GerstnerOverlayParams,
   GerstnerEvalOutputs,
 } from './waves/gerstner.js'
+
+// Water-only scene presets (atmosphere / caustics / oceanFloor / postProcessing
+// / fresnel.underwater / ssr fields stripped — those belong elsewhere).
+export {
+  WATERPRO_PRESETS,
+  WATERPRO_PRESET_NAMES,
+  applyWaterproPreset,
+} from './presets.js'
+export type {
+  WaterproPresetName,
+  WaterproPresetWaterFields,
+  WaterproPresetUniformBag,
+} from './presets.js'
