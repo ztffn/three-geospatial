@@ -133,6 +133,19 @@ Scene contents:
 
 Toggles drive uniform `enabled` values on each node; the TSL graph is compiled exactly once and `useTransientControl` updates uniform values without rebuilding.
 
+### Storybook (`ocean/WaterPro Atmosphere`)
+
+File: `storybook-webgpu/src/ocean/WaterproAtmosphere-Story.tsx`
+
+Sibling of the depth demo — **does not replace it**. Same scene contents (plane + tilted box + capsule probe), but mounted with `AtmosphereContextNode`:
+
+- **Sun direction** comes from `atmosphereContext.sunDirectionECEF` transformed via inverted `matrixWorldToECEF` (matches `OceanChunks.tsx:234-239`). The local demo has identity ECEF↔world so the transform is a no-op; kept for parity with the globe-scale code path.
+- **PBR IBL / environment node**: `scene.environmentNode = skyEnvironment(context)`. This is **load-bearing**: it both (a) provides IBL ambient to `MeshStandardNodeMaterial` so the ocean isn't pitch black at low sun angles, and (b) drives `SkyEnvironmentNode.updateBefore` so the atmosphere's cube render target stays current (used by the debug sphere; available for future use).
+- **In-shader sky reflection** samples a **static sRGB JPG cubemap** (`resources/textures/cube/sky/*.jpg`), NOT the atmosphere cube. See "HDR vs LDR cube sources" in *Architecture decisions* below.
+- **Post-processing** is the standard atmosphere stack: `pass → colorNode.mul(SCENE_RADIANCE_SCALE) → aerialPerspective → lensFlare → toneMapping(AgX, exposure) → dithering`. `SCENE_RADIANCE_SCALE = 0.28` is calibrated against `GlobeOceanProto.tsx:513`'s `0.55` after accounting for the WaterPro composition's ~2× higher peak vs `ocean-material.js`'s WGSL fragment output.
+- **Preset selector** writes water-only fields from the 10 WaterPro scenes (see `presets.ts`). Atmosphere/caustics/oceanFloor/postProcessing/fresnel.underwater/ssr fields from the source presets are explicitly skipped — those belong on `AtmosphereContextNode` + the post-processing pipeline.
+- **Distance fade**: no in-shader horizon-blend. The WaterPro `applyDistanceFog` step that mixes toward a sky-cube sample at distance was deliberately removed — it washed the surface to flat pale grey at zoomed-out cameras, hiding all foam/highlights. AerialPerspective in the post-pass handles atmospheric attenuation instead.
+
 ### Globe (`examples/ocean-ifft-demo/`)
 
 File: `packages/ocean-ifft/components/GlobeOceanProto.tsx`
@@ -158,6 +171,14 @@ The full ECEF-scale ocean rendered against atmosphere + Cesium terrain. Uses the
 8. **Wave foam uses crest mask, not crest + noise sum**. The earlier implementation summed noise + crest contribution and thresholded the sum, producing foam wherever the noise happened to be high (random blob appearance unrelated to wave crests). Corrected to: `strength = crestMask · noiseDetail · …` where `crestMask` gates *where* foam appears (Jacobian eigenvalues) and `noiseDetail` is the texture inside the gated region.
 
 9. **Jacobian-eigenvalue interpretation**. The existing IFFT pipeline writes the *turbulence* value (low at crests, ~1 on flat water) to the cascade's `jacobian` render target. WaterPro's program 7 expects an `eigen` input that is *high* at crests. `wave-sampler.ts` inverts: `eigen0 = 1 − turbulence`.
+
+10. **HDR vs LDR cube sources for in-shader reflection** (load-bearing — got this wrong for a long session). The WaterPro composition's `mix(waterColor, skyReflection, fresnel)` math is calibrated for an **LDR sRGB cubemap input (~0..1 range)**. Sampling `skyEnvironment(context).renderTarget.texture` instead — the atmosphere's HDR linear-radiance cube with values 5–10× — pushes the mixed reflection to 2–8× expected; AgX then saturates the entire surface to flat white regardless of fresnel power or any other knob. Reference: `ocean-material.js:117-120` loads the static JPG cubemap for its reflection; the atmosphere only drives sun direction and the post-pass. Same approach is correct for any WaterPro-derived material. If a true atmosphere-tracking reflection is needed, sample the HDR cube and scale by ~0.1-0.2× (empirical) before the fresnel mix, or switch to a tonemap-applied cube source. See `~/.claude/projects/-Users-steffen-Projects-three-geospatial/memory/waterpro_reflection_cube_source.md`.
+
+11. **`MeshStandardNodeMaterial` with `colorNode` set still runs PBR lighting** on top of `colorNode`. Verified in three's source: `NodeMaterial.js:868` assigns `colorNode` to `diffuseColor`; `setupLighting` at line 1061 then multiplies by `PhysicalLightingModel(NdotL × sunColor + IBL)`. This is *intentional* in `ocean-material.js` — its WGSL output is pre-scaled assuming the PBR dim will follow. WaterPro nodes peak ~2× higher; the WaterproAtmosphere story keeps PBR on because `scene.environmentNode = skyEnvironment(context)` provides the IBL ambient that prevents pink-sand collapse at low sun (NdotL→0). Disabling PBR (`mat.lights = false` causes `NodeMaterial.js:934` to return `diffuseColor.rgb` verbatim) is an option but requires recalibrating the post-pass scale.
+
+12. **`material.colorSpace = SRGBColorSpace` is a dead assignment in three.js WebGPU.** Greping `node_modules/three/src` for `material.colorSpace` / `this.colorSpace` consumers turns up nothing. The line appears in `ocean-material.js:193` and was copied into the WaterproAtmosphere story for parity, but it does NOT make three convert the colorNode output from sRGB to linear before lighting/tonemap. If true sRGB→linear conversion of the composed color is needed, do it explicitly in the shader (e.g. `pow(rgb, 2.2)` or a proper sRGB decode function). Currently neither demo needs it because the WaterPro composition uses `Color.convertSRGBToLinear()` on every hex string upstream in `presets.ts`.
+
+13. **Pre-pass radiance scale (`colorNode.mul(K)`) is per-material, not per-pipeline**. `GlobeOceanProto.tsx:513` uses `0.55` for `ocean-material.js`'s WGSL output. The WaterproAtmosphere story uses `0.28` because the WaterPro TSL composition peaks roughly 2× higher (`waterColor 0.8 + SSS 0.2-0.5 + sparkle glow + foam mix to 1.0` vs ocean-material's `~0.5` peak). The constant lives at the top of each story file. When adapting a new material to this post-pass chain, the calibration question is: "what's the peak output of your colorNode?" — and `K ≈ 0.55 × (0.5 / peak)`.
 
 ## Known WaterPro defaults (transcribed)
 
@@ -227,16 +248,23 @@ In rough order of visual impact:
 - **JPG cubemaps need `colorSpace = SRGBColorSpace`.** Without it, sRGB-encoded bytes are read as linear → everything washes out to beige.
 - **TSL `positionView` / `positionWorld` use the raw `position` attribute**, not the custom `positionNode` output. For the IFFT ocean, this is wrong by ± wave amplitude; must compute view/world from `vDisplacedPosition` + `modelViewMatrix` / `modelWorldMatrix` explicitly.
 - **Wave foam from Jacobian eigenvalues: high `eigen` = high turbulence = crest.** The existing cascade pipeline writes the *raw* turbulence value (low at crests, ~1 flat). Invert at the sampler so consumers get the "high = crest" convention WaterPro programs expect.
+- **The atmosphere cube is HDR linear-radiance, not LDR sRGB.** Sampling `(skyEnvironment(context) as any).renderTarget.texture` directly into a WaterPro fresnel mix saturates AgX to flat white across the entire surface (values 5-10× expected). For in-shader reflections, use a static sRGB cubemap (matches `ocean-material.js`); the atmosphere cube is fine for PBR `scene.environmentNode` IBL because PBR rescales IBL contribution internally. See `~/.claude/projects/-Users-steffen-Projects-three-geospatial/memory/waterpro_reflection_cube_source.md`.
+- **`material.colorSpace = SRGBColorSpace` does nothing in three.js WebGPU.** No code path reads it. Don't rely on it for sRGB→linear conversion; do it explicitly in shader if needed.
+- **`MeshStandardNodeMaterial` applies PBR lighting to `colorNode`.** It's not a pass-through. Either embrace it (provide `scene.environmentNode` for IBL ambient so low-sun angles don't collapse to black/pink) or disable with `mat.lights = false` and recalibrate the post-pass scale.
+- **WaterPro's in-shader distance-fade horizon-blend washes out the surface at zoomed-out cameras**, mixing `finalColor` toward a pale sky-cube sample along the view direction. If using `aerialPerspective` in the post-pass, drop the in-shader fade — they're redundant and the latter is gentler/correct atmospheric attenuation.
 
 ## Reproduction
 
 ```bash
 cd storybook-webgpu
 npx storybook dev --port 6006
-# Open: http://localhost:6006/?path=/story/ocean-waterpro-depth-demo--depth-demo
+# Depth demo (LDR pipeline, hardcoded sun, static cubemap):
+#   http://localhost:6006/?path=/story/ocean-waterpro-depth-demo--depth-demo
+# Atmosphere demo (AtmosphereContextNode + AgX + preset selector):
+#   http://localhost:6006/?path=/story/ocean-waterpro-atmosphere--atmosphere
 ```
 
-The Controls panel has the full set of categorised toggles + sliders. Default state shows the full pipeline with all features enabled.
+Both stories share the WaterPro composition; the depth demo uses `MeshBasicNodeMaterial` direct-display, the atmosphere demo uses `MeshStandardNodeMaterial` + aerialPerspective post-pass with AgX tonemapping. The atmosphere demo additionally exposes a 10-scene `preset` dropdown that writes water-only fields via `applyWaterproPreset`.
 
 For the globe demo:
 ```bash

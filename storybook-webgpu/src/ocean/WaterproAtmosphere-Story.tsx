@@ -15,8 +15,10 @@ import { extend, useFrame, useThree, type ThreeElement } from '@react-three/fibe
 import { useEffect, useMemo, useRef, useState, type FC } from 'react'
 import {
   AgXToneMapping,
+  CubeTextureLoader,
   DoubleSide,
   HalfFloatType,
+  LinearFilter,
   Matrix4,
   type Mesh,
   type Material,
@@ -42,6 +44,7 @@ import {
   cameraPosition,
   cubeTexture,
   float,
+  normalLocal,
   pass,
   positionView,
   cameraNear,
@@ -150,6 +153,22 @@ const loader = new TextureLoader()
 const foamTexture = loader.load('/ocean-ifft-resources/textures/simplex-noise.png')
 foamTexture.wrapS = RepeatWrapping
 foamTexture.wrapT = RepeatWrapping
+
+// Static sRGB sky cubemap for the in-shader sky-reflection mix. The WaterPro
+// fragment math (and ocean-material.js, which is the working reference) was
+// designed for an LDR sRGB cubemap input in roughly 0..1 range. Sampling the
+// atmosphere-rendered HDR cube here instead pushes reflection values to
+// 5-10× expected and the AgX tonemapper saturates the surface to flat white.
+// SRGBColorSpace on the cube texture is required — JPG faces are sRGB-encoded.
+const cubeLoader = new CubeTextureLoader()
+const skyCubemap = cubeLoader.load(
+  ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map(
+    f => `/ocean-ifft-resources/textures/cube/sky/${f}.jpg`
+  )
+)
+skyCubemap.minFilter = LinearFilter
+skyCubemap.magFilter = LinearFilter
+skyCubemap.colorSpace = SRGBColorSpace
 
 interface StoryArgs extends ToneMappingArgs, LocationArgs, LocalDateArgs {
   preset: WaterproPresetName | 'custom'
@@ -441,6 +460,22 @@ const Content: FC = () => {
     )
   })
 
+  // DEBUG: sphere material that visualizes the sky-environment cube. Samples
+  // (envNode.renderTarget.texture) by the local outward normal so the sphere's
+  // surface displays the cube's content directly. If the sphere shows a
+  // gradient matching the sky, the cube is being populated. If it shows
+  // uniform gray, SkyEnvironmentNode.updateBefore isn't firing (the cube
+  // never gets rendered) and the ocean's reflection has no real data to
+  // sample. Uses MeshBasicNodeMaterial so PBR lighting doesn't tint it.
+  const skyDebugMaterial = useMemo(() => {
+    if (envNode == null) return null
+    const skyCubeTex = (envNode as any).renderTarget.texture
+    const mat = new MeshBasicNodeMaterial()
+    mat.colorNode = vec4(cubeTexture(skyCubeTex, normalLocal).rgb, float(1))
+    ;(mat as any).colorSpace = SRGBColorSpace
+    return mat
+  }, [envNode])
+
   // Ocean material — mirrors ocean-material.js pattern:
   // MeshStandardNodeMaterial + colorSpace=SRGBColorSpace + colorNode = full
   // composed color. PhysicalLightingModel + AtmosphereLight + envNode IBL
@@ -539,8 +574,13 @@ const Content: FC = () => {
     })
     const shorelineFoam = shorelineBand
 
-    // Program 2 (fresnel + distance fade). distanceFade output discarded —
-    // atmospheric attenuation comes from the aerialPerspective post-pass.
+    // Program 2 (fresnel only). distanceFade output discarded — atmospheric
+    // attenuation comes from the aerialPerspective post-pass instead of an
+    // in-shader blend to a sky-cube sample. Mixing finalColor toward the
+    // atmosphere cube's horizon (which is uniformly pale haze) was washing
+    // out the foam / highlights / water color — exactly what we want to keep
+    // visible. fadeStart/fadeEnd inputs are pinned to large constants so the
+    // node still compiles, but the distanceFade output it computes is unused.
     const noFadeStart = uniform(1e6)
     const noFadeEnd = uniform(1e6 + 1)
     const noFadePower = uniform(1.0)
@@ -606,13 +646,12 @@ const Content: FC = () => {
       scene: { isObjectInFront, isDynamic, fresnel: fresnelRaw },
     })
 
-    // Sky reflection — sampled from the atmosphere's rendered cube target.
-    // SkyEnvironmentNode renders into a private CubeRenderTarget each frame
-    // (driven by scene.environmentNode); we sample the underlying CubeTexture
-    // directly at the reflect direction.
-    const skyCubeTex = (envNode as any).renderTarget.texture
+    // Sky reflection — sample the static sRGB cubemap (see comment at the top
+    // of this file). Atmosphere context still provides sun direction and the
+    // aerialPerspective post-pass haze; reflection itself uses LDR cubemap
+    // because the WaterPro composition math is calibrated for that.
     const reflectDir = tslReflect(viewDir.negate(), fresnelOut.fresnelNormal)
-    const skyReflection = cubeTexture(skyCubeTex, reflectDir).rgb
+    const skyReflection = cubeTexture(skyCubemap, reflectDir).rgb
     const gatedFresnel = fresnelRaw.mul(u.skyReflectionOn)
 
     // Composition (same layering as depth demo).
@@ -629,6 +668,9 @@ const Content: FC = () => {
       combined.shorelineFoamTint,
       combined.shorelineFoamStrength,
     )
+    // No in-shader horizon mix — keep the full water composition at all
+    // distances; aerialPerspective in the post-pass handles atmospheric
+    // attenuation.
     const finalColor = withShoreline
 
     // MeshStandardNodeMaterial — three's NodeMaterial assigns colorNode to
@@ -743,6 +785,15 @@ const Content: FC = () => {
         <capsuleGeometry args={[3, 4, 8, 24]} />
         <meshStandardMaterial color="#c04040" />
       </mesh>
+
+      {/* DEBUG: sky-cube probe. Renders the SkyEnvironmentNode renderTarget on
+          a sphere via cubeTexture(tex, normalLocal). Gradient = cube populated;
+          flat gray = updateBefore not firing. Remove once diagnosed. */}
+      {skyDebugMaterial != null && (
+        <mesh position={[-20, 8, 0]} material={skyDebugMaterial}>
+          <sphereGeometry args={[4, 32, 16]} />
+        </mesh>
+      )}
 
       {oceanMaterial != null && (
         <mesh ref={oceanMeshRef} geometry={oceanGeometry} material={oceanMaterial} />
