@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+NOT ALLOWED TO CREATE FALLBACK SYSTEMS UNLESS TOLD TO DO SO, THEY MAKE DEBUGGING DIFFICULT! YOU WILL NOT FAKE SUCCESS. MOCK RESULTS ARE NOT ALLOWED.I DD
+
 ## Architecture Overview
 
 This is a **monorepo** for geospatial rendering libraries in Three.js, managed with **Nx**. The project follows a modular approach with four main publishable packages:

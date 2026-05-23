@@ -5,11 +5,13 @@
 // at the bottom pulls vertex + fragment WGSL from resources/shader/ocean.
 
 import { THREE } from '../three-defs.js';
-import { texture, cubeTexture, attribute, uniform, vec3, vec4, screenUV } from 'three/tsl';
+import { texture, cubeTexture, attribute, uniform, vec3, vec4, screenUV, mix, float, modelViewMatrix, modelWorldMatrix } from 'three/tsl';
 import { entity } from '../entity.js';
 import { ocean_constants } from './ocean-constants.js';
 import { vertexStageWGSL } from '../../resources/shader/ocean/vertexStageWGSL.js';
 import { fragmentStageWGSL } from '../../resources/shader/ocean/fragmentStageWGSL.js';
+import { buildWaterColumnDepth } from '../waterpro/nodes/water-color.js';
+import { shorelineFoamNode } from '../waterpro/nodes/shoreline-foam.js';
 
 const assetUrl = path => new URL(path, import.meta.url).href;
 
@@ -69,29 +71,32 @@ function buildLightingUniforms(params) {
 	};
 }
 
-// Scene depth pre-pass texture (rendered by OceanSphereRenderer at priority 0.5
-// with the ocean layer masked off). Fragment shader samples it at screenUV via
-// textureLoad — Three.js TSL doesn't auto-create samplers for DepthTexture, so
-// we use textureLoad with integer pixel coords on the WGSL side.
-// When no depth texture is provided, a 1x1 DepthTexture fallback keeps the
-// binding type consistent (texture_depth_2d) and depthTextureEnabled gates the
-// shader from sampling it.
+// Scene linear-depth pre-pass texture (rendered by OceanChunks at priority 0.5
+// with per-mesh material swap to the WaterPro linear-depth material). R channel
+// encodes (-view_z - near)/(far - near). Bound as a regular texture_2d<f32> so
+// WebGPU TEXTURE_BINDING works. When no depth texture is provided, a 1x1
+// HalfFloat RGBA fallback keeps the texture identity stable across the material
+// lifetime; depthTextureEnabled gates all depth sampling in the TSL nodes.
+let _depthFallback = null;
+function getDepthFallbackTexture() {
+	if (_depthFallback == null) {
+		_depthFallback = new THREE.DataTexture(new Uint16Array(4), 1, 1, THREE.RGBAFormat, THREE.HalfFloatType);
+		_depthFallback.needsUpdate = true;
+	}
+	return _depthFallback;
+}
 function buildSceneDepthUniforms(params) {
 	const hasDepth = params.depthTexture != null;
-	const depthSource = hasDepth
-		? params.depthTexture
-		: (buildSceneDepthUniforms._fallback ??= (() => {
-			const t = new THREE.DepthTexture(1, 1);
-			t.type = THREE.FloatType;
-			t.format = THREE.DepthFormat;
-			return t;
-		})());
+	const depthSource = hasDepth ? params.depthTexture : getDepthFallbackTexture();
 	return {
 		depthTexture: texture(depthSource),
 		depthTextureEnabled: uniform(hasDepth ? 1.0 : 0.0),
 		screenUV: screenUV,
-		cameraNear: uniform(0.1),
-		cameraFar: uniform(1e6),
+		cameraNear: uniform(params.cameraNear ?? 1.0),
+		cameraFar: uniform(params.cameraFar ?? 1e8),
+		cameraForward: uniform(new THREE.Vector3(0, -1, 0)),
+		contactFoamDistance: uniform(params.contactFoamDistance ?? 500.0),
+		contactFoamIntensity: uniform(params.contactFoamIntensity ?? 1.0),
 	};
 }
 
@@ -104,6 +109,8 @@ class OceanMaterial extends entity.Component {
 	Init(params) {
 		const loader = new THREE.TextureLoader();
 		const noiseTexture = loader.load(assetUrl('../../resources/textures/simplex-noise.png'));
+		noiseTexture.wrapS = THREE.RepeatWrapping;
+		noiseTexture.wrapT = THREE.RepeatWrapping;
 		const testTexture = loader.load(assetUrl('../../resources/textures/uv_grid_opengl.jpg'));
 
 		const cubeTextureLoader = new THREE.CubeTextureLoader();
@@ -134,12 +141,54 @@ class OceanMaterial extends entity.Component {
 			...buildCascadeUniforms(params),
 			...buildSurfaceOpticsUniforms(params, noiseTexture),
 			...buildLightingUniforms(params),
-			...buildSceneDepthUniforms(params),
 		};
+
+		// Scene depth pre-pass texture (raw THREE.Texture, not a TSL binding) feeds
+		// the TSL water-column-depth + shoreline-foam nodes. A 1x1 HalfFloat fallback
+		// keeps texture identity stable when no depth texture is provided.
+		const hasDepth = params.depthTexture != null;
+		const depthSource = hasDepth ? params.depthTexture : getDepthFallbackTexture();
+		const depthTextureEnabled = uniform(hasDepth ? 1.0 : 0.0);
+
+		// Compute oceanDepth + positionWorld explicitly from the WGSL vertex stage's
+		// vDisplacedPosition varying. The custom positionNode in this material
+		// makes TSL's built-in `positionView` / `positionWorld` unreliable —
+		// passing displaced-position-derived overrides avoids the iso-line
+		// foam artifact (foam appearing only on the screen line where the
+		// constant positionView happens to equal terrainDepth).
+		const vDisplaced = vertexStageWGSL.vDisplacedPosition;
+		const displacedWorld = modelWorldMatrix.mul(vec4(vDisplaced, float(1))).xyz;
+		const displacedView = modelViewMatrix.mul(vec4(vDisplaced, float(1)));
+		const oceanDepthExplicit = displacedView.z.negate();
+
+		const waterColumnDepth = buildWaterColumnDepth({
+			depthTexture: depthSource,
+			depthTextureEnabled,
+			waterDepth: uniform(20.0),
+			oceanDepth: oceanDepthExplicit,
+			oceanPositionWorld: displacedWorld,
+		});
+		const { strength, color: contactFoamColor } = shorelineFoamNode(waterColumnDepth, {
+			foamTexture: noiseTexture,
+			enabled: uniform(1.0),
+			// range = depth at which foam fully fades. 50m gives a visible band along
+			// continental shelves at ECEF scale; tune via params.contactFoamDistance.
+			range: uniform(params.contactFoamDistance ?? 50.0),
+			// size = foam tile size in world meters (WaterPro convention).
+			// 50m matches the decompiled BF._size default.
+			size: uniform(50.0),
+			// coverage = 0..1 threshold on the noise texture (WaterPro convention).
+			coverage: uniform(0.5),
+			opacity: uniform(params.contactFoamIntensity ?? 0.9),
+			foamColor: uniform(new THREE.Vector3(0.9, 0.95, 1.0)),
+			oceanPositionWorld: displacedWorld,
+		});
 
 		this.oceanMaterial = new THREE.MeshStandardNodeMaterial();
 		this.oceanMaterial.positionNode = vertexStageWGSL.vertexStageWGSL(wgslShaderParams);
-		this.oceanMaterial.colorNode = fragmentStageWGSL(wgslShaderParams);
+
+		const wgslColor = fragmentStageWGSL(wgslShaderParams);
+		this.oceanMaterial.colorNode = vec4(mix(wgslColor.rgb, contactFoamColor, strength), float(1));
 		this.oceanMaterial.side = THREE.DoubleSide;
 		this.oceanMaterial.colorSpace = THREE.SRGBColorSpace;
 		this.oceanMaterial.transparent = true;

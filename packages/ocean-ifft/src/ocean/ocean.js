@@ -177,9 +177,14 @@ class OceanChunkManager extends entity.Component {
 
 
 
+		// cameraPosition is a shared uniform node referenced by both the WGSL
+		// vertex and fragment stages, so updating it via positionNode.parameters
+		// is sufficient — the fragment stage sees the same value automatically.
+		// The TSL contact-foam path uses three/tsl built-ins (cameraNear/cameraFar/
+		// screenUV/positionView) which read from the renderer's active camera, so
+		// no per-frame uniform updates are needed for the depth-based foam.
 		this.material_.positionNode.parameters.cameraPosition.value = relativeCameraPosition;
-		this.material_.colorNode.parameters.cameraPosition.value = relativeCameraPosition;
-  
+
 	}//end Update
 
 

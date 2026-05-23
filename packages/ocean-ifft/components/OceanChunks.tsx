@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, type ReactElement } from 'react'
 import * as THREE from 'three'
 import type { AtmosphereContextNode } from '@takram/three-atmosphere/webgpu'
 import OceanChunkManager from '../src/ocean/ocean.js'
+import { createLinearDepthMaterial } from '../src/ocean/depth-material.js'
 
 const DEPTH_PASS_PRIORITY = 0.5
 
@@ -44,26 +45,27 @@ export default function OceanChunks({
   const matrixECEFToWorld = useMemo(() => new THREE.Matrix4(), [])
   const worldSun = useMemo(() => new THREE.Vector3(), [])
 
-  // Depth pre-pass target. Captures scene depth excluding the ocean layer so
-  // the ocean fragment shader can read scene depth without the WebGPU
-  // self-attachment-sampling restriction.
-  //
-  // Lazy useRef + setSize keeps the same DepthTexture identity across
-  // canvas resizes and React StrictMode dev double-mount, so the ocean
-  // material's binding stays valid and we don't re-init on every layout shift.
+  // WaterPro linear-depth pre-pass: renders the full scene with a custom
+  // material that encodes (-view_z - near)/(far - near) into the R channel of
+  // a HalfFloat RGBA color texture. Using a plain color texture avoids the
+  // WebGPU restriction where DepthTexture attachments are not tracked as
+  // TEXTURE_BINDING resources and cannot be sampled in a subsequent pass.
+  const depthMaterial = useMemo(() => createLinearDepthMaterial(), [])
   const depthTargetRef = useRef<THREE.RenderTarget | null>(null)
   if (depthTargetRef.current == null) {
     const w = Math.max(1, size.width)
     const h = Math.max(1, size.height)
-    const target = new THREE.RenderTarget(w, h, { depthBuffer: true })
-    // UnsignedIntType + DepthFormat is the most reliably-bound combination
-    // across Three.js renderer backends for the depth attachment of an
-    // off-screen RenderTarget. FloatType silently no-ops on WebGPU.
-    const dt = new THREE.DepthTexture(w, h)
-    dt.type = THREE.UnsignedIntType
-    dt.format = THREE.DepthFormat
-    target.depthTexture = dt
-    depthTargetRef.current = target
+    // FloatType (rgba32float) is required: at ECEF scales with cameraFar=1e8,
+    // HalfFloat's ~11-bit mantissa collapses (terrainDepth-cameraNear)/(far-near)
+    // ratios for nearby geometry to ~0, which makes wcdRaw strongly negative and
+    // triggers max shoreline foam over the entire ocean.
+    depthTargetRef.current = new THREE.RenderTarget(w, h, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      type: THREE.FloatType,
+      format: THREE.RGBAFormat,
+      depthBuffer: true,
+    })
   }
   const depthTarget = depthTargetRef.current
 
@@ -76,7 +78,6 @@ export default function OceanChunks({
   useEffect(() => {
     return () => {
       depthTargetRef.current?.dispose()
-      depthTargetRef.current?.depthTexture?.dispose()
       depthTargetRef.current = null
     }
   }, [])
@@ -112,6 +113,7 @@ export default function OceanChunks({
         createdOceanManager = oceanManager
         const gui = waveGenerator.params_?.gui
 
+        const cam = camera as THREE.PerspectiveCamera
         await oceanManager.Init({
           scene,
           camera,
@@ -119,8 +121,10 @@ export default function OceanChunks({
           sunpos,
           waveGenerator,
           layer: 0,
-          depthTexture: depthTarget.depthTexture,
+          depthTexture: depthTarget.texture,
           viewportSize: new THREE.Vector2(size.width, size.height),
+          cameraNear: cam.near ?? 1.0,
+          cameraFar: cam.far ?? 1e8,
           gui,
           guiParams: {}
         })
@@ -157,27 +161,61 @@ export default function OceanChunks({
     // so the ocean material's binding remains valid for the component lifetime.
   }, [waveGenerator, gl, scene, camera, onOceanManagerReady])
 
-  // Depth pre-pass: hide the ocean group, render the scene to depthTarget so
-  // the ocean fragment shader can sample scene depth, then restore visibility.
-  // Visibility toggle avoids the Three.js layer-mask gotcha where the main
-  // camera defaults to layer 0 only.
+  // Linear-depth pre-pass: override all scene materials with depthMaterial so
+  // every opaque fragment writes (-view_z - near)/(far - near) into the R
+  // channel. Ocean group is hidden so it's excluded from the depth encoding.
+  // Renders defaultScene so capsule/terrain outside the ocean group are captured.
   // Priority 0.5 — between R3F's default render (0) and postprocessing (1).
   useFrame(() => {
     const manager = oceanManagerRef.current as unknown as { group?: THREE.Object3D } | null
     if (manager == null) return
-    const renderer = gl as unknown as { setRenderTarget: (t: THREE.RenderTarget | null) => void; render: (s: THREE.Scene, c: THREE.Camera) => void } | null
+    const renderer = gl as unknown as {
+      setRenderTarget: (t: THREE.RenderTarget | null) => void;
+      render: (s: THREE.Scene, c: THREE.Camera) => void;
+      clear: () => void;
+      setClearColor: (c: number, a?: number) => void;
+      getClearColor: (target: THREE.Color) => THREE.Color;
+      getClearAlpha: () => number;
+    } | null
     if (renderer == null) return
 
     const oceanGroup = manager.group
     const wasVisible = oceanGroup?.visible
+    const prevBackground = defaultScene.background
     if (oceanGroup != null) oceanGroup.visible = false
+
+    const overridden: Array<{ mesh: THREE.Mesh; mat: THREE.Material | THREE.Material[] }> = []
+    defaultScene.traverse((obj) => {
+      const mesh = obj as unknown as THREE.Mesh
+      const mat = (mesh as any).material
+      // skip transparent-only meshes (no alphaTest); they don't write meaningful depth
+      if ((obj as any).isMesh && obj.visible && mat != null) {
+        const mats = Array.isArray(mat) ? mat : [mat]
+        if (mats.every((m: any) => m.transparent && !(m.alphaTest > 0))) return
+        overridden.push({ mesh, mat })
+        mesh.material = depthMaterial as unknown as THREE.Material
+      }
+    })
+    // Clear to white (R=1) so empty pixels decode to cameraFar (no-geometry path
+    // in the TSL water-column-depth node). Clearing to black would decode to
+    // cameraNear and signal terrain everywhere, drowning the ocean in foam.
+    const prevClear = new THREE.Color()
+    renderer.getClearColor(prevClear)
+    const prevAlpha = renderer.getClearAlpha()
     try {
+      defaultScene.background = null
       renderer.setRenderTarget(depthTarget)
-      renderer.render(scene as THREE.Scene, camera)
+      renderer.setClearColor(0xffffff, 1.0)
+      renderer.clear()
+      renderer.render(defaultScene, camera)
     } finally {
       renderer.setRenderTarget(null)
+      renderer.setClearColor(prevClear.getHex(), prevAlpha)
+      defaultScene.background = prevBackground
+      overridden.forEach(({ mesh, mat }) => { mesh.material = mat })
       if (oceanGroup != null && wasVisible !== undefined) oceanGroup.visible = wasVisible
     }
+
   }, DEPTH_PASS_PRIORITY)
 
   useFrame((_, delta) => {

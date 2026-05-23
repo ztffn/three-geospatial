@@ -57,12 +57,7 @@ const entrypointWGSL = `
         sparkleSize: f32,
         foamTextureScale: f32,
         foamSpeed: f32,
-        foamMix: f32,
-        depthTexture: texture_depth_2d,
-        depthTextureEnabled: f32,
-        screenUV: vec2<f32>,
-        cameraNear: f32,
-        cameraFar: f32,
+        foamMix: f32
     ) -> vec4<f32> {
 
         var vViewVector = vDisplacedPosition - cameraPosition;
@@ -110,40 +105,6 @@ const entrypointWGSL = `
 
         // Distance fog kept identical to pre-refactor.
         var finalColor = applyDistanceFog(oceanColor, reflectionColor, vViewDist);
-
-        // DEBUG (depth foam step 1): diagnose what the depth pre-pass is
-        // actually writing. Split screen into 3 horizontal bands so we can tell
-        // multiple things at once on a single refresh:
-        //
-        //   Top third:    screenUV.x as red, screenUV.y as green. A clean
-        //                 red-to-green gradient confirms screenUV is per-pixel.
-        //                 Uniform color → screenUV is constant (broken).
-        //
-        //   Middle third: raw depth as grayscale. Far-plane (1.0) → white.
-        //                 Anything < 1.0 shows as gray bands at the depth of
-        //                 that geometry. All white = depth texture never
-        //                 written (pre-pass not landing in this attachment).
-        //
-        //   Bottom third: depth stretched by (1 - d) * 100 so even tiny
-        //                 deviations from the far plane become visible as
-        //                 bright color. Confirms whether ANY pixel has non-far
-        //                 depth.
-        if (depthTextureEnabled > 0.5) {
-            let dims = textureDimensions(depthTexture, 0);
-            let pixel = vec2<i32>(screenUV * vec2<f32>(dims));
-            let sceneDepth = textureLoad(depthTexture, pixel, 0);
-
-            var debugTint = vec3<f32>(0.0);
-            if (screenUV.y < 0.333) {
-                debugTint = vec3<f32>(screenUV.x, screenUV.y * 3.0, 0.0);
-            } else if (screenUV.y < 0.666) {
-                debugTint = vec3<f32>(sceneDepth);
-            } else {
-                let stretched = clamp((1.0 - sceneDepth) * 100.0, 0.0, 1.0);
-                debugTint = vec3<f32>(stretched, stretched * 0.5, 1.0 - stretched);
-            }
-            finalColor = mix(finalColor, debugTint, 0.85);
-        }
 
         return vec4<f32>(finalColor, 1.0);
     }
