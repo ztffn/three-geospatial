@@ -15,6 +15,7 @@ import { extend, useFrame, useThree, type ThreeElement } from '@react-three/fibe
 import { useEffect, useMemo, useRef, useState, type FC } from 'react'
 import {
   AgXToneMapping,
+  Color,
   CubeTextureLoader,
   DoubleSide,
   HalfFloatType,
@@ -43,6 +44,7 @@ import {
   attribute,
   cameraPosition,
   cubeTexture,
+  exp,
   float,
   normalLocal,
   pass,
@@ -173,6 +175,9 @@ skyCubemap.colorSpace = SRGBColorSpace
 interface StoryArgs extends ToneMappingArgs, LocationArgs, LocalDateArgs {
   preset: WaterproPresetName | 'custom'
   skyReflection: boolean
+  skyReflectionColor: string
+  skyReflectionExposure: number
+  skyReflectionScale: number
   sss: boolean
   sparkle: boolean
   surfaceFoam: boolean
@@ -292,6 +297,15 @@ const Content: FC = () => {
     () => ({
       // Toggles
       skyReflectionOn: uniform(1.0),
+      // DIAGNOSTIC color input — what the reflection actually feeds into the
+      // WaterPro mix. Storybook color picker is sRGB; transient control
+      // converts to linear before writing here. Multiplied by skyReflectionScale.
+      skyReflectionColor: uniform(new Vector3(0.3, 0.5, 0.8)),
+      // Reflection tonemap exposure (kept for the live-cube path; unused
+      // while skyReflectionColor diagnostic is wired).
+      skyReflectionExposure: uniform(0.2),
+      // Post-color scalar multiplier. 1.0 = use linear color as-is.
+      skyReflectionScale: uniform(1.0),
       sssOn: uniform(1.0),
       sparkleOn: uniform(1.0),
       surfaceFoamOn: uniform(1.0),
@@ -412,6 +426,11 @@ const Content: FC = () => {
     (args: StoryArgs) => args,
     args => {
       u.skyReflectionOn.value = args.skyReflection ? 1 : 0
+      u.skyReflectionExposure.value = args.skyReflectionExposure
+      u.skyReflectionScale.value = args.skyReflectionScale
+      // Parse hex (sRGB) → linear vec3, write to uniform.
+      const c = new Color().setStyle(args.skyReflectionColor).convertSRGBToLinear()
+      u.skyReflectionColor.value.set(c.r, c.g, c.b)
       u.sssOn.value = args.sss ? 1 : 0
       u.sparkleOn.value = args.sparkle ? 1 : 0
       u.surfaceFoamOn.value = args.surfaceFoam ? 1 : 0
@@ -646,12 +665,12 @@ const Content: FC = () => {
       scene: { isObjectInFront, isDynamic, fresnel: fresnelRaw },
     })
 
-    // Sky reflection — sample the static sRGB cubemap (see comment at the top
-    // of this file). Atmosphere context still provides sun direction and the
-    // aerialPerspective post-pass haze; reflection itself uses LDR cubemap
-    // because the WaterPro composition math is calibrated for that.
+    // DIAGNOSTIC: reflection is a flat user-controllable colour (sRGB picker,
+    // converted to linear in the transient control above). Multiplied by
+    // skyReflectionScale.
     const reflectDir = tslReflect(viewDir.negate(), fresnelOut.fresnelNormal)
-    const skyReflection = cubeTexture(skyCubemap, reflectDir).rgb
+    void reflectDir
+    const skyReflection = u.skyReflectionColor.mul(u.skyReflectionScale)
     const gatedFresnel = fresnelRaw.mul(u.skyReflectionOn)
 
     // Composition (same layering as depth demo).
@@ -828,6 +847,8 @@ Story.args = {
   ...localDateArgs({ dayOfYear: 0, timeOfDay: 9 }),
   preset: 'custom',
   skyReflection: true,
+  skyReflectionExposure: 0.2,
+  skyReflectionScale: 1.0,
   sss: true,
   sparkle: true,
   surfaceFoam: true,
@@ -869,6 +890,14 @@ Story.argTypes = {
     table: { category: 'Preset' },
   },
   skyReflection: { control: 'boolean', table: { category: 'Toggles' } },
+  skyReflectionExposure: {
+    ...range(0.01, 2, 0.01),
+    table: { category: 'Reflection' },
+  },
+  skyReflectionScale: {
+    ...range(0, 3, 0.05),
+    table: { category: 'Reflection' },
+  },
   sss: { control: 'boolean', table: { category: 'Toggles' } },
   sparkle: { control: 'boolean', table: { category: 'Toggles' } },
   surfaceFoam: { control: 'boolean', table: { category: 'Toggles' } },
