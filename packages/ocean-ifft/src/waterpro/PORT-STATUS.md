@@ -215,6 +215,63 @@ Our current storybook demo runs equivalent to **high** minus SSR + screen-space-
 
 In rough order of visual impact:
 
+-1. **Wave system schema rewrite for 1:1 preset compatibility.** Highest priority — gates everything below it because the visible "rolling wave body" character the user is chasing comes from the preset schema, not the source `FIRST_WAVE_DATASET` defaults.
+
+   **The discovery.** `tools/waterpro-decoder/extracted-presets.json` shows the live app uses a *different* schema than `src/waves/wave-constants.js`. The `arctic` preset's `waves` block:
+
+   ```
+   waves.fft:
+     amplitude:            0.36
+     animationSpeed:       3.8      // time scale on IFFT update — we lack this
+     choppiness:           1        // = lambda (we hardcode 0.9 per cascade)
+     directionalSpreading: 14.5     // not a FIRST_WAVE_DATASET field
+     frequency:            1
+     standingWaveRatio:    0.35     // not a FIRST_WAVE_DATASET field
+     windDirection:        0
+     windSpeed:            7.2      // NOT 50 — that was a slider max in the user's panel screenshot, not the default
+     cascades:
+       ripples: {scale: 249,  amplitudeScale: 0.28}
+       waves:   {scale: 1356, amplitudeScale: 0.24}
+   waves.gerstner:
+     amplitude: 3, wavelength: 700, wavelengthSpread: 2.2, directionalSpread: 1
+   ```
+
+   **What this means structurally.**
+   - The app uses **two** IFFT cascades named `ripples` and `waves`, not the source code's three `[250, 17, 5]`. Cascade scales are much larger (249 m and 1356 m).
+   - Per-cascade `amplitudeScale` — a multiplier per cascade output that we don't expose.
+   - App-layer params (`animationSpeed`, `directionalSpreading`, `frequency`, `standingWaveRatio`) don't map 1:1 to source `FIRST_WAVE_DATASET`. Either the app transforms them into `peakEnhancement` / `spreadBlend` / `swell` before pushing to the spectrum kernel, or the spectrum kernel reads them directly (and our port has been ignoring them since the WASM math is opaque). Same `wB(...)` opacity caveat applies: we can match field names and let downstream programs consume them, but the per-uniform math is inferred.
+
+   **The boundary-cutoff bug already fixed.** Separately found and patched in `wave-defaults.ts`: cascade k-space boundaries were hand-tuned `[0.5, 6, 1e6]` leaving a gap in the ~2.83 – 12.5 m wavelength band — exactly the medium-rolling-waves range. Replaced with the canonical chain formula `boundaryHigh[i] = 2π / lengthScale[i+1] * 6` from source `wave-generator.js`. Closes the gap. Independent of the schema refactor below; should ship as its own small commit.
+
+   **Phased plan.**
+
+   *Phase A — wave engine schema (foundation, no UI yet).*
+   1. Change `DEFAULT_CASCADES` to two cascades, ripples + waves, with the preset scales as defaults. Drop the third 5 m cascade. Recompute canonical boundaries for the new chain.
+   2. Add `amplitudeScale` to `CascadeConfig`. Apply it when sampling cascade output (multiply slope/displacement reads, or apply at the IFFT compute level — pick one and document).
+   3. Add `animationSpeed` as a uniform on `WaveSimulation`. Multiply `timeSec` by it inside `update()`.
+   4. Add `choppiness` (= per-cascade lambda) so a single preset value can drive all cascades.
+   5. Decide on `directionalSpreading` / `frequency` / `standingWaveRatio` semantics. Easiest: map onto `spreadBlend` / `peakEnhancement` / `swell` respectively via transparent passthrough and document the guess. We can refine once we see whether numerical ranges align with preset values.
+
+   *Phase B — Gerstner schema match.*
+   1. Rework `GerstnerOverlay` config to take `{amplitude, wavelength, wavelengthSpread, directionalSpread}` instead of the current direct wave-list construction.
+   2. Internally still generate `maxWaves` Gerstner waves but with parameters derived from the four scalars (wavelength sampled within `[wavelength / wavelengthSpread, wavelength * wavelengthSpread]`, directions spread by `directionalSpread`, all amplitudes scaled by `amplitude`).
+
+   *Phase C — preset importer.*
+   1. Rewrite `presets.ts` so its `applyWaterproPreset` mutates `waveSim.spectrum.primary.*`, `waveSim.cascades[i].*`, and the Gerstner overlay's new schema fields, consuming `waves.fft.*` and `waves.gerstner.*` from extracted-presets shape directly.
+   2. Keep the preset selector in the story; remove story-side wave sliders that this overrides (or keep them as override knobs that fire after preset apply).
+
+   *Phase D — Story controls UI.*
+   1. Add one slider per WaterPro UI panel control: windSpeed, windDirection, choppiness, animationSpeed, amplitude, frequency, directionalSpreading, standingWaveRatio, ripples.scale, ripples.amplitudeScale, waves.scale, waves.amplitudeScale, gerstner.amplitude, gerstner.wavelength, gerstner.wavelengthSpread, gerstner.directionalSpread. Mirror their UI exactly. Match defaults from `arctic` preset (or a chosen baseline) so the story opens on a known-good look.
+   2. Wire each via `useTransientControl` to mutate the matching live uniform. Reinitialize the spectrum when any spectrum-driving uniform changes (`waveSim.reinitializeSpectrum()`).
+
+   *Phase E — verify against extracted presets.*
+   1. Iterate through `extracted-presets.json` keys (arctic, tropical, etc.), apply each, screenshot, compare against any WaterPro reference imagery we have. Document mismatches per preset in a new section.
+
+   **Constraints.**
+   - Each phase ends in a working storybook. Don't intermediate-state-break the demo.
+   - Phase A breaks the existing presets.ts mapping (cascade count changes) — either temporarily disable preset selector during A→B, or replumb in lockstep.
+   - The 5 m smallest cascade we'd drop in A1 is currently the dominant contributor to wave-foam crest mask (`eigen0` sample). Verify the new ripples cascade (249 m) still produces meaningful eigen0 values, or rework wave-foam to read from the surface-tile cascade instead.
+
 0. **SSS per-crest "translucent wave" character.** Current SSS is a smooth view-aligned angular lobe (`pow(dot(viewDir, FROM-sun), power) × saturate(N.y) × distFade`), routed through `emissiveNode` so it bypasses PBR `NdotL × diffuseColor` attenuation. On the storybook 80m flat-ish plane this reads as a single tinted blob on the sun-facing side rather than light-through-each-crest. Three candidate fixes, in order of likely impact:
    - **Crest height mask**: gate by `sampleWaveDisplacement(sim, fragWorldXZ).displacement.y > threshold`. SSS fires only on high points → spotty per-crest look. Easiest; doesn't require wave amplitude changes.
    - **Per-cascade normal masks**: sample cascade-0 normal alone is degenerate at 80m × 250m scale (slopes ≈ 0 → mask ≈ 0). Cascade-1 (17m) is the right scale for the storybook plane — produces meaningful slope variation per wave body. Mask = `saturate(dot(N_cascade1, FROM-sun))` then multiply onto `sssOut.scattering`.

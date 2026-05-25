@@ -66,10 +66,35 @@ export interface CascadeConfig {
 
 // WaterPro three-cascade defaults from src/waves/wave-constants.js
 // LENGTH_SCALES = [250, 17, 5], LAMBDA = [0.9, 0.9, 0.9]
+//
+// k-space boundaries follow the canonical WaterPro chain from
+// src/waves/wave-generator.js (CreateCascades):
+//   boundaryLow  = previous cascade's boundaryHigh (starts 0.0001)
+//   boundaryHigh = i < N-1 ? (2π / lengthScale[i+1]) * 6 : 9999
+// Previously hand-tuned values [0.5, 6, 1e6] left a gap in the
+// ~2.83–12.5 m wavelength band — exactly the "medium rolling waves"
+// range — so the 250 m swell cascade had no body, just long-wavelength
+// slow undulation. Canonical values close that gap.
+const TWO_PI = 2 * Math.PI
 export const DEFAULT_CASCADES: CascadeConfig[] = [
-  { lengthScale: 250, lambda: 0.9, boundaryLow: 0.0001, boundaryHigh: 0.5 },
-  { lengthScale: 17, lambda: 0.9, boundaryLow: 0.5, boundaryHigh: 6 },
-  { lengthScale: 5, lambda: 0.9, boundaryLow: 6, boundaryHigh: 1e6 },
+  {
+    lengthScale: 250,
+    lambda: 0.9,
+    boundaryLow: 0.0001,
+    boundaryHigh: (TWO_PI / 17) * 6,
+  },
+  {
+    lengthScale: 17,
+    lambda: 0.9,
+    boundaryLow: (TWO_PI / 17) * 6,
+    boundaryHigh: (TWO_PI / 5) * 6,
+  },
+  {
+    lengthScale: 5,
+    lambda: 0.9,
+    boundaryLow: (TWO_PI / 5) * 6,
+    boundaryHigh: 9999,
+  },
 ]
 
 export const DEFAULT_RESOLUTION = 256
