@@ -46,6 +46,7 @@ import {
   cubeTexture,
   exp,
   float,
+  mix,
   normalLocal,
   pass,
   positionView,
@@ -428,8 +429,11 @@ const Content: FC = () => {
       u.skyReflectionOn.value = args.skyReflection ? 1 : 0
       u.skyReflectionExposure.value = args.skyReflectionExposure
       u.skyReflectionScale.value = args.skyReflectionScale
-      // Parse hex (sRGB) → linear vec3, write to uniform.
-      const c = new Color().setStyle(args.skyReflectionColor).convertSRGBToLinear()
+      // Parse hex → linear vec3, write to uniform. Color.setStyle already
+      // converts sRGB→linear via colorSpaceToWorking with three's default
+      // workingColorSpace=LinearSRGBColorSpace. Do NOT call convertSRGBToLinear
+      // again — it double-converts and crushes non-white values toward zero.
+      const c = new Color().setStyle(args.skyReflectionColor)
       u.skyReflectionColor.value.set(c.r, c.g, c.b)
       u.sssOn.value = args.sss ? 1 : 0
       u.sparkleOn.value = args.sparkle ? 1 : 0
@@ -673,17 +677,22 @@ const Content: FC = () => {
     const skyReflection = u.skyReflectionColor.mul(u.skyReflectionScale)
     const gatedFresnel = fresnelRaw.mul(u.skyReflectionOn)
 
-    // Composition (same layering as depth demo).
+    // Composition (same layering as depth demo). Use the free `mix(a, b, t)`
+    // function — chained `.mix()` in TSL treats the receiver as the BLEND
+    // FACTOR (t), not the first source, which silently produces
+    // `b*(1-receiver) + c*receiver` instead of the intended a*(1-t) + b*t.
     const waterColorLit = waterColor.add(sssOut.scattering)
     const waterColorLitGlow = waterColorLit.add(sparkleOut.glowColor)
-    const reflectedWater = waterColorLitGlow.mix(skyReflection, gatedFresnel)
-    const withCombined = reflectedWater.mix(
+    const reflectedWater = mix(waterColorLitGlow, skyReflection, gatedFresnel)
+    const withCombined = mix(
+      reflectedWater,
       combined.combinedFoamColor,
-      combined.combinedFoamStrength
+      combined.combinedFoamStrength,
     )
     const withTurbulent = withCombined.add(turbulentFoam.foam.mul(float(0.1)))
-    const withTint = withTurbulent.mix(shorelineTint.color, shorelineTint.strength)
-    const withShoreline = withTint.mix(
+    const withTint = mix(withTurbulent, shorelineTint.color, shorelineTint.strength)
+    const withShoreline = mix(
+      withTint,
       combined.shorelineFoamTint,
       combined.shorelineFoamStrength,
     )
@@ -847,6 +856,7 @@ Story.args = {
   ...localDateArgs({ dayOfYear: 0, timeOfDay: 9 }),
   preset: 'custom',
   skyReflection: true,
+  skyReflectionColor: '#ffffff',
   skyReflectionExposure: 0.2,
   skyReflectionScale: 1.0,
   sss: true,
@@ -890,6 +900,10 @@ Story.argTypes = {
     table: { category: 'Preset' },
   },
   skyReflection: { control: 'boolean', table: { category: 'Toggles' } },
+  skyReflectionColor: {
+    control: { type: 'color' },
+    table: { category: 'Reflection' },
+  },
   skyReflectionExposure: {
     ...range(0.01, 2, 0.01),
     table: { category: 'Reflection' },
