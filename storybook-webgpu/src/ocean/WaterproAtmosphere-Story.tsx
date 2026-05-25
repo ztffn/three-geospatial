@@ -291,6 +291,12 @@ const Content: FC = () => {
   // transform is a no-op — we keep the indirection so this code copies cleanly
   // to a globe-scale setup (OceanChunks.tsx lines 234-239 use the same pattern).
   const sunDirUniform = useMemo(() => uniform(new Vector3(0, -1, 0)), [])
+  // Light-propagation-direction mirror of sunDirUniform — kept in lockstep on
+  // the CPU side so WaterPro nodes (SSS/sparkle), which expect FROM-sun
+  // (propagation), get a properly negated input without relying on a TSL
+  // `.negate()` chain on a UniformNode (the TS typings don't expose it and the
+  // runtime behaviour through `reflect()` was unreliable here).
+  const sunDirLightUniform = useMemo(() => uniform(new Vector3(0, 1, 0)), [])
   const sunIntensityUniform = useMemo(() => uniform(1.0), [])
   const matrixECEFToWorld = useMemo(() => new Matrix4(), [])
   const worldSun = useMemo(() => new Vector3(), [])
@@ -633,10 +639,14 @@ const Content: FC = () => {
 
     const viewDir = cameraPosition.sub(vec3(fragWorldXZ.x, float(0), fragWorldXZ.y)).normalize()
 
+    // WaterPro SSS + sparkle nodes expect sunDir = light propagation direction
+    // (sun → scene; downward at noon). sunDirUniform is the atmosphere
+    // convention TO-sun (upward at noon); use the CPU-mirrored propagation
+    // uniform for per-node inputs.
     // Program 3 (SSS).
     const sssOut = subSurfaceScatteringNode({
       viewDir,
-      sunDir: sunDirUniform,
+      sunDir: sunDirLightUniform,
       waveNormal: surfaceNormal,
       waterColor,
       distanceToCamera,
@@ -662,7 +672,7 @@ const Content: FC = () => {
     )
     const sparkleOut = sparkleNode({
       viewDir,
-      sunDir: sunDirUniform,
+      sunDir: sunDirLightUniform,
       flippedNormal: surfaceNormal,
       enabled: u.sparkleOn,
       focusPower: u.sparkleFocusPower,
@@ -795,12 +805,17 @@ const Content: FC = () => {
     waveSim.update(dt, t)
     gerstnerTime.value = t
 
+    // sunDirectionECEF is a unit direction; use transformDirection so only the
+    // rotation part of the inverted matrix is applied. applyMatrix4 here
+    // includes the matrix's translation (~6.37e6 m ECEF position) and
+    // collapses the result to ≈ (0, -1, 0) after normalize regardless of time
+    // of day — that bug was making sparkle/SSS sun-direction inputs constant.
     matrixECEFToWorld.copy(context.matrixWorldToECEF.value).invert()
     worldSun
       .copy(context.sunDirectionECEF.value)
-      .applyMatrix4(matrixECEFToWorld)
-      .normalize()
+      .transformDirection(matrixECEFToWorld)
     sunDirUniform.value.copy(worldSun)
+    sunDirLightUniform.value.copy(worldSun).negate()
   }, 0)
 
   // Depth pre-pass — clear to white (R=1) so empty pixels decode to cameraFar
