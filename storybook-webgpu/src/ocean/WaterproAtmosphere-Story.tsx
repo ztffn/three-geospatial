@@ -44,9 +44,11 @@ import {
   attribute,
   cameraPosition,
   cubeTexture,
+  dot,
   exp,
   float,
   mix,
+  saturate,
   normalLocal,
   pass,
   positionView,
@@ -208,6 +210,8 @@ interface StoryArgs extends ToneMappingArgs, LocationArgs, LocalDateArgs {
   turbulentIntensity: number
   depthFalloff: number
   waterDepth: number
+  shallowColor: string
+  deepColor: string
 }
 
 const Content: FC = () => {
@@ -464,6 +468,11 @@ const Content: FC = () => {
       u.turbulentIntensity.value = args.turbulentIntensity
       u.depthFalloff.value = args.depthFalloff
       u.waterDepth.value = args.waterDepth
+      // Water-base pickers (sRGB → linear handled inside Color.setStyle).
+      const cs = new Color().setStyle(args.shallowColor)
+      u.shallowColor.value.set(cs.r, cs.g, cs.b)
+      const cd = new Color().setStyle(args.deepColor)
+      u.deepColor.value.set(cd.r, cd.g, cd.b)
     }
   )
 
@@ -640,7 +649,17 @@ const Content: FC = () => {
       intensity: u.sssIntensity,
     })
 
-    // Program 1 (sparkle).
+    // Program 1 (sparkle). Sparkle color tracks sun elevation: horizon
+    // orange (sunset/sunrise) → near-white (noon). sunDirUniform is the
+    // direction TO the sun (atmosphere convention) — sunDir.y > 0 when the
+    // sun is above the horizon, so the elevation is the dot with world-up.
+    // saturate so below-horizon → 0 → full horizon-orange.
+    const sunElevation = saturate(dot(sunDirUniform, vec3(0, 1, 0)))
+    const sparkleSunColor = mix(
+      vec3(1.0, 0.45, 0.20), // horizon — warm orange
+      vec3(1.0, 0.97, 0.88), // noon — warm-white
+      sunElevation,
+    )
     const sparkleOut = sparkleNode({
       viewDir,
       sunDir: sunDirUniform,
@@ -648,7 +667,7 @@ const Content: FC = () => {
       enabled: u.sparkleOn,
       focusPower: u.sparkleFocusPower,
       intensity: u.sparkleIntensity,
-      color: uniform(new Vector3(1.0, 0.97, 0.88)),
+      color: sparkleSunColor,
     })
 
     // Program 11 (turbulent foam).
@@ -669,23 +688,48 @@ const Content: FC = () => {
       scene: { isObjectInFront, isDynamic, fresnel: fresnelRaw },
     })
 
-    // DIAGNOSTIC: reflection is a flat user-controllable colour (sRGB picker,
-    // converted to linear in the transient control above). Multiplied by
-    // skyReflectionScale.
+    // Reflection direction in world space (used for the atmosphere cube sample).
     const reflectDir = tslReflect(viewDir.negate(), fresnelOut.fresnelNormal)
-    void reflectDir
-    const skyReflection = u.skyReflectionColor.mul(u.skyReflectionScale)
+
+    // Live atmosphere cube sample. The cube is HDR linear-radiance; we apply
+    // an exponential tonemap (1 − exp(−x · exposure)) per channel to compress
+    // it into [0, 1). Higher exposure → reflection saturates toward 1 sooner
+    // (brighter). Lower → more dynamic range preserved (darker).
+    const rawSky = cubeTexture(
+      (envNode as any).renderTarget.texture,
+      reflectDir
+    ).rgb
+    const tonemappedSky = float(1).sub(
+      exp(rawSky.mul(u.skyReflectionExposure).negate())
+    )
+
+    // Picker now acts as a TINT on the tonemapped cube. White → unchanged.
+    // skyReflectionScale is overall brightness on top of the tint.
+    const skyReflection = tonemappedSky
+      .mul(u.skyReflectionColor)
+      .mul(u.skyReflectionScale)
     const gatedFresnel = fresnelRaw.mul(u.skyReflectionOn)
 
-    // Composition (same layering as depth demo). Use the free `mix(a, b, t)`
-    // function — chained `.mix()` in TSL treats the receiver as the BLEND
-    // FACTOR (t), not the first source, which silently produces
-    // `b*(1-receiver) + c*receiver` instead of the intended a*(1-t) + b*t.
-    const waterColorLit = waterColor.add(sssOut.scattering)
-    const waterColorLitGlow = waterColorLit.add(sparkleOut.glowColor)
-    const reflectedWater = mix(waterColorLitGlow, skyReflection, gatedFresnel)
+    // colorNode composition — NO reflection mix here anymore. Water + SSS +
+    // sparkle + foam stay in colorNode (subject to PBR lighting). Reflection
+    // is routed through emissiveNode below so the picker's hue passes through
+    // 1:1 without being absorbed by PBR's albedo multiplication.
+    //
+    // Energy conservation: the water body (waterColor + SSS) is attenuated by
+    // (1 - gatedFresnel) — at grazing angles less light transmits through the
+    // surface to the eye, more reflects off it (and the reflected term sits
+    // in emissive below). Sparkle is sun-on-surface specular that PEAKS at
+    // grazing, so it is added AFTER the attenuation, kept at full strength.
+    //
+    // Use the free `mix(a, b, t)` function — chained `.mix()` in TSL treats
+    // the receiver as the BLEND FACTOR, not the first source (see
+    // PORT-STATUS.md footguns).
+    const transmittedBody = waterColor
+      .add(sssOut.scattering)
+      .mul(float(1).sub(gatedFresnel))
+    const waterColorLitGlow = transmittedBody.add(sparkleOut.glowColor)
     const withCombined = mix(
-      reflectedWater,
+      waterColorLitGlow,
       combined.combinedFoamColor,
       combined.combinedFoamStrength,
     )
@@ -696,23 +740,20 @@ const Content: FC = () => {
       combined.shorelineFoamTint,
       combined.shorelineFoamStrength,
     )
-    // No in-shader horizon mix — keep the full water composition at all
-    // distances; aerialPerspective in the post-pass handles atmospheric
-    // attenuation.
     const finalColor = withShoreline
 
-    // MeshStandardNodeMaterial — three's NodeMaterial assigns colorNode to
-    // diffuseColor, which PhysicalLightingModel multiplies by
-    // (NdotL × sunColor + IBL ambient from scene.environmentNode). This is
-    // load-bearing for the post-pass calibration: it dims the otherwise-too-
-    // bright sRGB-range composition into linear radiance the AgX-exposure-10
-    // tonemap can land correctly.
+    // Reflection contribution via emissive — additive after PBR lighting,
+    // bypasses diffuseColor multiplication. fresnel weights it by view angle,
+    // (1 - combinedFoamStrength) prevents specular sheen on foam patches.
+    const reflectionEmissive = skyReflection
+      .mul(gatedFresnel)
+      .mul(float(1).sub(combined.combinedFoamStrength))
+
     const mat = new MeshStandardNodeMaterial()
     mat.positionNode = displacedLocal
     mat.colorNode = vec4(finalColor, float(1))
+    ;(mat as any).emissiveNode = reflectionEmissive
     mat.side = DoubleSide
-    // Tells the renderer the colorNode output is sRGB-encoded — converts to
-    // linear before lighting. Matches ocean-material.js:193.
     ;(mat as any).colorSpace = SRGBColorSpace
     return mat
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -888,6 +929,11 @@ Story.args = {
   turbulentIntensity: 0.2,
   depthFalloff: 50.0,
   waterDepth: 20.0,
+  // sRGB hex equivalents of the linear uniform defaults
+  // shallowColor: linear (0, 0.8, 0.8) ≈ sRGB #00e7e7
+  shallowColor: '#00e7e7',
+  // deepColor: linear (0, 0.2, 0.4) ≈ sRGB #007baa
+  deepColor: '#007baa',
 }
 
 Story.argTypes = {
@@ -950,4 +996,12 @@ Story.argTypes = {
 
   depthFalloff: { ...range(1, 300, 1), table: { category: 'Water color' } },
   waterDepth: { ...range(1, 100, 1), table: { category: 'Water color' } },
+  shallowColor: {
+    control: { type: 'color' },
+    table: { category: 'Water color' },
+  },
+  deepColor: {
+    control: { type: 'color' },
+    table: { category: 'Water color' },
+  },
 }
