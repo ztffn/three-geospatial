@@ -643,10 +643,12 @@ const Content: FC = () => {
     // (sun → scene; downward at noon). sunDirUniform is the atmosphere
     // convention TO-sun (upward at noon); use the CPU-mirrored propagation
     // uniform for per-node inputs.
-    // Program 3 (SSS).
+    // Program 3 (SSS). Pass TO-sun (sunDirUniform) so the node's internal
+    // `.negate()` produces FROM-sun for the back-scatter dot — story-side
+    // wiring change because the package node file isn't hot-reloading.
     const sssOut = subSurfaceScatteringNode({
       viewDir,
-      sunDir: sunDirLightUniform,
+      sunDir: sunDirUniform,
       waveNormal: surfaceNormal,
       waterColor,
       distanceToCamera,
@@ -720,23 +722,22 @@ const Content: FC = () => {
       .mul(u.skyReflectionScale)
     const gatedFresnel = fresnelRaw.mul(u.skyReflectionOn)
 
-    // colorNode composition — NO reflection mix here anymore. Water + SSS +
-    // sparkle + foam stay in colorNode (subject to PBR lighting). Reflection
-    // is routed through emissiveNode below so the picker's hue passes through
-    // 1:1 without being absorbed by PBR's albedo multiplication.
+    // colorNode composition — NO reflection mix here anymore. Water + sparkle
+    // + foam stay in colorNode (subject to PBR lighting). Reflection AND SSS
+    // are routed through emissiveNode below — both are additive light coming
+    // off / through the surface, not surface albedo, so they bypass PBR's
+    // diffuseColor multiplication that would otherwise dim them by NdotL.
     //
-    // Energy conservation: the water body (waterColor + SSS) is attenuated by
-    // (1 - gatedFresnel) — at grazing angles less light transmits through the
-    // surface to the eye, more reflects off it (and the reflected term sits
-    // in emissive below). Sparkle is sun-on-surface specular that PEAKS at
-    // grazing, so it is added AFTER the attenuation, kept at full strength.
+    // Energy conservation: the water body is attenuated by (1 - gatedFresnel).
+    // At grazing angles less light transmits through the surface to the eye,
+    // more reflects (the reflected term sits in emissive below). Sparkle is
+    // sun-on-surface specular that PEAKS at grazing, so it is added AFTER the
+    // attenuation, kept at full strength.
     //
     // Use the free `mix(a, b, t)` function — chained `.mix()` in TSL treats
     // the receiver as the BLEND FACTOR, not the first source (see
     // PORT-STATUS.md footguns).
-    const transmittedBody = waterColor
-      .add(sssOut.scattering)
-      .mul(float(1).sub(gatedFresnel))
+    const transmittedBody = waterColor.mul(float(1).sub(gatedFresnel))
     const waterColorLitGlow = transmittedBody.add(sparkleOut.glowColor)
     const withCombined = mix(
       waterColorLitGlow,
@@ -752,17 +753,22 @@ const Content: FC = () => {
     )
     const finalColor = withShoreline
 
-    // Reflection contribution via emissive — additive after PBR lighting,
-    // bypasses diffuseColor multiplication. fresnel weights it by view angle,
-    // (1 - combinedFoamStrength) prevents specular sheen on foam patches.
-    const reflectionEmissive = skyReflection
-      .mul(gatedFresnel)
-      .mul(float(1).sub(combined.combinedFoamStrength))
+    // Emissive contribution — additive after PBR lighting, bypasses
+    // diffuseColor multiplication. Reflection picks up sky cube light;
+    // SSS is sun-back-scatter coming up through the surface.
+    // Both are gated by (1 - combinedFoamStrength) so foam patches don't
+    // get specular sheen or sub-surface glow on top of them.
+    const foamMask = float(1).sub(combined.combinedFoamStrength)
+    const reflectionEmissive = skyReflection.mul(gatedFresnel).mul(foamMask)
+    const sssEmissive = sssOut.scattering
+      .mul(float(1).sub(gatedFresnel))
+      .mul(foamMask)
+    const totalEmissive = reflectionEmissive.add(sssEmissive)
 
     const mat = new MeshStandardNodeMaterial()
     mat.positionNode = displacedLocal
     mat.colorNode = vec4(finalColor, float(1))
-    ;(mat as any).emissiveNode = reflectionEmissive
+    ;(mat as any).emissiveNode = totalEmissive
     mat.side = DoubleSide
     ;(mat as any).colorSpace = SRGBColorSpace
     return mat

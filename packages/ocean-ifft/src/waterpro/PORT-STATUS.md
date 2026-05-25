@@ -215,6 +215,13 @@ Our current storybook demo runs equivalent to **high** minus SSR + screen-space-
 
 In rough order of visual impact:
 
+0. **SSS per-crest "translucent wave" character.** Current SSS is a smooth view-aligned angular lobe (`pow(dot(viewDir, FROM-sun), power) × saturate(N.y) × distFade`), routed through `emissiveNode` so it bypasses PBR `NdotL × diffuseColor` attenuation. On the storybook 80m flat-ish plane this reads as a single tinted blob on the sun-facing side rather than light-through-each-crest. Three candidate fixes, in order of likely impact:
+   - **Crest height mask**: gate by `sampleWaveDisplacement(sim, fragWorldXZ).displacement.y > threshold`. SSS fires only on high points → spotty per-crest look. Easiest; doesn't require wave amplitude changes.
+   - **Per-cascade normal masks**: sample cascade-0 normal alone is degenerate at 80m × 250m scale (slopes ≈ 0 → mask ≈ 0). Cascade-1 (17m) is the right scale for the storybook plane — produces meaningful slope variation per wave body. Mask = `saturate(dot(N_cascade1, FROM-sun))` then multiply onto `sssOut.scattering`.
+   - **Bigger wave amplitudes**: raise IFFT wind / Gerstner amplitude so the combined surface normal varies enough that the existing `N.y` term naturally modulates SSS per-crest. Closer to source reference but changes the whole scene's wave feel.
+   - Source reference: WaterPro `NF.build` math is opaque (WASM) but the input list includes `waveNormal` AND `waveColumnDepth`. Suggests their masking uses near-shore depth as a gate — irrelevant for open-ocean storybook scene. The "inside the waves" character likely comes from their wave amplitude (much larger than our defaults) + the small-cascade normal variation, not from explicit per-crest gating.
+
+
 1. **Program 0 (SSR)** — screen-space reflection. Needed for scene-geometry reflections (capsule, terrain reflected on water). Requires:
    - Scene color render target (currently we only have depth)
    - Ray-marching the depth buffer in screen-space
