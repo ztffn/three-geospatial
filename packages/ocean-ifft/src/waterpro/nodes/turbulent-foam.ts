@@ -58,6 +58,14 @@ export interface TurbulentFoamParams {
   intensity: any
   /** Optional world-XZ override (vec2) for the centre sample. */
   worldXZ?: any
+  /**
+   * Optional world-position override (vec3) used by the depth-attenuation
+   * step (`abs(y) * 0.02 * depthAttenuation`). When the host's positionWorld
+   * is in ECEF (globe-scale chunks), the raw value blows up to ~6.37e6
+   * and dampens turbulent foam out of existence — pass the ocean-local
+   * position instead. Backwards-compatible: defaults to TSL positionWorld.
+   */
+  oceanPositionWorld?: any
 }
 
 export interface TurbulentFoamOutputs {
@@ -68,11 +76,12 @@ export interface TurbulentFoamOutputs {
 export function turbulentFoamNode(
   params: TurbulentFoamParams
 ): TurbulentFoamOutputs {
-  const centerXZ = params.worldXZ ?? vec2(positionWorld.x, positionWorld.z)
+  const posWorld = params.oceanPositionWorld ?? positionWorld
+  const centerXZ = params.worldXZ ?? vec2(posWorld.x, posWorld.z)
 
   // Depth-attenuated step.
   const depthFactor = float(1).add(
-    abs(positionWorld.y).mul(params.depthAttenuation).mul(float(0.02))
+    abs(posWorld.y).mul(params.depthAttenuation).mul(float(0.02))
   )
   const a = params.sampleEpsilon.mul(depthFactor)
 

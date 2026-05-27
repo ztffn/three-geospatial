@@ -49,6 +49,14 @@ export interface FresnelDistanceParams {
   normalStrength: any
   /** Fresnel exponent (Schlick-like). WaterPro default 3. */
   power: any
+  /**
+   * Optional override for the "flat" reference normal (world frame). Defaults
+   * to world-Y (0,1,0). For surfaces tangent to a globe (ECEF chunks at a
+   * specific lat/lon), pass the geocentric up direction at the ocean centre
+   * — otherwise the normal-strength mix drags the fresnel normal toward
+   * Earth's spin axis, not local up, and creates visible angle artefacts.
+   */
+  flatNormal?: any
 }
 
 export interface FresnelDistanceOutputs {
@@ -75,8 +83,13 @@ export function fresnelDistanceNode(
   const distanceToCamera = length(viewVec)
   const viewDir = params.viewDir ?? normalize(viewVec)
 
-  // Dampened normal feeding the fresnel computation.
-  const flatNormal = vec3(float(0), float(1), float(0))
+  // Dampened normal feeding the fresnel computation. The "flat" reference
+  // is local-up by default (world Y for a plane-at-origin scene). Callers
+  // whose surface lives in a rotated world frame — e.g. an ocean tangent to
+  // an ECEF sphere — must override with the actual surface-up direction or
+  // the mix produces a normal pointing the wrong way (visible as a hard
+  // diagonal seam where viewDir·fresnelNormal crosses sign).
+  const flatNormal = params.flatNormal ?? vec3(float(0), float(1), float(0))
   const fresnelNormal = normalize(
     mix(flatNormal, params.interpolatedNormal, params.normalStrength)
   )

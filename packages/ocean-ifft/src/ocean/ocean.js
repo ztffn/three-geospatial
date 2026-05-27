@@ -32,33 +32,42 @@ class OceanChunkManager extends entity.Component {
 		this.cubeCamera.layers.set( 2 );
 
 
-		const oceanDatas = {
-			...params,
-			lodScale: this.params_.waveGenerator.lodScale,
-			cascades: this.params_.waveGenerator.cascades,
-			// waveLengths is constructed in OceanMaterial from cascades, not needed here
-			foamStrength: this.params_.waveGenerator.foamStrength,
-			foamThreshold: this.params_.waveGenerator.foamThreshold,
-			ifftResolution: this.params_.waveGenerator.size,
-			depthTexture: this.params_.depthTexture || null,
-			viewportSize: this.params_.viewportSize || new THREE.Vector2(1, 1),
-			mySampler: this.params_.mySampler || null,
-			environment: this.cubeRenderTarget.texture,
-			sunPosition: this.sun
+		// Optional material override: callers can supply a pre-built chunk
+		// material (e.g. the WaterPro TSL composition from
+		// storybook-webgpu/src/ocean/buildWaterproChunkMaterial). When absent
+		// we fall back to the legacy OceanMaterial path that drives the
+		// existing localhost:5173 demo — backwards-compatible.
+		if ( params.material != null ) {
+			this.material_ = params.material;
+		} else {
+			const oceanDatas = {
+				...params,
+				lodScale: this.params_.waveGenerator.lodScale,
+				cascades: this.params_.waveGenerator.cascades,
+				// waveLengths is constructed in OceanMaterial from cascades, not needed here
+				foamStrength: this.params_.waveGenerator.foamStrength,
+				foamThreshold: this.params_.waveGenerator.foamThreshold,
+				ifftResolution: this.params_.waveGenerator.size,
+				depthTexture: this.params_.depthTexture || null,
+				viewportSize: this.params_.viewportSize || new THREE.Vector2(1, 1),
+				mySampler: this.params_.mySampler || null,
+				environment: this.cubeRenderTarget.texture,
+				sunPosition: this.sun
+			}
+
+			this.material_ = new OceanMaterial( oceanDatas ).oceanMaterial;
 		}
-			
-		this.material_ = new OceanMaterial( oceanDatas ).oceanMaterial;
-		//this.material_ = new THREE.MeshBasicNodeMaterial();
-		//this.material_.colorNode = vec4(1, 0, 0, 1);
 
 		this.InitOcean( params );
 
 
+		// Optional quadtree overrides — callers can shrink lod_layers for
+		// debugging (fewer chunks → faster compile + isolate slow paths).
 		this.quadTree = new quadtree.Root( {
-			size: ocean_constants.OCEAN_SIZE,
-			min_lod_radius: ocean_constants.QT_OCEAN_MIN_LOD_RADIUS,
-			lod_layers: ocean_constants.QT_OCEAN_MIN_NUM_LAYERS,
-			min_node_size: ocean_constants.QT_OCEAN_MIN_CELL_SIZE,
+			size: params.oceanSize ?? ocean_constants.OCEAN_SIZE,
+			min_lod_radius: params.minLodRadius ?? ocean_constants.QT_OCEAN_MIN_LOD_RADIUS,
+			lod_layers: params.numLayers ?? ocean_constants.QT_OCEAN_MIN_NUM_LAYERS,
+			min_node_size: params.minNodeSize ?? ocean_constants.QT_OCEAN_MIN_CELL_SIZE,
 		} );
 
 	}
@@ -183,7 +192,12 @@ class OceanChunkManager extends entity.Component {
 		// The TSL contact-foam path uses three/tsl built-ins (cameraNear/cameraFar/
 		// screenUV/positionView) which read from the renderer's active camera, so
 		// no per-frame uniform updates are needed for the depth-based foam.
-		this.material_.positionNode.parameters.cameraPosition.value = relativeCameraPosition;
+		// Materials that don't expose a wgslFn-style positionNode (e.g. plain
+		// MeshBasicNodeMaterial used for diagnostics) skip this update.
+		const positionParams = this.material_.positionNode?.parameters;
+		if ( positionParams?.cameraPosition != null ) {
+			positionParams.cameraPosition.value = relativeCameraPosition;
+		}
 
 	}//end Update
 

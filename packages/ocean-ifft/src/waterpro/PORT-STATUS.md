@@ -215,6 +215,50 @@ Our current storybook demo runs equivalent to **high** minus SSR + screen-space-
 
 In rough order of visual impact:
 
+-2. **Globe-scale WaterPro story — atmosphere + 3D-tiles terrain + tiled WaterPro ocean.** The existing `examples/ocean-ifft-demo/` (localhost:5173) renders the full globe scene via `packages/ocean-ifft/components/GlobeOceanProto.tsx`. Its ocean is a quadtree clipmap that samples the **legacy** JS wave system (`src/waves/wave-generator.js` + `src/ocean/ocean-material.js`), not the WaterPro TSL nodes we built. Goal: a new Storybook story `GlobeWaterproOcean-Story.tsx` that runs the same scene but replaces the ocean material with the WaterPro composition (water color, sparkle, SSS, fresnel, sky reflection, foam) — atmosphere-driven, 1:1 with the WaterproAtmosphere flat-plane story but rendered through the chunk clipmap.
+
+   **Scene currently composed in `GlobeOceanProto.tsx`.**
+   - `AtmosphereContextNode` driving sun direction, sky environment, aerial perspective, lens flare, AgX tonemap (matches our WaterproAtmosphere story).
+   - `TilesRenderer` (3D Tiles Cesium Ion) for terrain — `globalTerrainAssetId = 1`, plugin chain `CesiumIonAuthPlugin → TileMaterialReplacementPlugin`.
+   - `OceanChunks` (components/OceanChunks.tsx) → `OceanChunkManager` (src/ocean/ocean.js) → quadtree tiling around the camera. Constants: `OCEAN_SIZE = 500 km`, `QT_OCEAN_MIN_CELL_SIZE = 500 m`, `QT_OCEAN_MIN_NUM_LAYERS = 15`, `QT_OCEAN_MIN_CELL_RESOLUTION = 36`. Each chunk is a triangle-strip patch with vertex-morphing at LOD boundaries.
+   - Depth pre-pass into a `RGBA FloatType` render target (NOT HalfFloat — at `cameraFar = 1e8` half-float precision collapses; documented in PORT-STATUS footguns).
+   - Chunk material = `ocean-material.js` `OceanMaterial`, which:
+     - `positionNode = vertexStageWGSL(...)` — a WGSL vertex stage that does (a) LOD-boundary morphing using the `position/vindex/width/lod` attributes the chunk builder writes, (b) samples the 3 cascade displacement textures from the LEGACY `WaveGenerator`, (c) emits `vDisplacedPosition` and `vCascadeScales` varyings.
+     - `colorNode = fragmentStageWGSL(...)` — WGSL fragment stage doing the legacy water shading (NOT the WaterPro TSL nodes).
+     - Plus a single shoreline-foam node bolted on at the end via TSL `mix(colorWGSL, contactFoamColor, strength)` — the only WaterPro node currently reaching the globe demo.
+
+   **What needs to change.**
+   - Stand up a parallel chunk material that uses the WaterPro TSL nodes (water-color, sparkle, sub-surface-scattering, fresnel-distance, surface-foam, wave-foam, turbulent-foam, combine-foam, plus the live atmosphere reflection emissive path) instead of the WGSL `fragmentStageWGSL` and the legacy cascade WGSL composition.
+   - Source the cascade displacement / derivative / jacobian textures from our `WaveSimulation` (`packages/ocean-ifft/src/waterpro/waves/wave-simulation.ts`) — same RGBA HalfFloat + R32Float texture shape, just a different class.
+   - Preserve the **LOD-morphing vertex stage**. The chunk builder emits the position/vindex/width/lod attributes specifically so the WGSL vertex stage can interpolate between LOD-level vertex positions at boundaries; bypassing that produces visible chunk seams. Easiest path: keep the existing `vertexStageWGSL` and patch its cascade texture bindings (`buildCascadeUniforms` in ocean-material.js line 19) to point at our `WaveSimulation.cascades[i]` instead of `params.cascades[i]` from the legacy `WaveGenerator`. The cascade shape matches; the bindings are the same uniform names.
+   - Re-issue the depth pre-pass to keep shoreline-foam working at globe scale.
+
+   **Two main risks / unknowns.**
+   1. **Cascade count.** The legacy globe path is hard-coded for 3 cascades (lines 21–37 of ocean-material.js: `cascades[0..2]`). Our `WaveSimulation` defaults to 3 cascades `[250, 17, 5]` (Phase A was reverted). If we ever move to the 2-cascade WaterPro preset schema, the vertex stage WGSL also needs to be updated. For this story, stay on 3 cascades.
+   2. **Atmosphere cube vs static cube for reflection.** WaterproAtmosphere uses a HDR atmosphere cube for live sky reflection via `emissiveNode`. The globe scene also has atmosphere; reuse that path. Already documented in PORT-STATUS §10–11 (HDR cube must NOT route through `colorNode`, only `emissiveNode`).
+
+   **Phased plan.**
+
+   *Phase G-A — read-only scaffold.* Stand up the new story without touching any package code. Copy `GlobeOceanProto.tsx` patterns into `storybook-webgpu/src/ocean/GlobeWaterproOcean-Story.tsx`, mounting the same `TilesRenderer + AtmosphereContextNode + AtmosphereLight + post-processing` chain. Ocean is **legacy** material at this stage (just to prove the scaffold renders). Ends with a story that visually matches localhost:5173 in Storybook.
+
+   *Phase G-B — Waterpro material adapter.* Author a new `buildWaterproChunkMaterial(...)` factory inside `storybook-webgpu/src/ocean/` (or in `packages/ocean-ifft/src/waterpro/` if reusable elsewhere) that:
+   - Constructs a `MeshStandardNodeMaterial` with the chunk vertex stage as `positionNode` (reuse `vertexStageWGSL` from ocean-material.js but pass our `WaveSimulation.cascades` into `buildCascadeUniforms`-equivalent bindings).
+   - Composes the WaterPro TSL fragment graph (water-color → SSS → sparkle → foam → reflection emissive) using `sampleWaveDisplacement` / `sampleWaveNormal` against the same `WaveSimulation`. World-XZ comes from the `vDisplacedPosition` varying, not from the raw plane attribute — same trick the WaterproAtmosphere story already uses.
+   - Routes sky reflection through `emissiveNode` against the **static sRGB cubemap** (NOT the atmosphere HDR cube — PORT-STATUS §10).
+
+   *Phase G-C — wire it into the chunk system.* Replace `OceanChunks`' material assignment with the new factory. `OceanChunkManager.CreateOceanChunk` passes a `material` param into `OceanChunk.Init`; the factory just supplies that. No changes to the chunk builder, quadtree, or LOD morphing math.
+
+   *Phase G-D — depth pre-pass + atmosphere reflection.* The chunk material needs the depth pre-pass texture for shoreline-foam (mirrors the legacy hook in `OceanChunks.tsx:53–69`). Atmosphere context comes from the same `AtmosphereContextNode` instance the post-processing chain already owns; sun direction propagates through it.
+
+   *Phase G-E — controls + presets.* Mirror WaterproAtmosphere's slider set + preset selector. Atmosphere fog distance is much larger here (aerial-perspective handles distance fade at globe scale; in-shader `fadeStart/End` should be set to disable).
+
+   **Constraints.**
+   - Do not modify `GlobeOceanProto.tsx`, `OceanChunks.tsx`, or `ocean-material.js` — those drive the existing localhost:5173 scene and must keep working. New story = new files in `storybook-webgpu/src/ocean/` only.
+   - Stay PR-able to upstream takram: ocean code that needs to live in the package goes under `packages/ocean-ifft/src/waterpro/`; storybook-only adapter code stays in `storybook-webgpu/`.
+   - The legacy `WaveGenerator` (JS) and our `WaveSimulation` (TS) cannot both run simultaneously in the same Canvas at full quality — they each own their own IFFT compute. For the new story, instantiate ONLY our `WaveSimulation`.
+
+
+
 -1. **Wave system schema rewrite for 1:1 preset compatibility.** Highest priority — gates everything below it because the visible "rolling wave body" character the user is chasing comes from the preset schema, not the source `FIRST_WAVE_DATASET` defaults.
 
    **The discovery.** `tools/waterpro-decoder/extracted-presets.json` shows the live app uses a *different* schema than `src/waves/wave-constants.js`. The `arctic` preset's `waves` block:

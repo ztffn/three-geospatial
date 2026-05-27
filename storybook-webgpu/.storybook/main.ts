@@ -31,6 +31,11 @@ const config: StorybookConfig = {
   viteFinal: config =>
     mergeConfig(config, {
       plugins: [react(), nxViteTsPaths()],
+      // Load .env from repo root (where STORYBOOK_ION_API_TOKEN /
+      // STORYBOOK_GOOGLE_MAP_API_KEY live). Without this, Vite's default
+      // envDir is the storybook-webgpu/ cwd and root env vars never reach
+      // import.meta.env — every tile story 401s on Cesium Ion / Google.
+      envDir: repoRoot,
       worker: {
         plugins: () => [nxViteTsPaths()]
       },
