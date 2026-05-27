@@ -152,6 +152,165 @@ File: `packages/ocean-ifft/components/GlobeOceanProto.tsx`
 
 The full ECEF-scale ocean rendered against atmosphere + Cesium terrain. Uses the IFFT path via `OceanChunks` + `ocean-material.js`. Foam comes from the WaterPro nodes (currently only `shorelineFoamNode` is wired; remaining nodes still on the storybook-only path). The depth pre-pass in `OceanChunks.tsx` writes terrain depth to a `FloatType` render target (HalfFloat is insufficient at `cameraFar = 1e8`, see memory note `depth_pass_webgpu_gotchas.md`).
 
+### Storybook (`ocean/Globe WaterPro Ocean`)
+
+File: `storybook-webgpu/src/ocean/GlobeWaterproOcean-Story.tsx` (+ siblings).
+
+This is the chunk-scale globe story — the WaterproAtmosphere material, tiled by the IFFT chunk system, over Cesium Ion terrain + atmosphere. It is **not** a port; the fragment graph is a literal carbon copy of the close-camera plane story, factored out so both consume the same source of truth.
+
+#### Files
+
+```
+storybook-webgpu/src/ocean/
+├── GlobeWaterproOcean-Story.tsx     # The story shell (leva, camera, terrain, post-pass)
+├── GlobeWaterproOcean.stories.tsx   # Storybook registration
+├── OceanChunksWaterpro.tsx          # Chunk wiring: WaveSimulation, WGSL vertex stage,
+│                                    # uniforms bag, OceanChunkManager.Init with `material`
+├── buildWaterproOceanMaterial.ts    # Shared TSL fragment graph + uniforms bag.
+│                                    # Carbon-copy of WaterproAtmosphere-Story.tsx
+│                                    # composition; the SAME function is intended to be
+│                                    # callable from both stories (currently only chunks
+│                                    # use it; WaterproAtmosphere still has its own copy)
+└── chunkVertexStageWGSL.ts          # Storybook-local fork of the chunk WGSL vertex
+                                     # stage. Adds `fftAmplitude` + `swellScale/Strength`
+                                     # uniforms; the package WGSL is untouched so
+                                     # localhost:5173's legacy material keeps working
+```
+
+Package files modified for this story (all backwards-compatible additions):
+
+- `packages/ocean-ifft/src/ocean/ocean.js` — `OceanChunkManager.Init` now accepts optional `material`, `numLayers`, `oceanSize`, `minLodRadius`, `minNodeSize` params. When `material` is provided, the legacy `OceanMaterial` construction is skipped entirely.
+- `packages/ocean-ifft/src/waterpro/nodes/fresnel-distance.ts` — optional `flatNormal` override for the normal-strength mix (callers can pass geocentric up at the ocean centre instead of world Y).
+- `packages/ocean-ifft/src/waterpro/nodes/turbulent-foam.ts` — optional `oceanPositionWorld` override (depth-attenuation breaks at ECEF Y).
+- `storybook-webgpu/.storybook/main.ts` — `envDir: repoRoot` so root `.env` (with `STORYBOOK_ION_API_TOKEN`) loads. Pre-fix, every tile-using story 401'd on Cesium Ion.
+
+#### Frame discipline
+
+This is the single most important thing to get right at globe scale and the source of the majority of bugs we've hit. Three coordinate frames are in play:
+
+| Frame | Used for | Notes |
+|---|---|---|
+| **World (ECEF)** | viewDir, fresnel distance-to-camera, sun direction, atmosphere | `cameraPosition` (TSL built-in) is in this frame. At Tokyo, magnitudes ≈ (5.5×10⁶, 3.5×10⁶, 1×10⁶) |
+| **Ocean-local** | Cascade UV sampling, foam tile UVs, the WGSL vertex stage's `morphedPosition` | Chunk vertices are pre-baked in this frame (worker bakes the chunk's place inside the ocean group). All chunks share one continuous coordinate space, magnitudes 0–500 km |
+| **View** | `oceanDepth` for water-column-depth math | `modelViewMatrix × displacedLocal` |
+
+Mixing frames at globe scale produces hard visible artefacts:
+
+- **Cascade UV at world coords** → `worldXZ / waveLength` with worldXZ ≈ 6.37×10⁶ → float32 precision loss → adjacent fragments hash to the same UV → each chunk renders as a single solid colour
+- **viewDir = cameraPosition − vec3(x, 0, z)** → zeros surface Y; at ECEF the actual surface is at Y ≈ 6.37×10⁶, not 0 → viewDir aims at Earth's centre → `dot(viewDir, normal)` flips sign somewhere across the visible water → sharp diagonal seam in fresnel/reflection
+- **fresnelNormal flat = (0, 1, 0)** → mixes the wave normal toward Earth's spin axis, not local up → at non-equatorial latitudes, fresnel computes against a tilted reference → seam at the threshold crossing
+- **Turbulent foam `abs(positionWorld.y) × 0.02`** → 63 700× dampening at ECEF → turbulent foam invisible
+- **Surface/wave/shoreline foam UV = `positionWorld.xz / size`** → same precision-collapse as cascade UV → uniform-colour foam regardless of slider values
+- **Surface normal in ocean-local frame, reflection math in world frame** → reflection direction garbage → cube sample garbage
+
+The shared factory takes the differing inputs as named parameters; chunks supply the world-frame variants where the maths needs world, ocean-local where the maths needs to tile or sample by texel:
+
+- `fragSurfaceXZ` — ocean-local; cascade sampling, gerstner.evaluate, fresnel worldX/Z (despite the name)
+- `worldSurfaceXZ` — world; fresnel distance-to-camera
+- `worldSurfacePos` — world (vec3); viewDir
+- `oceanDepth` — view-space Z; water-column-depth
+- `oceanPositionWorld` — world (vec3); water-column-depth grazing-angle divisor
+- `tilingPosition` — ocean-local (vec3); all foam nodes' `oceanPositionWorld` override
+- `surfaceHeight` — scalar Y in ocean-local frame; tip foam
+- `surfaceNormal` is built inside the factory and rotated to world via `modelWorldMatrix × (normal, 0)` so all lighting math (fresnel, sparkle, SSS, reflection) operates in one frame
+- `worldUp = modelWorldMatrix × (0, 1, 0, 0)` is also computed inside the factory and passed as fresnel's `flatNormal`, AND used for the sun-elevation `dot(sun, up)` (so the warm/cool sparkle gradient tracks geocentric up, not world Y)
+
+For the WaterproAtmosphere plane at origin every one of these collapses to the legacy behaviour: `modelWorldMatrix` is identity, world coords = local coords, fragSurfaceXZ = worldSurfaceXZ, worldUp = (0,1,0). The chunk-specific extra parameters are all optional and defaulted.
+
+#### Sampling stability — vMorphedPosition vs vDisplacedPosition
+
+The WGSL vertex stage produces two varyings:
+- `vMorphedPosition` — the static, pre-displacement ocean-local grid position (the vertex's UV-coord position before adding cascade/Gerstner)
+- `vDisplacedPosition` — `morphedPosition + cascade displacement + gerstner`. Animates each frame as waves move
+
+Use them for different things:
+- `vDisplacedPosition.y` → actual rendered wave height → drives tip-foam height threshold
+- `(modelViewMatrix · vDisplaced).z.negate()` → `oceanDepth` → drives water-column-depth
+- `(modelWorldMatrix · vDisplaced).xyz` → world surface position → viewDir, fresnel distance
+- `vMorphedPosition.xz` → cascade fragment sampling + foam tile UVs
+
+The last one is non-obvious and was a real bug: sampling cascade derivatives/foam noise at `vDisplaced.xz` couples the UV to wave displacement. The IFFT's lambda chop shifts X/Z by ± metres every frame, so the noise sample drifts → foam patches and wave detail appear to swim across the surface. The vertex stage itself samples cascades at `morphedPosition.xz`; fragments must match.
+
+#### Per-frame data flow
+
+```
+priority 0: OceanChunksWaterpro.useFrame
+            ├── waveSim.update(dt, t)              # IFFT compute pipeline, all 3 cascades
+            ├── vertexUniforms.time = t
+            ├── vertexUniforms.gerstnerTime = t
+            ├── vertexUniforms.cameraPositionUniform = camera.world
+            │   (ocean.js Update_ later overwrites with the ocean-local-frame camera)
+            ├── matrixECEFToWorld = (atmosphere.matrixWorldToECEF)⁻¹
+            ├── worldSun = transformDirection(sunDirectionECEF, matrixECEFToWorld)
+            ├── sunDirUniform.value = worldSun
+            ├── sunDirLightUniform.value = worldSun.negate()
+            └── OceanChunkManager.Update_(dt × 1000)
+                ├── cubeCamera.update (legacy artefact; layer 2 — nothing renders to it)
+                ├── builder_.Update (web-worker chunk geometry build)
+                ├── UpdateVisibleChunks_Quadtree_ → may CreateOceanChunk(...)
+                └── material.positionNode.parameters.cameraPosition.value =
+                    sceneLocalCameraPos    # OVERWRITES our world-frame seed with the
+                                           # ocean-local camera — what the WGSL vertex
+                                           # stage actually wants for LOD morph
+
+priority 0.5: OceanChunksWaterpro depth pre-pass (current bug: see Footguns below)
+              defaultScene.traverse → swap mesh.material → render → restore.
+              Currently default-OFF (skipDepthPrepass=true) because it corrupts
+              renderer state in this storybook setup. Shoreline foam doesn't work
+              while disabled.
+
+priority 1:   Content useFrame
+              ├── camera.updateMatrixWorld
+              ├── sun/moon ECI → ECEF computed into atmosphereContext
+              ├── postProcessing.render()
+              │   (priority>0 also suppresses R3F's auto-render at priority 0)
+```
+
+#### Footguns / things to look out for
+
+1. **Depth pre-pass corrupts the renderer.** The exact same depth-pre-pass code that works in `packages/ocean-ifft/components/OceanChunks.tsx` on localhost:5173 puts the WebGPU device into an error state when run in this storybook context — once enabled, the canvas goes black and stays black across all subsequent renders until page reload. The story defaults `skipDepthPrepass = true` and sets `uniforms.depthTextureEnabled = 0` so the WaterPro graph treats every fragment as open water. Cause is unknown; suspect interaction between `renderer.render(scene, camera)` inside `useFrame` and storybook's PostProcessing wrapping, but the legacy storybook tile stories don't hit it. **Disabling the pre-pass means shoreline foam doesn't work.**
+
+2. **Preset state leakage.** `applyWaterproPreset` writes to many uniforms (transmissionColor, foam colours, foam sizes, waveFoam wind weights, fade ranges, etc.) that have *no story slider*. Without a defaults snapshot, switching preset → custom (or preset A → preset B) leaves those uniforms at the last preset's values. The story snapshots the bag on first mount (`defaultsSnapshotRef`) and restores it before every preset change, including `custom` (which then = pure factory defaults + whatever sliders the user has touched).
+
+3. **TSL UniformNode TS typings are incomplete.** `UniformNode<number>.add(...)`, `.mul(...)`, `.sub(...)` work at runtime but TS doesn't see them. Cast through `any` when needed: `(u.fadeStart as any).add(u.fadeEnd)`. The handover called this out as pre-existing TSL noise — ignore the warnings, runtime is fine.
+
+4. **`onReady` must be stable.** The story's inline `onReady={({...}) => {...}}` recreates a new function identity every render. If `onReady` is listed as a useEffect dep inside OceanChunksWaterpro, the init effect tears down and rebuilds the OceanChunkManager (with chunks, geometries, materials, GPU buffers) every frame → exponential GPU resource leak → Chrome freezes. OceanChunksWaterpro stabilises it via `onReadyRef`. **If you add new state to the chunk wiring, do the same.**
+
+5. **Forked WGSL vs package WGSL.** The chunk story uses `chunkVertexStageWGSL.ts` (storybook-local) which has TWO extra params on top of the package's `vertexStageWGSL.js`: `fftAmplitude` (scales the cascade displacement) and `swellScale`/`swellStrength` (large-scale per-position amplitude modulation). The package version is intentionally untouched so localhost:5173's legacy ocean-material.js keeps compiling. If you add features that need WGSL changes, add them to the fork; don't touch the package WGSL unless you're also updating ocean-material.js's caller.
+
+6. **OceanChunkManager.Update_ overwrites `cameraPosition`.** `ocean.js:Update_` writes `this.material_.positionNode.parameters.cameraPosition.value = relativeCameraPosition` every frame — the local-space (`scene.worldToLocal`'d) camera. The WGSL vertex stage's LOD morph needs this. Our story's per-frame `vertexUniforms.cameraPositionUniform.value = cameraPos.world` is just the initial seed before ocean.js runs; the actual binding ends up in ocean-local frame. **Don't write a world-frame camera and expect it to stick.** If a fragment-side calculation needs world camera, use TSL's `cameraPosition` built-in directly.
+
+7. **Static cubemap vs atmosphere cube.** The depth-demo and the chunk story diverged here for a session: depth demo uses the static sRGB JPG cubemap (LDR ~0..1) because the WaterPro mix math is calibrated for that range. The atmosphere story and the chunk story use the live atmosphere HDR cube with an exponential tonemap `(1 − exp(−x·exposure))` to compress into [0, 1). Don't swap one for the other — sampling the HDR cube without the tonemap blows the reflection out to flat white. PORT-STATUS §10 has the deeper version of this.
+
+8. **Cascade count is hard-baked at 3.** The WGSL vertex stage has `displacement0/1/2` as named bindings; both the package version and the fork. The shared factory throws if `waveSim.cascades.length < 3`. Item −1 in this doc (two-cascade preset schema) requires the WGSL signatures to change too.
+
+9. **Storybook env loading.** `.env` lives at the repo root. `nx storybook-webgpu` runs Vite with cwd = `storybook-webgpu/`, so without `envDir: repoRoot` in the storybook config the root `.env` is invisible. Symptom: every Cesium-Ion tile story 401s, every Google-Maps tile story fails the same way. Fix is in `storybook-webgpu/.storybook/main.ts` (one line).
+
+10. **Frame mismatch produces straight diagonal seams.** If you see a sharp diagonal line cutting across the water and the reflection changes intensity across it, suspect a frame mismatch: viewDir, fresnelNormal flat, or surface normal in the wrong frame. The seam is where `dot(view, normal)` crosses zero. At globe scale the threshold is geometrically meaningful (the great circle perpendicular to camera-to-surface from a misaligned reference), which is why the seam is straight and dramatic.
+
+#### What's wired
+
+| Knob | Where | Wired? |
+|---|---|---|
+| Preset selector | Story → applyWaterproPreset → uniforms bag | ✓ |
+| Toggles (sky/sss/sparkle/4 foam types) | Story → `.value = bool ? 1 : 0` | ✓ |
+| fftAmplitude | Story → uniforms bag → both fragment normal scale AND chunk WGSL displacement multiplier | ✓ (forked WGSL) |
+| gerstnerAmplitude | Story → uniforms bag → fragment normals AND `gerstnerStrength` param of WGSL Gerstner sum | ✓ |
+| Sky reflection (colour/exposure/scale) | Story → uniforms bag → live envNode HDR cube + exp tonemap | ✓ |
+| Fresnel power, normal strength | Story → uniforms bag → fresnel-distance node | ✓ |
+| Sparkle intensity, focusPower | Story → uniforms bag → sparkle node | ✓ |
+| SSS intensity, power | Story → uniforms bag → SSS node | ✓ |
+| Surface foam (coverage/opacity/size + blob mask) | Story → bag → surface-foam node + factory-side blob composite | ✓ |
+| Wave foam (coverage/opacity/crestCoverage) | Story → bag → wave-foam node | ✓ |
+| Shoreline foam (band + tint sliders) | Story → bag → two shoreline-foam nodes | Strength depends on depth pre-pass; broken while pre-pass disabled |
+| Turbulent foam (intensity) | Story → bag → turbulent-foam node | ✓ |
+| Water colour (shallow/deep/depthFalloff/waterDepth) | Story → bag → water-color node | ✓ |
+| Tip foam (5 sliders) | Story → bag → factory-side height-driven layer | ✓ |
+| Swell variance (strength/scale) | Story → vertexUniforms (separate from shared bag) → WGSL fork | ✓ |
+| `lodScale` | OceanChunksWaterpro internal default 1.0 | Not exposed (no slider) |
+| Gerstner per-wave params (wave0/1/2 direction/wavelength/amplitude, steepness) | OceanChunksWaterpro defaults from `DEFAULT_GERSTNER_WAVES` | Not exposed (no slider) |
+| WaveSimulation spectrum params (windSpeed, fetch, etc.) | `WaveSimulation` constructor defaults | Not exposed; affects cascade jacobian/eigen values |
+
 ## Architecture decisions
 
 1. **Programs as TSL node factories**. Each WaterPro program becomes a function returning a struct of TSL nodes (matches three.js TSL idiom). All inputs are passed as `params`, all outputs as a returned object. Callers compose programs by feeding outputs of one as inputs to another.
