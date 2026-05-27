@@ -85,6 +85,16 @@ interface OceanChunksWaterproProps {
   useDiagnosticMaterial?: boolean
   /** Debug flag: skip the linear-depth pre-pass entirely. */
   skipDepthPrepass?: boolean
+  /**
+   * Bisect debugger for the depth pre-pass — find the first stage that
+   * crashes the renderer.
+   *   0 = skip entirely (default; equivalent to skipDepthPrepass=true)
+   *   1 = setRenderTarget(target) + setRenderTarget(null) [nothing else]
+   *   2 = stage 1 + setClearColor + clear()
+   *   3 = stage 2 + render(scene, camera) with NO material swap
+   *   4 = stage 3 + material swap (current production path)
+   */
+  depthPrepassStage?: number
   onReady?: (ctx: {
     waveSim: WaveSimulation
     gerstner: GerstnerOverlay
@@ -111,6 +121,7 @@ export default function OceanChunksWaterpro({
   numLayers = 3,
   useDiagnosticMaterial = false,
   skipDepthPrepass = false,
+  depthPrepassStage = 4,
   onReady,
 }: OceanChunksWaterproProps): ReactElement | null {
   const { gl, scene: defaultScene, camera, size } = useThree()
@@ -424,9 +435,26 @@ export default function OceanChunksWaterpro({
     }
   }, [waveSim, gerstner, material, parent, camera, gl, uniforms, numLayers])
 
-  // Linear-depth pre-pass.
+  // Linear-depth pre-pass. Filter aggressively — globe-scale scene contains
+  // many TilesRenderer tile meshes (loaded async, disposed async, sometimes
+  // multi-material from glTF), and ANY mesh where the depthMaterial swap
+  // produces a pipeline mismatch crashes the WebGPU device hard (canvas
+  // goes black and stays black until reload).
+  //
+  // Skip rules (in order, cheapest checks first):
+  //   1. Not a mesh / not visible / no material            — no-op
+  //   2. Array material (multi-material)                   — swap to single
+  //      breaks geometry.groups bindings
+  //   3. Geometry has > 1 group                            — same problem
+  //   4. Fully transparent without alphaTest               — doesn't write
+  //      meaningful depth anyway
+  //
+  // Perf note: per-frame allocation of `overridden` + scene traversal +
+  // material swap is wasteful. A future polish pass should keep a
+  // pre-filtered swap list and update it on tile-load events.
   useFrame(() => {
     if (skipDepthPrepass) return
+    if (depthPrepassStage <= 0) return
     const manager = oceanManagerRef.current as unknown as
       | { group?: Object3D }
       | null
@@ -434,33 +462,117 @@ export default function OceanChunksWaterpro({
     const r = renderer as any
     if (r == null) return
 
+    // Stage 1: just touch the render target binding and restore. If this
+    // already crashes the canvas, the bug is in setRenderTarget itself
+    // (likely the FloatType RGBA format or the depth attachment config).
+    if (depthPrepassStage === 1) {
+      r.setRenderTarget(depthTarget)
+      r.setRenderTarget(null)
+      return
+    }
+
+    // Stage 2: + clearColor + clear(). Saves and restores the prior clear
+    // color so we don't leave the renderer's global state in a wrong value
+    // that breaks post-processing (post chain may rely on a specific
+    // clear-color for transparency blending). Clear color only — no stencil
+    // (depth target has no stencil attachment).
+    if (depthPrepassStage === 2) {
+      const prevClear = new Color()
+      r.getClearColor(prevClear)
+      const prevAlpha = r.getClearAlpha()
+      r.setRenderTarget(depthTarget)
+      r.setClearColor(0xffffff, 1.0)
+      r.clear(true, true, false)
+      r.setRenderTarget(null)
+      r.setClearColor(prevClear.getHex(), prevAlpha)
+      return
+    }
+
     const oceanGroup = manager.group
     const wasVisible = oceanGroup?.visible
     const prevBackground = defaultScene.background
     if (oceanGroup != null) oceanGroup.visible = false
 
-    const overridden: Array<{ mesh: Mesh; mat: Material | Material[] }> = []
-    defaultScene.traverse(obj => {
-      const mesh = obj as unknown as Mesh
-      const mat = (mesh as any).material
-      if ((obj as any).isMesh && obj.visible && mat != null) {
-        const mats = Array.isArray(mat) ? mat : [mat]
-        if (mats.every((m: any) => m.transparent && !(m.alphaTest > 0))) return
-        overridden.push({ mesh, mat })
-        mesh.material = depthMaterial as unknown as Material
+    // Stage 3: + scene render with NO material swap. Also strips
+    // environmentNode for the duration of the pre-pass — IBL samples the
+    // atmosphere HDR cube which isn't bound during a different render
+    // target, and that combo is a likely pipeline-validation crash source.
+    if (depthPrepassStage === 3) {
+      const prevClear = new Color()
+      r.getClearColor(prevClear)
+      const prevAlpha = r.getClearAlpha()
+      const prevEnv = (defaultScene as any).environmentNode
+      ;(defaultScene as any).environmentNode = null
+      try {
+        defaultScene.background = null
+        r.setRenderTarget(depthTarget)
+        r.setClearColor(0xffffff, 1.0)
+        r.clear(true, true, false)
+        r.render(defaultScene, camera)
+      } finally {
+        r.setRenderTarget(null)
+        r.setClearColor(prevClear.getHex(), prevAlpha)
+        defaultScene.background = prevBackground
+        ;(defaultScene as any).environmentNode = prevEnv
+        if (oceanGroup != null && wasVisible !== undefined)
+          oceanGroup.visible = wasVisible
       }
+      return
+    }
+
+    const overridden: Array<{ mesh: Mesh; mat: Material }> = []
+    defaultScene.traverse(obj => {
+      if (!(obj as any).isMesh) return
+      if (!obj.visible) return
+      // scene.traverse() ignores visibility for iteration — children of a
+      // hidden group still show up. Walk the parent chain so we don't
+      // material-swap meshes inside an ancestor that's been hidden (e.g.
+      // ocean chunks under the just-hidden oceanGroup). The chunk meshes
+      // have Int32 attributes (vindex, lod) — assigning depthMaterial to
+      // them triggers a pipeline-compile mismatch that crashes WebGPU.
+      let p = obj.parent
+      while (p != null) {
+        if (!p.visible) return
+        p = p.parent
+      }
+      const mesh = obj as Mesh
+      const mat = (mesh as any).material
+      if (mat == null) return
+      // Multi-material assignment via array breaks when we replace with a
+      // single material — the geometry groups still expect N materials.
+      if (Array.isArray(mat)) return
+      // Same for geometry-side multi-material (groups define triangle
+      // ranges mapped to material slots).
+      const geom = (mesh as any).geometry
+      if (geom?.groups != null && geom.groups.length > 1) return
+      // Pure-transparent surfaces don't write meaningful depth.
+      if (mat.transparent && !(mat.alphaTest > 0)) return
+      overridden.push({ mesh, mat: mat as Material })
+      mesh.material = depthMaterial as unknown as Material
     })
+
+    // Strip environmentNode (atmosphere HDR cube IBL) for the duration of
+    // the pre-pass. Tile materials reference it for IBL; rendering them to
+    // a different render target while the env reference is live triggers
+    // a WebGPU pipeline-validation crash that takes the device down hard.
+    // The post-pass restores env on the next normal-pass render.
+    const prevClear = new Color()
+    r.getClearColor(prevClear)
+    const prevAlpha = r.getClearAlpha()
+    const prevEnv = (defaultScene as any).environmentNode
+    ;(defaultScene as any).environmentNode = null
 
     try {
       defaultScene.background = null
       r.setRenderTarget(depthTarget)
       r.setClearColor(0xffffff, 1.0)
-      r.clear()
+      r.clear(true, true, false)
       r.render(defaultScene, camera)
     } finally {
       r.setRenderTarget(null)
-      r.setClearColor(0x000000, 1.0)
+      r.setClearColor(prevClear.getHex(), prevAlpha)
       defaultScene.background = prevBackground
+      ;(defaultScene as any).environmentNode = prevEnv
       overridden.forEach(({ mesh, mat }) => {
         mesh.material = mat
       })

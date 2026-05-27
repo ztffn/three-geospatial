@@ -252,6 +252,7 @@ const OceanSurface: FC<{
   numLayers: number
   useDiagnosticMaterial: boolean
   skipDepthPrepass: boolean
+  depthPrepassStage: number
 }> = ({
   target,
   atmosphereContext,
@@ -264,6 +265,7 @@ const OceanSurface: FC<{
   numLayers,
   useDiagnosticMaterial,
   skipDepthPrepass,
+  depthPrepassStage,
 }) => {
   const [oceanParent, setOceanParent] = useState<THREE.Group | null>(null)
   const handleOceanParent = useCallback((group: THREE.Group | null) => {
@@ -303,6 +305,7 @@ const OceanSurface: FC<{
           numLayers={numLayers}
           useDiagnosticMaterial={useDiagnosticMaterial}
           skipDepthPrepass={skipDepthPrepass}
+          depthPrepassStage={depthPrepassStage}
           onReady={({ uniforms, vertexUniforms, oceanManager }) => {
             onUniformsReady(uniforms)
             onVertexUniformsReady(vertexUniforms)
@@ -606,13 +609,17 @@ const Content: FC = () => {
       label: 'Diagnostic material (flat blue)',
     },
     skipDepthPrepass: {
-      // Default ON for now — the pre-pass is corrupting renderer state in
-      // storybook (cause TBD; legacy OceanChunks pre-pass works fine in
-      // localhost:5173, so the issue is specific to this wiring). Skipping
-      // it disables shoreline foam / water-column depth but keeps the rest
-      // of the WaterPro composition working.
-      value: true,
+      // Default OFF — the pre-pass works as of the envNode-strip fix.
+      // Flip on as a fallback if a future regression breaks it.
+      value: false,
       label: 'Skip depth pre-pass',
+    },
+    depthPrepassStage: {
+      value: 4,
+      min: 1,
+      max: 4,
+      step: 1,
+      label: 'Pre-pass stage (1-4)',
     },
   })
 
@@ -1004,6 +1011,7 @@ const Content: FC = () => {
           numLayers={oceanDebugParams.numLayers}
           useDiagnosticMaterial={oceanDebugParams.useDiagnosticMaterial}
           skipDepthPrepass={oceanDebugParams.skipDepthPrepass}
+          depthPrepassStage={oceanDebugParams.depthPrepassStage}
           onUniformsReady={setOceanUniforms}
           onVertexUniformsReady={setVertexUniforms}
           onOceanManagerReady={setOceanManager}

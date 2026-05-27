@@ -268,7 +268,30 @@ priority 1:   Content useFrame
 
 #### Footguns / things to look out for
 
-1. **Depth pre-pass corrupts the renderer.** The exact same depth-pre-pass code that works in `packages/ocean-ifft/components/OceanChunks.tsx` on localhost:5173 puts the WebGPU device into an error state when run in this storybook context — once enabled, the canvas goes black and stays black across all subsequent renders until page reload. The story defaults `skipDepthPrepass = true` and sets `uniforms.depthTextureEnabled = 0` so the WaterPro graph treats every fragment as open water. Cause is unknown; suspect interaction between `renderer.render(scene, camera)` inside `useFrame` and storybook's PostProcessing wrapping, but the legacy storybook tile stories don't hit it. **Disabling the pre-pass means shoreline foam doesn't work.**
+1. **Depth pre-pass — RESOLVED** (and the diagnostic story is useful to keep in mind).
+
+   Symptom: enabling the pre-pass turned the canvas black persistently until reload. Same code worked in localhost:5173.
+
+   Diagnosis came from a stage-bisect knob (`depthPrepassStage` in OceanChunksWaterpro, kept in the code for future use):
+   - Stage 1 (`setRenderTarget` only) — OK
+   - Stage 2 (+ `clear()`) — initially crashed, fixed by saving/restoring the renderer's clear color and passing `clear(true, true, false)` (depth target has no stencil)
+   - Stage 3 (+ scene render, no material swap) — initially crashed; root cause was `scene.environmentNode` (the atmosphere HDR sky cube IBL) referenced by tile materials. Rendering those materials to a different render target while the env reference is live triggers a pipeline-validation crash in WebGPU
+   - Stage 4 (+ material swap) — works once stage 3's fix is in
+
+   Fix: the pre-pass now wraps the render call with `scene.environmentNode = null` / restore, and uses the proper clear-state save/restore from the legacy `OceanChunks.tsx`. shoreline foam, water-column-depth, and `isObjectInFront` all work.
+
+   Filters kept as defensive code (still correct, even if not the smoking gun):
+   - Skip multi-material meshes (`Array.isArray(mat)`)
+   - Skip multi-group geometries (`geom.groups.length > 1`)
+   - Skip pure-transparent surfaces
+   - Skip meshes whose ancestor chain has any `visible = false` (parent walk — keeps the hidden ocean chunks out of the swap loop)
+
+   Cost: roughly doubles the visible-mesh draw-call count per frame (one extra simple-shader pass over terrain + capsule). Sluggish at globe scale with many tiles. Polish ideas:
+   - Cache the swap list, refresh only on tile-load / tile-dispose events
+   - Half-resolution depth target (shoreline foam doesn't need pixel-perfect depth)
+   - `renderer.compileAsync(scene, camera)` on tile-load to avoid the first-frame compile hitch
+
+   Lesson for anyone touching the pre-pass: ALWAYS strip `scene.environmentNode` for the duration. Restoring matters too — leaving it null even briefly causes IBL flicker on PBR materials.
 
 2. **Preset state leakage.** `applyWaterproPreset` writes to many uniforms (transmissionColor, foam colours, foam sizes, waveFoam wind weights, fade ranges, etc.) that have *no story slider*. Without a defaults snapshot, switching preset → custom (or preset A → preset B) leaves those uniforms at the last preset's values. The story snapshots the bag on first mount (`defaultsSnapshotRef`) and restores it before every preset change, including `custom` (which then = pure factory defaults + whatever sliders the user has touched).
 
