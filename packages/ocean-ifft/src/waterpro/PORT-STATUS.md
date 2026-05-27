@@ -152,6 +152,78 @@ File: `packages/ocean-ifft/components/GlobeOceanProto.tsx`
 
 The full ECEF-scale ocean rendered against atmosphere + Cesium terrain. Uses the IFFT path via `OceanChunks` + `ocean-material.js`. Foam comes from the WaterPro nodes (currently only `shorelineFoamNode` is wired; remaining nodes still on the storybook-only path). The depth pre-pass in `OceanChunks.tsx` writes terrain depth to a `FloatType` render target (HalfFloat is insufficient at `cameraFar = 1e8`, see memory note `depth_pass_webgpu_gotchas.md`).
 
+### Standalone deploy (`examples/ocean-globe-waterpro-demo/`)
+
+Public-facing build of the Globe WaterPro Ocean scene with no Storybook chrome — fullscreen Canvas, single React tree. Mounts the SAME `Content` exported by `GlobeWaterproOcean-Story.tsx` so the scene is bit-identical to the Storybook story. The standalone layer wraps it in:
+
+1. A two-phase state-based loader (atmosphere first, then ocean) — see below.
+2. A `requestIdleCallback` shim that forces atmosphere LUT compute progress on busy frames.
+3. A Vite plugin that hardens the IFFT chunk-builder worker for production builds — done WITHOUT modifying any file under `packages/ocean-ifft/` (PR upstream stays clean).
+
+Deploys to https://globe-waterpro-ocean.netlify.app via `netlify deploy --build --prod`. The Cesium Ion token is set in Netlify UI (`netlify env:set STORYBOOK_ION_API_TOKEN ...`), MUST be domain-restricted to the deploy URL + scoped to asset IDs `2275207` and `2767062`.
+
+#### Files
+
+```
+examples/ocean-globe-waterpro-demo/
+├── index.html         # fullscreen canvas host + WebGPU-unsupported fallback
+├── main.tsx           # requestIdleCallback shim, Canvas, phased loader, readiness probe
+├── tsconfig.json
+└── vite.config.ts     # aliases, conditional envDir, static-dirs, worker hardening, secret-guard
+netlify.toml           # repo-root deploy config; NETLIFY=true + ALLOW_BAKED_BROWSER_TOKENS=1
+```
+
+Two minimal additive hooks were added to `storybook-webgpu/src/ocean/GlobeWaterproOcean-Story.tsx` so the standalone can drive readiness without forking the story:
+
+- `Content` exported (was internal).
+- `Content` accepts two optional props that default to a no-op so Storybook continues working unchanged:
+  - `onReadinessRefs(refs)` — fires once with `{ atmosphereContext, getOceanManager }` so the host page can poll subsystem state.
+  - `disableOcean` — when true, the `OceanSurface` subtree is NOT mounted (atmosphere + terrain only). Used by the phased loader.
+
+#### Phased loader (state-based, no timers)
+
+The atmosphere LUT compute pipeline and the ocean chunk-builder pool both fight for GPU + main-thread time at startup. Mounting them simultaneously produced a hard race in production builds where neither would settle:
+
+- Consistent rAF violations of 100–300 ms starve `requestIdleCallback`, which the atmosphere LUT scheduler in `packages/atmosphere/src/webgpu/AtmosphereLUTNode.ts` (`timeSlice`) relies on. The `requestIdleCallback` shim in `main.tsx` partially mitigates this by forcing each idle slice onto a macrotask, but compute time is still finite.
+- The IFFT wave simulation hammers compute pipelines and the chunk-builder boots 7 module workers, each pulling three/webgpu into the worker bundle.
+
+Symptoms when racing: black sky, half-built ocean, or both — varying per reload (the "three reloads to get a clean load" failure mode).
+
+Solution: load in stages, advance only on real subsystem state.
+
+| Phase | What's mounted | Probe condition |
+|---|---|---|
+| `atmosphere` | Atmosphere + terrain; `disableOcean=true` keeps OceanSurface out of the React tree | `atmosphereContext.lutNode.currentVersion != null && lutNode.updating === false` |
+| `ocean` | `disableOcean=false` flips OceanSurface in. Workers boot, chunks queue + build. | `oceanManager.builder_.Busy === false && Object.keys(oceanManager.chunks_).length > 0` |
+| `ready` | Both phases reported. No further state changes. | — |
+
+The probe (`ReadinessProbe` in `main.tsx`) runs inside the Canvas (so it has access to the R3F frame loop via `requestAnimationFrame`), polls the relevant flags every frame in the active phase only, and reports via `onAtmosphereReady` / `onOceanReady` callbacks. `console.log [ready] atmosphere LUTs computed in Xms` and `console.log [ready] ocean chunks built in Yms` mark the transitions for production debugging.
+
+**Deliberately no safety-net timer.** If a phase stalls, the scene visibly stops at that point and the timing logs show where. Adding a fallback `setTimeout` that force-advances the phase would mask regressions — exactly the failure mode this loader exists to replace. A previous iteration that did this (4-second fixed hold, no probe) shipped flaky scenes; see memory note `feedback_no_timer_based_loading.md`.
+
+Currently the load process is visible to the user (no overlay) so any regression in either phase is immediately diagnosable. A splash overlay can be added on top of the phase state without changing the orchestration — fade out when `phase === 'ready'`.
+
+#### Worker hardening (build-time, ifft sources untouched)
+
+The IFFT chunk-builder at `packages/ocean-ifft/src/ocean/ocean-builder-threaded.js` constructs workers via `new Worker(url, { type: 'module' })` where `url` is `new URL('./ocean-builder-threaded-worker.js', import.meta.url)`, passed through `WorkerThreadPool` → `WorkerThread` constructor indirection. Vite's static analyzer recognizes the bundle-this-worker pattern ONLY when `new Worker(new URL(...), ...)` is directly inline; through the pool indirection it never bundles the worker's deps. Result without intervention: the emitted worker file ships a literal `import * as THREE from 'three/webgpu'` that the browser can't resolve in production (SPA fallback HTML returns for the bare specifier) and the worker dies silently on load. The chunk-builder pool then sits with all 7 worker slots permanently "busy" — no chunks ever build — and the user sees blank water.
+
+The standalone demo's `ifftWorkerHardeningPlugin` in `examples/ocean-globe-waterpro-demo/vite.config.ts` patches this at build time, with the ifft source files untouched:
+
+1. **`ocean-builder-threaded.js`** — prepend an `import __OCEAN_BUILDER_WORKER_URL__ from './ocean-builder-threaded-worker.js?worker&url'` and replace the inline `new URL(...)` with a reference to that import. Combined with `worker.format: 'es'` in the Vite config, the bundled worker is an ES module with `three/webgpu` inlined.
+2. **`ocean-builder-threaded-worker.js`** — wrap the `self.onmessage` handler in `try/catch` and add an explicit `self.addEventListener('error', ...)`. Synchronous throws from inside `Init`/`Build` in the production-bundled IIFE/ES worker context don't surface to the main thread (the browser swallows them), and the pool's resolve callback never fires — slot stays permanently busy. The wrapper mirrors any exception back as a synthetic message (`{ __workerError: true, message, stack }`) so the resolve callback runs (with empty data), freeing the pool slot. `main.tsx` logs surfaced errors as `[ocean-worker:error]`.
+
+Plugin must run in BOTH `plugins` (for the main bundle's view of `ocean-builder-threaded.js`) and `worker.plugins` (for the worker sub-build's view of the worker source itself).
+
+#### Secret architecture (`netlify.toml` + secret-guard plugin)
+
+`import.meta.env.STORYBOOK_*` is inlined into the client bundle at build time — the prefix is NOT a privacy marker, it means "expose to browser". Two iterations established the current architecture:
+
+- **`envDir`** conditional in `vite.config.ts`: local dev reads root `.env` (terrain works on localhost with no extra config); Netlify build (`NETLIFY=true` set by `netlify.toml`) ignores root `.env` and sources tokens only from Netlify UI env vars.
+- **`secretGuardPlugin`** scans the emitted JS for JWT-shaped strings and aborts any local `vite build` that would inline a token. Relaxes on `NETLIFY=true` or `ALLOW_BAKED_BROWSER_TOKENS=1` because Cesium Ion tokens MUST live in the bundle by design — safety comes from provider-side domain+asset restriction.
+- The Cesium Ion token deployed must be a SEPARATE token from the developer's full-permission dev token, scoped at `ion.cesium.com/tokens` to the deploy URL + specific asset IDs.
+
+Memory: `~/.claude/projects/-Users-steffen-Projects-three-geospatial/memory/feedback_vite_env_token_leakage.md`.
+
 ### Storybook (`ocean/Globe WaterPro Ocean`)
 
 File: `storybook-webgpu/src/ocean/GlobeWaterproOcean-Story.tsx` (+ siblings).

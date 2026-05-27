@@ -330,3 +330,6 @@ vite.config.*.timestamp*
 vitest.config.*.timestamp*
 
 storybook-static
+
+# Local Netlify folder
+.netlify

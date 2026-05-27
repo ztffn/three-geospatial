@@ -6,7 +6,9 @@
   "scripts": {
     "clean": "pnpm exec rimraf --glob dist tmp **/node_modules/.cache",
     "dev": "npx vite examples/ocean-ifft-demo --host --config examples/ocean-ifft-demo/vite.config.ts",
-    "dev:ocean-ifft": "npm run dev"
+    "dev:ocean-ifft": "npm run dev",
+    "dev:globe-waterpro": "npx vite examples/ocean-globe-waterpro-demo --host --config examples/ocean-globe-waterpro-demo/vite.config.ts",
+    "build:globe-waterpro": "npx vite build --config examples/ocean-globe-waterpro-demo/vite.config.ts"
   },
   "dependencies": {
     "@petamoriken/float16": "^3.9.3",

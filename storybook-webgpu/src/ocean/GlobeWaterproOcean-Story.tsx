@@ -16,7 +16,7 @@ import {
 } from '@react-three/fiber'
 import { CesiumIonAuthPlugin } from '3d-tiles-renderer/plugins'
 import { TilesPlugin, TilesRenderer } from '3d-tiles-renderer/r3f'
-import { useControls } from 'leva'
+import { button, levaStore, useControls } from 'leva'
 import {
   useCallback,
   useEffect,
@@ -28,13 +28,19 @@ import {
 } from 'react'
 import {
   AgXToneMapping,
+  MathUtils,
   Matrix4,
   Mesh,
+  Quaternion,
+  Raycaster,
   RepeatWrapping,
   Scene,
   SRGBColorSpace,
   TextureLoader,
+  Vector2,
   Vector3,
+  type Group,
+  type Object3D,
 } from 'three'
 import { pass, toneMapping, uniform } from 'three/tsl'
 import * as THREE from 'three/webgpu'
@@ -91,6 +97,7 @@ type VertexUniformsBag = {
 
 import type { StoryFC } from '../components/createStory'
 import { WebGPUCanvas } from '../components/WebGPUCanvas'
+import { useGLTF } from '../hooks/useGLTF'
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
@@ -102,8 +109,13 @@ extend({ AtmosphereLight })
 
 const heading = 180
 const pitch = -20
-const distance = 3500
-const globalTerrainAssetId = 1
+const distance = 400
+// 2275207 = Google Photorealistic 3D Tiles (color-baked photogrammetry).
+// Asset 1 is Cesium World Terrain — elevation-only quantized mesh, no imagery,
+// which is why TileMaterialReplacementPlugin's MeshBasicNodeMaterial rendered
+// the terrain as flat white. Both require STORYBOOK_ION_API_TOKEN with the
+// corresponding asset attached to the user's Ion account.
+const globalTerrainAssetId = 2275207
 const japanRegionalTerrainAssetId = 2767062
 
 const locationPresets = {
@@ -113,6 +125,9 @@ const locationPresets = {
   'Cape Town': { longitude: 18.4241, latitude: -33.9249, height: 20 },
   Sydney: { longitude: 151.2093, latitude: -33.8688, height: 20 },
   Reykjavik: { longitude: -21.9426, latitude: 64.1466, height: 20 },
+  // 59°24'57.1"N 5°13'36.8"E — North Sea, ~10 km offshore W of Karmøy
+  // (Utsira Nord offshore-wind area, Norway).
+  Karmøy: { longitude: 5.206866, latitude: 59.427348, height: 20 },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -346,6 +361,66 @@ const CameraSetup: FC<{ target: Vector3 }> = ({ target }) => {
   return null
 }
 
+// Wind turbine probe at the fly-to target — replaces the capsule depth-foam
+// probe. Orients the model so its local +Y (tower up) aligns with the ECEF
+// surface normal at `target` (geocentric up — close enough to the geodetic
+// normal for visual placement). Spins the GLB child named "Windwings" on
+// local Y. Participates in the depth pre-pass via normal scene traversal,
+// so shoreline foam still develops around the waterline.
+const TurbineProbe: FC<{
+  target: Vector3
+  scale: number
+  heightOffset: number
+  yawDeg: number
+  spin: boolean
+  spinSpeed: number
+}> = ({ target, scale, heightOffset, yawDeg, spin, spinSpeed }) => {
+  const gltf = useGLTF('public/turbine-demo.glb')
+  const groupRef = useRef<Group>(null)
+  const wingsRef = useRef<Object3D | null>(null)
+
+  useEffect(() => {
+    wingsRef.current = gltf.scene.getObjectByName('Windwings') ?? null
+  }, [gltf.scene])
+
+  const { position, quaternion } = useMemo(() => {
+    const up = target.clone().normalize()
+    // Yaw is applied in local frame first (around local Y), then align rotates
+    // local Y onto the ECEF surface normal. q1*q2 applies q2 first to a vector,
+    // so yaw goes on the right.
+    const yawQ = new Quaternion().setFromAxisAngle(
+      new Vector3(0, 1, 0),
+      MathUtils.degToRad(yawDeg)
+    )
+    const alignQ = new Quaternion().setFromUnitVectors(
+      new Vector3(0, 1, 0),
+      up
+    )
+    const q = alignQ.multiply(yawQ)
+    const pos = target.clone().add(up.multiplyScalar(heightOffset))
+    return { position: pos, quaternion: q }
+  }, [target, heightOffset, yawDeg])
+
+  useFrame((_, dt) => {
+    if (spin && wingsRef.current) {
+      // Blender's local +Y (rotor shaft) → glTF local -Z after the
+      // Z-up→Y-up axis conversion the exporter applies.
+      wingsRef.current.rotation.z += spinSpeed * dt
+    }
+  })
+
+  return (
+    <group
+      ref={groupRef}
+      position={position.toArray()}
+      quaternion={quaternion.toArray() as [number, number, number, number]}
+      scale={scale}
+    >
+      <primitive object={gltf.scene} />
+    </group>
+  )
+}
+
 // SCENE_RADIANCE_SCALE — matches WaterproAtmosphere-Story.tsx:145. The
 // WaterPro composition peaks ~2× higher than the legacy WGSL fragment, so
 // 0.28 is the calibrated value for AgX exposure 10 (PORT-STATUS §13). Using
@@ -353,7 +428,25 @@ const CameraSetup: FC<{ target: Vector3 }> = ({ target }) => {
 // AgX tonemap rolloff and reads as flat / washed-out.
 const SCENE_RADIANCE_SCALE = 0.28
 
-const Content: FC = () => {
+// Optional probe hook for standalone-deploy readiness gating (no-op in
+// Storybook). Fires once the atmosphere context + ocean manager refs are
+// available so a host page can poll their compute/build state and decide
+// when to reveal the scene. See examples/ocean-globe-waterpro-demo/main.tsx.
+export interface ContentReadinessRefs {
+  atmosphereContext: AtmosphereContextNode
+  getOceanManager: () => any | null
+}
+
+export const Content: FC<{
+  onReadinessRefs?: (refs: ContentReadinessRefs) => void
+  // When true, the ocean surface is NOT mounted — atmosphere + terrain only.
+  // Used by the standalone deploy's phased load: stage 1 lets the atmosphere
+  // LUT compute pipeline finish without competing for GPU/CPU with ocean
+  // chunk-builder workers and wave-simulation compute. Stage 2 flips this to
+  // false to bring the ocean in. Defaults to false so Storybook mounts the
+  // full scene as it always has.
+  disableOcean?: boolean
+}> = ({ onReadinessRefs, disableOcean = false }) => {
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
@@ -364,6 +457,21 @@ const Content: FC = () => {
     useState<VertexUniformsBag | null>(null)
   const overlayScene = useMemo(() => new Scene(), [])
   const context = useMemo(() => new AtmosphereContextNode(), [])
+
+  // Surface the context + a live getter for the ocean manager once, so a
+  // host page (standalone deploy) can poll readiness without re-reading
+  // through React state.
+  const oceanManagerRef = useRef<any>(null)
+  oceanManagerRef.current = oceanManager
+  const readinessReportedRef = useRef(false)
+  useEffect(() => {
+    if (readinessReportedRef.current || onReadinessRefs == null) return
+    readinessReportedRef.current = true
+    onReadinessRefs({
+      atmosphereContext: context,
+      getOceanManager: () => oceanManagerRef.current
+    })
+  }, [context, onReadinessRefs])
 
   // PBR IBL via the atmosphere's sky environment cube. Load-bearing — without
   // it, MeshStandardNodeMaterial collapses to ~black at low sun angles (NdotL
@@ -377,37 +485,39 @@ const Content: FC = () => {
     }
   }, [scene, envNode])
 
-  const locationControls = useControls('Location', {
+  // Function-form `useControls` returns [values, set]; we use `setLocation` from
+  // the picker handler to programmatically reposition the fly-to target.
+  const [locationControls, setLocation] = useControls('Location', () => ({
     preset: {
-      value: 'Tokyo',
+      value: 'Karmøy',
       options: [...Object.keys(locationPresets), 'Custom'],
       label: 'Fly to',
     },
     longitude: {
-      value: locationPresets.Tokyo.longitude,
+      value: locationPresets.Karmøy.longitude,
       min: -180,
       max: 180,
       step: 0.0001,
     },
     latitude: {
-      value: locationPresets.Tokyo.latitude,
+      value: locationPresets.Karmøy.latitude,
       min: -90,
       max: 90,
       step: 0.0001,
     },
     height: {
-      value: locationPresets.Tokyo.height,
+      value: locationPresets.Karmøy.height,
       min: -500,
       max: 5000,
       step: 1,
     },
-  })
+  }))
   const activeLocation =
     locationControls.preset === 'Custom'
       ? locationControls
       : locationPresets[
           locationControls.preset as keyof typeof locationPresets
-        ] ?? locationPresets.Tokyo
+        ] ?? locationPresets.Karmøy
   const target = useTargetECEF(
     activeLocation.longitude,
     activeLocation.latitude,
@@ -429,14 +539,14 @@ const Content: FC = () => {
 
   const oceanFrameControls = useControls('Ocean Frame', {
     seaLevelOffset: {
-      value: 50,
+      value: 29,
       min: -500,
       max: 5000,
       step: 1,
       label: 'Sea level offset',
     },
     oceanScale: {
-      value: 1,
+      value: 0.5,
       min: 0.1,
       max: 5,
       step: 0.05,
@@ -467,6 +577,111 @@ const Content: FC = () => {
     turbulentFoam: { value: true },
     shorelineFoam: { value: true },
   })
+
+  const turbineControls = useControls('Turbine', {
+    scale: { value: 0.5, min: 0.1, max: 50, step: 0.1 },
+    heightOffset: { value: 2.5, min: -200, max: 200, step: 0.5 },
+    yawDeg: { value: 180, min: -180, max: 180, step: 1, label: 'Yaw (°)' },
+    spin: { value: true },
+    spinSpeed: { value: 2.0, min: 0, max: 20, step: 0.1 },
+  })
+
+  const cameraControls = useControls('Camera', {
+    minDistance: { value: 50, min: 1, max: 5000, step: 1 },
+    maxDistance: { value: 100000, min: 1000, max: 1_000_000, step: 1000 },
+    autoOrbit: { value: false },
+    orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
+  })
+
+  // Snapshot button — dumps every leva value (across all panels) as JSON to
+  // the console + clipboard. Use it to capture your current scene tweaks and
+  // paste them back into the source-code defaults.
+  useControls('Snapshot', {
+    copyDefaults: button(() => {
+      const data = levaStore.getData()
+      const out: Record<string, Record<string, unknown>> = {}
+      for (const [path, entry] of Object.entries(data)) {
+        if (
+          entry == null ||
+          typeof entry !== 'object' ||
+          !('value' in (entry as any))
+        ) {
+          continue
+        }
+        const parts = path.split('.')
+        const key = parts.pop() as string
+        const folder = parts.length > 0 ? parts.join('.') : '_root'
+        ;(out[folder] ??= {})[key] = (entry as any).value
+      }
+      const json = JSON.stringify(out, null, 2)
+      console.log('[snapshot]\n' + json)
+      void navigator.clipboard?.writeText(json).catch(() => {})
+    }),
+  })
+
+  const pickControls = useControls('Pick', {
+    enabled: { value: false, label: 'Click → reposition fly-to' },
+    keepHeight: {
+      value: true,
+      label: 'Keep current height',
+    },
+  })
+
+  // Raycast-pick on click. When enabled, a stationary mouse click on any
+  // visible scene geometry (terrain tiles, ocean, turbine) repositions the
+  // fly-to target (longitude/latitude, optionally height) to the clicked
+  // point and switches the location preset to 'Custom'. Browser fires `click`
+  // only for un-dragged press-release pairs, so OrbitControls drags don't
+  // trigger it.
+  useEffect(() => {
+    if (!pickControls.enabled) return
+    const dom = (renderer as any)?.domElement as HTMLCanvasElement | undefined
+    if (dom == null) return
+    const raycaster = new Raycaster()
+    const ndc = new Vector2()
+    const geodetic = new Geodetic()
+    const handler = (e: MouseEvent): void => {
+      const rect = dom.getBoundingClientRect()
+      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(ndc, camera)
+      const hits = raycaster.intersectObject(scene, true)
+      if (hits.length === 0) {
+        console.log('[pick] no hit')
+        return
+      }
+      try {
+        geodetic.setFromECEF(hits[0].point)
+      } catch (err) {
+        console.log('[pick] outside ellipsoid', err)
+        return
+      }
+      const lonDeg = MathUtils.radToDeg(geodetic.longitude)
+      const latDeg = MathUtils.radToDeg(geodetic.latitude)
+      const objName = hits[0].object.name || hits[0].object.type
+      console.log(
+        `[pick] lon=${lonDeg.toFixed(6)}° lat=${latDeg.toFixed(6)}° height=${geodetic.height.toFixed(2)} m (hit=${objName})`
+      )
+      const next: Record<string, number | string> = {
+        preset: 'Custom',
+        longitude: lonDeg,
+        latitude: latDeg,
+      }
+      if (!pickControls.keepHeight) {
+        next.height = geodetic.height
+      }
+      setLocation(next)
+    }
+    dom.addEventListener('click', handler)
+    return () => dom.removeEventListener('click', handler)
+  }, [
+    pickControls.enabled,
+    pickControls.keepHeight,
+    renderer,
+    camera,
+    scene,
+    setLocation,
+  ])
 
   const waveControls = useControls('Waves', {
     fftAmplitude: { value: 1.0, min: 0, max: 2, step: 0.01 },
@@ -979,17 +1194,23 @@ const Content: FC = () => {
       <OrbitControls
         makeDefault
         enableDamping
-        minDistance={500}
-        maxDistance={100000}
+        minDistance={cameraControls.minDistance}
+        maxDistance={cameraControls.maxDistance}
+        autoRotate={cameraControls.autoOrbit}
+        autoRotateSpeed={cameraControls.orbitSpeed}
       />
       <CameraSetup target={target} />
-      {/* Depth-foam probe — capsule at the fly-to target so the depth pre-pass
-          has visible geometry for the ocean material to sample. Layer 0
-          (default) so it's included in the depth pre-pass. */}
-      <mesh position={target.toArray()}>
-        <capsuleGeometry args={[80, 600, 8, 24]} />
-        <meshBasicMaterial color='#ff6b3d' />
-      </mesh>
+      {/* Wind turbine probe at the fly-to target — replaces the prior capsule
+          depth-foam probe. Layer 0 (default) so it participates in the depth
+          pre-pass for shoreline-foam gating. */}
+      <TurbineProbe
+        target={target}
+        scale={turbineControls.scale}
+        heightOffset={turbineControls.heightOffset}
+        yawDeg={turbineControls.yawDeg}
+        spin={turbineControls.spin}
+        spinSpeed={turbineControls.spinSpeed}
+      />
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}
@@ -1001,7 +1222,7 @@ const Content: FC = () => {
         />
         <TilesPlugin plugin={TileMaterialReplacementPlugin} />
       </TilesRenderer>
-      {oceanDebugParams.enableOcean && (
+      {oceanDebugParams.enableOcean && !disableOcean && (
         <OceanSurface
           target={target}
           atmosphereContext={context}
