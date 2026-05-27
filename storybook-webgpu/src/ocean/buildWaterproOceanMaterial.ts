@@ -15,10 +15,14 @@ import {
   dot,
   exp,
   float,
+  max,
+  min,
   mix,
   modelWorldMatrix,
   reflect as tslReflect,
   saturate,
+  smoothstep,
+  texture as tslTexture,
   uniform,
   vec2,
   vec3,
@@ -71,6 +75,13 @@ export interface WaterproOceanUniforms {
   surfaceFoamCoverage: UniformNode<number>
   surfaceFoamOpacity: UniformNode<number>
   surfaceFoamSize: UniformNode<number>
+  // Large-scale region mask that gates surface foam on/off in drifting
+  // blobs. Enabled=0 → mask=1 everywhere (legacy uniform tiling). Drift
+  // is in tex/s of the region tile (~0.0005 × 1500m ≈ 0.75 m/s).
+  surfaceFoamRegionEnabled: UniformNode<number>
+  surfaceFoamRegionScale: UniformNode<number>
+  surfaceFoamRegionThreshold: UniformNode<number>
+  surfaceFoamRegionDrift: UniformNode<number>
   waveFoamColor: UniformNode<Vector3>
   waveFoamCoverage: UniformNode<number>
   waveFoamOpacity: UniformNode<number>
@@ -101,6 +112,19 @@ export interface WaterproOceanUniforms {
   fadeStart: UniformNode<number>
   fadeEnd: UniformNode<number>
   fadePower: UniformNode<number>
+  // ─ Tip foam ────────────────────────────────────────────────────────────
+  // Additional foam layer that fires on actual visible wave-tip height.
+  // Gated by both a height threshold AND a sparse rarity mask so foam only
+  // appears on *some* peaks, not every one. Independent of the eigen-based
+  // wave-foam crest detector.
+  tipFoamEnabled: UniformNode<number>
+  tipFoamIntensity: UniformNode<number>
+  tipFoamHeightThreshold: UniformNode<number>
+  tipFoamSoftness: UniformNode<number>
+  tipFoamSize: UniformNode<number>
+  /** 0 = foam on every qualifying peak, 1 = foam essentially nowhere. */
+  tipFoamRarity: UniformNode<number>
+  tipFoamColor: UniformNode<Vector3>
 }
 
 export function createWaterproOceanUniforms(): WaterproOceanUniforms {
@@ -128,6 +152,10 @@ export function createWaterproOceanUniforms(): WaterproOceanUniforms {
     surfaceFoamCoverage: uniform(0.02),
     surfaceFoamOpacity: uniform(0.25),
     surfaceFoamSize: uniform(20.0),
+    surfaceFoamRegionEnabled: uniform(1.0),
+    surfaceFoamRegionScale: uniform(1500.0),
+    surfaceFoamRegionThreshold: uniform(0.5),
+    surfaceFoamRegionDrift: uniform(0.0005),
     waveFoamColor: uniform(new Vector3(1, 1, 1)),
     waveFoamCoverage: uniform(0.5),
     waveFoamOpacity: uniform(0.6),
@@ -158,6 +186,13 @@ export function createWaterproOceanUniforms(): WaterproOceanUniforms {
     fadeStart: uniform(50.0),
     fadeEnd: uniform(200.0),
     fadePower: uniform(1.0),
+    tipFoamEnabled: uniform(1.0),
+    tipFoamIntensity: uniform(1.0),
+    tipFoamHeightThreshold: uniform(0.6),
+    tipFoamSoftness: uniform(0.4),
+    tipFoamSize: uniform(8.0),
+    tipFoamRarity: uniform(0.65),
+    tipFoamColor: uniform(new Vector3(1, 1, 1)),
   }
 }
 
@@ -232,6 +267,17 @@ export interface BuildWaterproOceanMaterialParams {
   oceanPositionWorld?: ShaderNodeObject<Node>
 
   /**
+   * Optional actual surface Y (the displaced vertex height in ocean-local
+   * frame). Tip foam uses this to gate on real wave height. For chunks pass
+   * `vDisplaced.y` (the varying the WGSL stage writes). For the flat plane
+   * caller can pass the TSL `displacedLocal.y` directly. Leaving this
+   * undefined falls back to sampling the cascade displacement at the
+   * fragment XZ — which is OFF by lambda chop for peaks (foam ends up
+   * next to the crest, not on it).
+   */
+  surfaceHeight?: ShaderNodeObject<Node>
+
+  /**
    * Optional tileable surface position (vec3) passed to ALL foam nodes
    * (surface/wave/shoreline/turbulent) as their `oceanPositionWorld`. These
    * nodes compute foam-texture UVs as `worldXZ / size` and use `positionWorld.y`
@@ -273,6 +319,7 @@ export function buildWaterproOceanMaterial(
     oceanDepth,
     oceanPositionWorld,
     tilingPosition,
+    surfaceHeight,
   } = params
 
   // Defaults to fragSurfaceXZ — preserves the literal plane behaviour. Chunks
@@ -320,7 +367,7 @@ export function buildWaterproOceanMaterial(
     })
 
   // Program 5 (surface foam).
-  const surfaceFoam = surfaceFoamNode({
+  const surfaceFoamRaw = surfaceFoamNode({
     foamTexture,
     enabled: u.surfaceFoamOn,
     size: u.surfaceFoamSize,
@@ -329,6 +376,28 @@ export function buildWaterproOceanMaterial(
     foamColor: u.surfaceFoamColor,
     ...(tilingPosition != null ? { oceanPositionWorld: tilingPosition } : {}),
   })
+
+  // Large-scale "weather" mask over the surface foam — same noise texture
+  // sampled at thousands-of-metres scale and slowly drifted by gerstnerTime.
+  // Near-binary smoothstep (0.02 band) so it reads as on/off blobs, not a
+  // soft tile pattern. When the toggle is off, mix(1, mask, 0) = 1 so the
+  // foam reverts to legacy uniform tiling.
+  const surfDrift = (gerstnerTime as any).mul(u.surfaceFoamRegionDrift)
+  const surfRegionUV = fragSurfaceXZ
+    .div(u.surfaceFoamRegionScale)
+    .add(vec2(float(0.43), float(0.91)))
+    .add(vec2(surfDrift, surfDrift.mul(float(-0.7))))
+  const surfRegionNoise = tslTexture(foamTexture, surfRegionUV).r
+  const surfRegionMaskRaw = smoothstep(
+    u.surfaceFoamRegionThreshold,
+    (u.surfaceFoamRegionThreshold as any).add(float(0.02)),
+    surfRegionNoise
+  )
+  const surfRegionMask = mix(float(1), surfRegionMaskRaw, u.surfaceFoamRegionEnabled)
+  const surfaceFoam = {
+    strength: (surfaceFoamRaw.strength as any).mul(surfRegionMask),
+    color: surfaceFoamRaw.color,
+  }
 
   // Program 7 (wave foam).
   const waveFoam = waveFoamNode({
@@ -493,10 +562,69 @@ export function buildWaterproOceanMaterial(
     combined.shorelineFoamTint,
     combined.shorelineFoamStrength
   )
-  const finalColor = withShoreline
 
-  // emissiveNode composition.
-  const foamMask = float(1).sub(combined.combinedFoamStrength)
+  // Tip foam — fires on actual wave-tip height with a sparse second noise
+  // so foam only appears on *some* peaks, not all.
+  //
+  // Height source: when the caller passes `surfaceHeight` (chunks pass
+  // `vDisplaced.y` — the exact Y the vertex stage produced) we use it
+  // directly. Otherwise we re-sample the cascade at fragSurfaceXZ, which
+  // ends up off by lambda chop on chunks (foam shifted off the peak).
+  //
+  // Two-mask composition:
+  //   heightMask = smoothstep(threshold, threshold+softness, height)
+  //   detailNoise = noise(xz / size)            — fine variation INSIDE foam
+  //   rarityMask = smoothstep(rarity, rarity+0.05, noise(xz / (size*8) + offset))
+  //   strength = saturate(heightMask · detailNoise · rarityMask · intensity)
+  //
+  // rarity=0 → mask=1 (every qualifying peak); rarity=1 → essentially zero.
+  // The (size*8) scale for rarity gives "patchy" regions where foam is
+  // allowed, with detailNoise providing fine texture inside those patches.
+  const cascadeYFromSample = sampleWaveDisplacement(waveSim, {
+    worldXZ: fragSurfaceXZ,
+  }).displacement.y
+  const waveHeight =
+    surfaceHeight ??
+    cascadeYFromSample
+      .mul(u.fftAmplitude)
+      .add(gerstnerFrag.displacement.y.mul(u.gerstnerAmplitude))
+  const heightMask = smoothstep(
+    u.tipFoamHeightThreshold,
+    (u.tipFoamHeightThreshold as any).add(u.tipFoamSoftness),
+    waveHeight
+  )
+  const tipDetailNoise = tslTexture(
+    foamTexture,
+    fragSurfaceXZ.div(u.tipFoamSize)
+  ).r
+  const tipRarityNoise = tslTexture(
+    foamTexture,
+    fragSurfaceXZ
+      .div((u.tipFoamSize as any).mul(float(8)))
+      .add(vec2(float(0.37), float(0.13)))
+  ).r
+  const tipRarityMask = smoothstep(
+    u.tipFoamRarity,
+    (u.tipFoamRarity as any).add(float(0.05)),
+    tipRarityNoise
+  )
+  const tipFoamStrength = saturate(
+    heightMask
+      .mul(tipDetailNoise)
+      .mul(tipRarityMask)
+      .mul(u.tipFoamIntensity)
+      .mul(u.tipFoamEnabled)
+  )
+  const withTipFoam = mix(withShoreline, u.tipFoamColor, tipFoamStrength)
+
+  const finalColor = withTipFoam
+
+  // emissiveNode composition. Foam mask = 1 - (combined foam + tip foam),
+  // clamped — reflection / SSS are zeroed out where any foam covers the
+  // surface so they don't bleed through a white-cap.
+  const foamMask = saturate(
+    float(1).sub(combined.combinedFoamStrength).sub(tipFoamStrength)
+  )
   const reflectionEmissive = skyReflection.mul(gatedFresnel).mul(foamMask)
   const sssEmissive = sssOut.scattering
     .mul(float(1).sub(gatedFresnel))

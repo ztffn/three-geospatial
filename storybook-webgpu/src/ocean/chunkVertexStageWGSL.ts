@@ -37,7 +37,9 @@ export const chunkVertexStageWGSL = (() => {
         gerstnerWave2: vec4<f32>,
         gerstnerSteepness: f32,
         gerstnerStrength: f32,
-        fftAmplitude: f32
+        fftAmplitude: f32,
+        swellScale: f32,
+        swellStrength: f32
     ) -> vec4<f32> {
 
         var morphValue: f32 = getMorphValue(cameraPosition, position, minLodRadius, lod);
@@ -59,10 +61,20 @@ export const chunkVertexStageWGSL = (() => {
         var displacement_1: vec4<f32> = InterpolateBilinear(displacement1, vtexelCoord1, ifftResolution) * lod1;
         var displacement_2: vec4<f32> = InterpolateBilinear(displacement2, vtexelCoord2, ifftResolution) * lod2;
 
-        // ─ Only line that differs from packages/.../vertexStageWGSL.js ─
+        // Large-scale amplitude modulation — samples the bound simplex-noise
+        // texture at kilometre-scale (swellScale). Multiplies the summed
+        // cascade displacement so adjacent regions have visibly different
+        // wave heights, breaking the per-cascade tile repetition you see
+        // from top-down. swellStrength=0 → uniform (identity). At =1 the
+        // multiplier ranges 0..2.
+        var swellRes: f32 = 256.0;
+        var swellCoord: vec2<f32> = morphedPosition.xz * (swellRes / max(swellScale, 1.0));
+        var swellSample: f32 = InterpolateBilinear(noise, swellCoord, swellRes).r;
+        var swellMult: f32 = mix(1.0 - swellStrength, 1.0 + swellStrength, swellSample);
+
         // Multiply the summed cascade displacement by the IFFT-amplitude
-        // scalar so the user's slider actually scales wave height.
-        var displacedPosition: vec3<f32> = morphedPosition + fftAmplitude * (displacement_0.rgb + displacement_1.rgb + displacement_2.rgb);
+        // scalar AND the per-position swell modulation.
+        var displacedPosition: vec3<f32> = morphedPosition + fftAmplitude * swellMult * (displacement_0.rgb + displacement_1.rgb + displacement_2.rgb);
 
         var gerstner = gerstnerSum(morphedPosition.xz, time, gerstnerWave0, gerstnerWave1, gerstnerWave2, gerstnerSteepness, gerstnerStrength);
         displacedPosition += gerstner;

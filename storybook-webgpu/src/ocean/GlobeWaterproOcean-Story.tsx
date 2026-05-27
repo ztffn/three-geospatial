@@ -75,6 +75,19 @@ import { Color } from 'three'
 
 import OceanChunksWaterpro from './OceanChunksWaterpro'
 import type { WaterproOceanUniforms } from './buildWaterproOceanMaterial'
+import type { UniformNode } from 'three/webgpu'
+
+// WGSL-vertex-stage uniform handles exposed by OceanChunksWaterpro.onReady.
+// Story-side controls (Swell, future LOD slider, etc.) write through these.
+type VertexUniformsBag = {
+  lodScale: UniformNode<number>
+  swellScale: UniformNode<number>
+  swellStrength: UniformNode<number>
+  gerstnerWave0: UniformNode<THREE.Vector4>
+  gerstnerWave1: UniformNode<THREE.Vector4>
+  gerstnerWave2: UniformNode<THREE.Vector4>
+  gerstnerSteepness: UniformNode<number>
+}
 
 import type { StoryFC } from '../components/createStory'
 import { WebGPUCanvas } from '../components/WebGPUCanvas'
@@ -232,6 +245,7 @@ const OceanSurface: FC<{
   atmosphereContext: AtmosphereContextNode
   envCubeTexture: THREE.CubeTexture
   onUniformsReady: (uniforms: WaterproOceanUniforms) => void
+  onVertexUniformsReady: (vu: VertexUniformsBag) => void
   onOceanManagerReady: (oceanManager: any) => void
   seaLevelOffset: number
   oceanScale: number
@@ -243,6 +257,7 @@ const OceanSurface: FC<{
   atmosphereContext,
   envCubeTexture,
   onUniformsReady,
+  onVertexUniformsReady,
   onOceanManagerReady,
   seaLevelOffset,
   oceanScale,
@@ -288,8 +303,9 @@ const OceanSurface: FC<{
           numLayers={numLayers}
           useDiagnosticMaterial={useDiagnosticMaterial}
           skipDepthPrepass={skipDepthPrepass}
-          onReady={({ uniforms, oceanManager }) => {
+          onReady={({ uniforms, vertexUniforms, oceanManager }) => {
             onUniformsReady(uniforms)
+            onVertexUniformsReady(vertexUniforms)
             onOceanManagerReady(oceanManager)
           }}
         />
@@ -341,6 +357,8 @@ const Content: FC = () => {
   const [oceanManager, setOceanManager] = useState<any>(null)
   const [oceanUniforms, setOceanUniforms] =
     useState<WaterproOceanUniforms | null>(null)
+  const [vertexUniforms, setVertexUniforms] =
+    useState<VertexUniformsBag | null>(null)
   const overlayScene = useMemo(() => new Scene(), [])
   const context = useMemo(() => new AtmosphereContextNode(), [])
 
@@ -477,12 +495,78 @@ const Content: FC = () => {
     surfaceFoamCoverage: { value: 0.02, min: 0, max: 1, step: 0.01 },
     surfaceFoamOpacity: { value: 0.25, min: 0, max: 1, step: 0.01 },
     surfaceFoamSize: { value: 20.0, min: 1, max: 250, step: 1 },
+    regionEnabled: { value: true, label: 'Blob mask' },
+    regionScale: {
+      value: 1500.0,
+      min: 200,
+      max: 8000,
+      step: 50,
+      label: 'Blob scale (m)',
+    },
+    regionThreshold: {
+      value: 0.5,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Blob coverage',
+    },
+    regionDrift: {
+      value: 0.0005,
+      min: 0,
+      max: 0.01,
+      step: 0.0001,
+      label: 'Blob drift (tex/s)',
+    },
   })
 
   const waveFoamControls = useControls('Wave Foam', {
     waveFoamCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
     waveFoamOpacity: { value: 0.6, min: 0, max: 1, step: 0.01 },
     waveFoamCrestCoverage: { value: 0.3, min: 0, max: 1, step: 0.01 },
+  })
+
+  const swellControls = useControls('Swell Variance', {
+    swellStrength: {
+      value: 0.5,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Strength (0=uniform)',
+    },
+    swellScale: {
+      value: 800,
+      min: 50,
+      max: 5000,
+      step: 10,
+      label: 'Variance scale (m)',
+    },
+  })
+
+  const tipFoamControls = useControls('Tip Foam', {
+    enabled: { value: true },
+    intensity: { value: 1.0, min: 0, max: 5, step: 0.05 },
+    heightThreshold: {
+      value: 0.6,
+      min: 0,
+      max: 5,
+      step: 0.05,
+      label: 'Height threshold (m)',
+    },
+    softness: {
+      value: 0.4,
+      min: 0.05,
+      max: 2,
+      step: 0.05,
+      label: 'Threshold softness (m)',
+    },
+    rarity: {
+      value: 0.65,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Rarity (1=rare)',
+    },
+    size: { value: 8.0, min: 1, max: 100, step: 0.5, label: 'Tile size (m)' },
   })
 
   const shorelineFoamControls = useControls('Shoreline Foam', {
@@ -780,6 +864,14 @@ const Content: FC = () => {
     oceanUniforms.surfaceFoamOpacity.value =
       surfaceFoamControls.surfaceFoamOpacity
     oceanUniforms.surfaceFoamSize.value = surfaceFoamControls.surfaceFoamSize
+    oceanUniforms.surfaceFoamRegionEnabled.value =
+      surfaceFoamControls.regionEnabled ? 1 : 0
+    oceanUniforms.surfaceFoamRegionScale.value =
+      surfaceFoamControls.regionScale
+    oceanUniforms.surfaceFoamRegionThreshold.value =
+      surfaceFoamControls.regionThreshold
+    oceanUniforms.surfaceFoamRegionDrift.value =
+      surfaceFoamControls.regionDrift
   }, [oceanUniforms, surfaceFoamControls])
 
   useEffect(() => {
@@ -789,6 +881,22 @@ const Content: FC = () => {
     oceanUniforms.waveFoamCrestCoverage.value =
       waveFoamControls.waveFoamCrestCoverage
   }, [oceanUniforms, waveFoamControls])
+
+  useEffect(() => {
+    if (vertexUniforms == null) return
+    vertexUniforms.swellStrength.value = swellControls.swellStrength
+    vertexUniforms.swellScale.value = swellControls.swellScale
+  }, [vertexUniforms, swellControls])
+
+  useEffect(() => {
+    if (oceanUniforms?.tipFoamEnabled == null) return
+    oceanUniforms.tipFoamEnabled.value = tipFoamControls.enabled ? 1 : 0
+    oceanUniforms.tipFoamIntensity.value = tipFoamControls.intensity
+    oceanUniforms.tipFoamHeightThreshold.value = tipFoamControls.heightThreshold
+    oceanUniforms.tipFoamSoftness.value = tipFoamControls.softness
+    oceanUniforms.tipFoamRarity.value = tipFoamControls.rarity
+    oceanUniforms.tipFoamSize.value = tipFoamControls.size
+  }, [oceanUniforms, tipFoamControls])
 
   useEffect(() => {
     if (oceanUniforms == null) return
@@ -897,6 +1005,7 @@ const Content: FC = () => {
           useDiagnosticMaterial={oceanDebugParams.useDiagnosticMaterial}
           skipDepthPrepass={oceanDebugParams.skipDepthPrepass}
           onUniformsReady={setOceanUniforms}
+          onVertexUniformsReady={setVertexUniforms}
           onOceanManagerReady={setOceanManager}
         />
       )}

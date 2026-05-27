@@ -89,6 +89,16 @@ interface OceanChunksWaterproProps {
     waveSim: WaveSimulation
     gerstner: GerstnerOverlay
     uniforms: WaterproOceanUniforms
+    /** WGSL-vertex-stage uniforms (lodScale, swell, gerstner waves). */
+    vertexUniforms: {
+      lodScale: UniformNode<number>
+      swellScale: UniformNode<number>
+      swellStrength: UniformNode<number>
+      gerstnerWave0: UniformNode<Vector4>
+      gerstnerWave1: UniformNode<Vector4>
+      gerstnerWave2: UniformNode<Vector4>
+      gerstnerSteepness: UniformNode<number>
+    }
     oceanManager: OceanManager
   }) => void
 }
@@ -155,6 +165,10 @@ export default function OceanChunksWaterpro({
       gerstnerWave2: uniform(new Vector4(-0.8, 0.6, 30.0, 0.25)),
       gerstnerSteepness: uniform(0.5),
       gerstnerStrength: uniform(1.0),
+      // Large-scale amplitude modulation — breaks top-down cascade-tile
+      // repetition. swellStrength=0 → identity (uniform wave heights).
+      swellScale: uniform(800.0),
+      swellStrength: uniform(0.5),
     }),
     []
   )
@@ -247,6 +261,8 @@ export default function OceanChunksWaterpro({
       gerstnerSteepness: vertexUniforms.gerstnerSteepness,
       gerstnerStrength: uniforms.gerstnerAmplitude,
       fftAmplitude: uniforms.fftAmplitude,
+      swellScale: vertexUniforms.swellScale,
+      swellStrength: vertexUniforms.swellStrength,
       // Varyings the WGSL body writes to — must be passed in or three's TSL
       // doesn't hook them into the `varyings` object → invalid pipeline →
       // black canvas + WebGPU device error.
@@ -270,12 +286,21 @@ export default function OceanChunksWaterpro({
     const positionNode = vertexStageWGSL.vertexStageWGSL(wgslParams)
 
     // Fragment-side derivatives from the WGSL vertex stage's varyings.
-    // fragSurfaceXZ = ocean-local (for cascade UV — keeps wave pattern coherent
-    //                across chunks; ECEF coords would precision-collapse).
-    // worldSurfaceXZ = world frame (for fresnel distance + viewDir, which need
-    //                  to match cameraPosition's world frame).
+    //
+    // fragSurfaceXZ uses vMorphedPosition (the static, pre-displacement
+    // ocean-local grid). Sampling cascades + foam noise at vDisplaced.xz
+    // would couple the UV to wave motion (lambda chop shifts X/Z every
+    // frame) — visible as foam patches and noise patterns swimming with
+    // the waves. The vertex stage itself samples cascades at
+    // morphedPosition.xz, so using the same here keeps fragment normals
+    // and vertex displacement coherent.
+    //
+    // worldSurfaceXZ stays on the actual displaced world position because
+    // it feeds fresnel distance-to-camera and viewDir — both of which
+    // SHOULD track the rendered surface.
     const vDisplaced = vertexStageWGSL.vDisplacedPosition as unknown as ShaderNodeObject<Node>
-    const fragSurfaceXZ = vec2(vDisplaced.x, vDisplaced.z)
+    const vMorphed = vertexStageWGSL.vMorphedPosition as unknown as ShaderNodeObject<Node>
+    const fragSurfaceXZ = vec2(vMorphed.x, vMorphed.z)
     const displacedView = modelViewMatrix.mul(vec4(vDisplaced, float(1)))
     const oceanDepth = displacedView.z.negate()
     const displacedWorld4 = modelWorldMatrix.mul(vec4(vDisplaced, float(1)))
@@ -300,10 +325,16 @@ export default function OceanChunksWaterpro({
       worldSurfacePos: displacedWorld,
       oceanDepth,
       oceanPositionWorld: displacedWorld,
-      // Ocean-local position for foam tile UVs + turbulent-foam y-depth.
-      // The flat plane caller leaves this undefined → nodes use their
-      // default TSL positionWorld → identical behaviour at origin.
-      tilingPosition: vDisplaced,
+      // Ocean-local STATIC position for foam tile UVs + turbulent-foam
+      // y-depth. Using vMorphedPosition (pre-displacement) instead of
+      // vDisplaced keeps surface/wave/shoreline foam patterns from swimming
+      // with the waves. Plane caller leaves this undefined → TSL
+      // positionWorld default → identical behaviour at origin.
+      tilingPosition: vMorphed,
+      // Exact ocean-local Y produced by the WGSL vertex stage (cascade +
+      // gerstner + swell modulation). Tip foam reads this directly so it
+      // aligns with actual wave peaks instead of cascade-sample drift.
+      surfaceHeight: vDisplaced.y as unknown as ShaderNodeObject<Node>,
     })
   }, [
     useDiagnosticMaterial,
@@ -367,6 +398,15 @@ export default function OceanChunksWaterpro({
           waveSim,
           gerstner: gerstner!,
           uniforms,
+          vertexUniforms: {
+            lodScale: vertexUniforms.lodScale,
+            swellScale: vertexUniforms.swellScale,
+            swellStrength: vertexUniforms.swellStrength,
+            gerstnerWave0: vertexUniforms.gerstnerWave0,
+            gerstnerWave1: vertexUniforms.gerstnerWave1,
+            gerstnerWave2: vertexUniforms.gerstnerWave2,
+            gerstnerSteepness: vertexUniforms.gerstnerSteepness,
+          },
           oceanManager,
         })
       } catch (error) {
