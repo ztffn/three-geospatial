@@ -1,5 +1,110 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added support for moonlight and scattering in low light setup.
+
+### Changed
+
+- `AtmosphereParameters`: Deprecated and renamed `minCosSun` to `minCosLight`.
+- `SkyEnvironmentNode`: Optimized the PMREM texture generation.
+
+### Fixed
+
+- Fixed errors when `higherOrderScatteringTexture` is disabled.
+- Fixed changes in `AtmosphereParameters` not being applied when used by multiple renderers.
+- `MoonNode`: Fixed unstable derivatives.
+
+## [0.18.0] - 2026-04-05
+
+### Changed
+
+- WebGPU entry point (`@takram/three-atmosphere/webgpu`) requires `three >= 0.182.0`.
+- BREAKING: Nodes and objects no longer take `atmosphereContext` as a constructor parameter. Use `renderer.contextNode` instead.
+
+  Before:
+
+  ```ts
+  import {
+    aerialPerspective,
+    AtmosphereContextNode,
+    AtmosphereLight
+  } from '@takram/three-atmosphere/webgpu'
+
+  const atmosphereContext = new AtmosphereContextNode()
+
+  const node = aerialPerspective(atmosphereContext, colorNode, depthNode)
+  const light = new AtmosphereLight(atmosphereContext)
+  ```
+
+  After:
+
+  ```ts
+  import {
+    aerialPerspective,
+    AtmosphereContext,
+    AtmosphereLight
+  } from '@takram/three-atmosphere/webgpu'
+  import { context } from 'three/tsl'
+
+  // AtmosphereContextNode is replaced by AtmosphereContext:
+  const atmosphereContext = new AtmosphereContext()
+
+  // Instead of passing the atmosphere context in the parameter of classes and
+  // functions, create `getAtmosphere: () => AtmosphereContext` in the
+  // renderer's global context:
+  renderer.contextNode = context({
+    ...renderer.contextNode.value, // Merge with the existing context values
+    getAtmosphere: () => atmosphereContext
+  })
+
+  // The atmosphere context parameter must then be omitted:
+  const node = aerialPerspective(colorNode, depthNode)
+  const light = new AtmosphereLight()
+  ```
+
+- Deprecated `AtmosphereContextNode` and renamed it to `AtmosphereContext`.
+- Changed default values for `depthTest` and `depthWrite` in `SkyMaterial` and `StarsMaterial`.
+- Deprecated `SKY_RENDER_ORDER`, which is no longer used.
+- BREAKING: Replaced `MoonNode.normalNode` with `MoonNode.displacementNode`.
+
+### Fixed
+
+- Fixed `StarsMaterial` not fully appearing over post-processing sky, [#28](https://github.com/takram-design-engineering/three-geospatial/issues/28).
+
+## [0.17.1] - 2026-03-23
+
+### Fixed
+
+- Fixed depth test when logarithmic depth is used with `postprocessing >= 6.38.0`, [#100](https://github.com/takram-design-engineering/three-geospatial/issues/100).
+
+## [0.17.0] - 2026-03-09
+
+### Changed
+
+- Updated the peer dependency for `postprocessing` to `>= 6.38.0`.
+- `PrecomputedTexturesLoader`: Removed deprecated `setTypeFromRenderer()`.
+- Removed deprecated `sunIrradiance` and `skyIrradiance` options.
+- Removed deprecated `IrradianceMask`.
+- `AerialPerspectiveEffect`: Removed deprecated `irradianceScale` option.
+- `StarsMaterial`: Removed deprecated `radianceScale` option.
+- Removed deprecated `useAtmosphereTextureProps` hook.
+- Updated dependencies.
+
+### Fixed
+
+- Fixed logarithmic depth when used with `postprocessing >= 6.38.0`.
+
+## [0.16.0] - 2025-12-24
+
+### Changed
+
+- Migrated types to `@types/three@0.181.0`
+- `AerialPerspectiveEffect`, `AerialPerspectiveNode`: Improved post-process lighting when normal buffer is disabled, [97](https://github.com/takram-design-engineering/three-geospatial/pull/97).
+- Updated dependencies.
+
 ## [0.15.1] - 2025-11-01
 
 ### Fixed

@@ -38,9 +38,9 @@ Once all packages support WebGPU, the current implementation of the shader-chunk
 <!-- prettier-ignore -->
 | Name | Status |
 | -- | -- |
-| [atmosphere](https://github.com/takram-design-engineering/three-geospatial/tree/main/packages/atmosphere/WEBGPU.md) | Done |
+| [atmosphere](packages/atmosphere/WEBGPU.md) | Done |
 | clouds | Work in progress |
-| [core](https://github.com/takram-design-engineering/three-geospatial/tree/main/packages/core/WEBGPU.md) | Done |
+| [core](packages/core/WEBGPU.md) | Done |
 | effects | To be merged with core |
 
 ## Developing
@@ -83,7 +83,7 @@ Project level commands are defined in [`project.json`](project.json). Although l
 
 ### Environment variables
 
-Create a `.env` file in the root directory with the following variables:
+Create a `.env` file in the root directory with either of the following variables:
 
 <!-- prettier-ignore -->
 | Name | Description |
@@ -109,14 +109,6 @@ The command below runs Storybook locally on port 4400 by default. You can overri
 nx storybook
 nx storybook --port 8080
 ```
-
-Some stories use Cesium Ion assets. To display them correctly, search for the following assets in the [Asset Depot](https://ion.cesium.com/assetdepot/) and add them to your [My Assets](https://ion.cesium.com/assets/):
-
-<!-- prettier-ignore -->
-| Name | Asset ID |
-| -- | -- |
-| Cesium World Terrain | `1` (likely exists by default) |
-| Japan Regional Terrain | `2767062` |
 
 ### Note on Storybook errors
 

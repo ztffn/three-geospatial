@@ -10,6 +10,7 @@ import {
 import { hash } from 'three/src/nodes/core/NodeUtils.js'
 import {
   atomicAdd,
+  convertToTexture,
   Fn,
   globalId,
   If,
@@ -40,7 +41,6 @@ import invariant from 'tiny-invariant'
 
 import { FilterNode } from './FilterNode'
 import type { Node } from './node'
-import { convertToTexture } from './RTTextureNode'
 
 const { resetRendererState, restoreRendererState } = RendererUtils
 
@@ -106,9 +106,9 @@ export class LensGlareNode extends FilterNode {
   private readonly camera = new PerspectiveCamera()
   private rendererState?: RendererUtils.RendererState
 
-  private readonly inputTexelSize = uniform(new Vector2())
-  private readonly outputTexelSize = uniform(new Vector2())
-  private readonly geometryRatio = uniform(new Vector2())
+  private readonly inputTexelSize = uniform('vec2')
+  private readonly outputTexelSize = uniform('vec2')
+  private readonly geometryRatio = uniform('vec2')
 
   constructor(inputNode?: TextureNode | null) {
     super(inputNode)
@@ -308,8 +308,4 @@ export class LensGlareNode extends FilterNode {
 }
 
 export const lensGlare = (inputNode: Node | null): LensGlareNode =>
-  new LensGlareNode(
-    inputNode != null
-      ? convertToTexture(inputNode, 'LensGlareNode.Input')
-      : null
-  )
+  new LensGlareNode(inputNode != null ? convertToTexture(inputNode) : null)

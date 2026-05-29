@@ -1,16 +1,16 @@
 import {
   AgXToneMapping,
-  Clock,
   Group,
   Mesh,
   MeshPhysicalMaterial,
   PerspectiveCamera,
   Scene,
+  Timer,
   TorusGeometry,
   Vector3
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { mrt, output, pass, toneMapping } from 'three/tsl'
+import { context, mrt, output, pass, toneMapping } from 'three/tsl'
 import { PostProcessing, WebGPURenderer } from 'three/webgpu'
 
 import {
@@ -20,7 +20,7 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode
 } from '@takram/three-atmosphere/webgpu'
@@ -71,8 +71,12 @@ async function init(container: HTMLDivElement): Promise<() => void> {
 
   // The atmosphere context manages resources like LUTs and uniforms shared by
   // multiple nodes:
-  const context = new AtmosphereContextNode()
-  context.camera = camera
+  const atmosphereContext = new AtmosphereContext()
+  atmosphereContext.camera = camera
+  renderer.contextNode = context({
+    ...renderer.contextNode.value,
+    getAtmosphere: () => atmosphereContext
+  })
 
   // Sky background is not necessary as AerialPerspectiveNode renders it:
   const scene = new Scene()
@@ -103,7 +107,7 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
 
   // Create the atmospheric light:
-  const light = new AtmosphereLight(context)
+  const light = new AtmosphereLight()
   scene.add(light)
 
   const controls = new OrbitControls(camera, container)
@@ -127,10 +131,10 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   const depthNode = passNode.getTextureNode('depth')
   const velocityNode = passNode.getTextureNode('velocity')
 
-  const aerialNode = aerialPerspective(context, colorNode, depthNode)
+  const aerialNode = aerialPerspective(colorNode, depthNode)
   const lensFlareNode = lensFlare(aerialNode)
   const toneMappingNode = toneMapping(AgXToneMapping, 3, lensFlareNode)
-  const taaNode = temporalAntialias(highpVelocity)(
+  const taaNode = temporalAntialias(
     toneMappingNode,
     depthNode,
     velocityNode,
@@ -141,28 +145,29 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   postProcessing.outputNode = taaNode.add(dithering)
 
   // Rendering loop:
-  const clock = new Clock()
+  const timer = new Timer()
   const observerECEF = new Vector3()
-  void renderer.setAnimationLoop(() => {
+  void renderer.setAnimationLoop(time => {
+    timer.update(time)
     controls.update()
     camera.updateMatrixWorld()
     observerECEF.setFromMatrixPosition(camera.matrixWorld)
 
     // Configure the planetary conditions in the atmosphere context according to
     // the current date and optionally the point of observation:
-    const currentDate = +date + ((clock.getElapsedTime() * 5e6) % 864e5)
+    const currentDate = +date + ((timer.getElapsed() * 5e6) % 864e5)
     const matrixECIToECEF = getECIToECEFRotationMatrix(
       currentDate,
-      context.matrixECIToECEF.value
+      atmosphereContext.matrixECIToECEF.value
     )
     getSunDirectionECI(
       currentDate,
-      context.sunDirectionECEF.value,
+      atmosphereContext.sunDirectionECEF.value,
       observerECEF
     ).applyMatrix4(matrixECIToECEF)
     getMoonDirectionECI(
       currentDate,
-      context.moonDirectionECEF.value,
+      atmosphereContext.moonDirectionECEF.value,
       observerECEF
     ).applyMatrix4(matrixECIToECEF)
 
@@ -188,7 +193,7 @@ async function init(container: HTMLDivElement): Promise<() => void> {
     controls.dispose()
     geometry.dispose()
     material.dispose()
-    context.dispose()
+    atmosphereContext.dispose()
     renderer.dispose()
   }
 }

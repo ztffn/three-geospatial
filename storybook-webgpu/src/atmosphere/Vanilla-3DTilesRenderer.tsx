@@ -1,4 +1,5 @@
 import { TilesRenderer } from '3d-tiles-renderer'
+import { CesiumIonAuthPlugin } from '3d-tiles-renderer/core/plugins'
 import {
   GLTFExtensionsPlugin,
   GoogleCloudAuthPlugin,
@@ -6,8 +7,8 @@ import {
   UpdateOnChangePlugin
 } from '3d-tiles-renderer/plugins'
 import { AgXToneMapping, PerspectiveCamera, Scene, Vector3 } from 'three'
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
-import { mrt, output, pass, toneMapping } from 'three/tsl'
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
+import { context, mrt, output, pass, toneMapping } from 'three/tsl'
 import {
   MeshLambertNodeMaterial,
   PostProcessing,
@@ -21,7 +22,7 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode
 } from '@takram/three-atmosphere/webgpu'
@@ -73,8 +74,12 @@ async function init(container: HTMLDivElement): Promise<() => void> {
 
   // The atmosphere context manages resources like LUTs and uniforms shared by
   // multiple nodes:
-  const context = new AtmosphereContextNode()
-  context.camera = camera
+  const atmosphereContext = new AtmosphereContext()
+  atmosphereContext.camera = camera
+  renderer.contextNode = context({
+    ...renderer.contextNode.value,
+    getAtmosphere: () => atmosphereContext
+  })
 
   // Sky background is not necessary as AerialPerspectiveNode renders it:
   const scene = new Scene()
@@ -84,9 +89,14 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   tiles.setCamera(camera)
   tiles.setResolutionFromRenderer(camera, renderer as any)
   tiles.registerPlugin(
-    new GoogleCloudAuthPlugin({
-      apiToken: import.meta.env.STORYBOOK_GOOGLE_MAP_API_KEY
-    })
+    (import.meta.env.STORYBOOK_ION_API_TOKEN ?? '') !== ''
+      ? new CesiumIonAuthPlugin({
+          apiToken: import.meta.env.STORYBOOK_ION_API_TOKEN,
+          assetId: '2275207' // Google Photorealistic Tiles
+        })
+      : new GoogleCloudAuthPlugin({
+          apiToken: import.meta.env.STORYBOOK_GOOGLE_MAP_API_KEY
+        })
   )
   tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader }))
   tiles.registerPlugin(new TileCompressionPlugin())
@@ -98,7 +108,7 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   )
   tiles.registerPlugin(
     // Replace non-node materials in every tile:
-    new TileMaterialReplacementPlugin(MeshLambertNodeMaterial)
+    new TileMaterialReplacementPlugin(() => new MeshLambertNodeMaterial())
   )
   tiles.registerPlugin(new TilesFadePlugin())
   scene.add(tiles.group)
@@ -108,7 +118,7 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
 
   // Create the atmospheric light:
-  const light = new AtmosphereLight(context)
+  const light = new AtmosphereLight()
   scene.add(light)
 
   const controls = new GlobeControls(scene, camera, renderer.domElement)
@@ -143,10 +153,10 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   const depthNode = passNode.getTextureNode('depth')
   const velocityNode = passNode.getTextureNode('velocity')
 
-  const aerialNode = aerialPerspective(context, colorNode, depthNode)
+  const aerialNode = aerialPerspective(colorNode, depthNode)
   const lensFlareNode = lensFlare(aerialNode)
   const toneMappingNode = toneMapping(AgXToneMapping, 5, lensFlareNode)
-  const taaNode = temporalAntialias(highpVelocity)(
+  const taaNode = temporalAntialias(
     toneMappingNode,
     depthNode,
     velocityNode,
@@ -175,16 +185,16 @@ async function init(container: HTMLDivElement): Promise<() => void> {
     // the current date and optionally the point of observation:
     const matrixECIToECEF = getECIToECEFRotationMatrix(
       date,
-      context.matrixECIToECEF.value
+      atmosphereContext.matrixECIToECEF.value
     )
     getSunDirectionECI(
       date,
-      context.sunDirectionECEF.value,
+      atmosphereContext.sunDirectionECEF.value,
       observerECEF
     ).applyMatrix4(matrixECIToECEF)
     getMoonDirectionECI(
       date,
-      context.moonDirectionECEF.value,
+      atmosphereContext.moonDirectionECEF.value,
       observerECEF
     ).applyMatrix4(matrixECIToECEF)
 
@@ -214,7 +224,7 @@ async function init(container: HTMLDivElement): Promise<() => void> {
     passNode.dispose()
     controls.dispose()
     tiles.dispose()
-    context.dispose()
+    atmosphereContext.dispose()
     renderer.dispose()
   }
 }

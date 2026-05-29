@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.2] - 2026-04-05
+
+This release contains internal dependency updates only.
+
+## [0.6.1] - 2026-03-23
+
+### Fixed
+
+- Fixed depth test when logarithmic depth is used with `postprocessing >= 6.38.0`, [#100](https://github.com/takram-design-engineering/three-geospatial/issues/100).
+- Fixed convolution filters not being compiled with `three@0.183.0`.
+
+## [0.6.0] - 2026-03-09
+
+### Changed
+
+- Updated the peer dependency for `postprocessing` to `>= 6.38.0`.
+- Updated dependencies.
+
+### Fixed
+
+- Fixed logarithmic depth when used with `postprocessing >= 6.38.0`.
+- Fixed type errors in decorators when used with `postprocessing >= 6.38.0`.
+
+## [0.5.0] - 2025-12-24
+
+### Changed
+
+- Migrated types to `@types/three@0.181.0`.
+- Updated dependencies.
+
 ## [0.4.3] - 2025-11-01
 
 ### Fixed

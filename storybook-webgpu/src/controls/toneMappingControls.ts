@@ -13,6 +13,8 @@ import {
 import { UniformNode, type Renderer, type ToneMappingNode } from 'three/webgpu'
 import invariant from 'tiny-invariant'
 
+import { reinterpretType } from '@takram/three-geospatial'
+
 import { useSpringControl } from '../hooks/useSpringControl'
 import { useTransientControl } from '../hooks/useTransientControl'
 
@@ -31,7 +33,12 @@ export const toneMappingArgs = (
   ...defaults
 })
 
-export const toneMappingArgTypes = (): ArgTypes<ToneMappingArgs> => ({
+export const toneMappingArgTypes = (
+  options: {
+    min?: number
+    max?: number
+  } = {}
+): ArgTypes<ToneMappingArgs> => ({
   toneMappingEnabled: {
     name: 'enabled',
     control: {
@@ -66,8 +73,8 @@ export const toneMappingArgTypes = (): ArgTypes<ToneMappingArgs> => ({
     name: 'exposure',
     control: {
       type: 'range',
-      min: 0.1,
-      max: 100,
+      min: options.min ?? 0.1,
+      max: options.max ?? 100,
       step: 0.1
     },
     table: { category: 'tone mapping' }
@@ -114,6 +121,13 @@ function usePostProcessingToneMappingControls(
       toneMapping
     ],
     ([enabled, value]) => {
+      // WORKAROUND: Missing method as of r182. Adding these in the module
+      // augmentation breaks VSCode's auto completion.
+      reinterpretType<
+        ToneMappingNode & {
+          setToneMapping: (value: ToneMapping) => void
+        }
+      >(toneMappingNode)
       toneMappingNode.setToneMapping(enabled ? value : NoToneMapping)
       onChange?.(value)
     }

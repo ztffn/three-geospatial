@@ -1,15 +1,15 @@
 import {
   AgXToneMapping,
-  Clock,
   Group,
   Mesh,
   PerspectiveCamera,
   Scene,
+  Timer,
   TorusKnotGeometry,
   Vector3
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { pass, toneMapping } from 'three/tsl'
+import { context, mrt, output, pass, toneMapping } from 'three/tsl'
 import {
   MeshPhysicalNodeMaterial,
   PostProcessing,
@@ -22,13 +22,18 @@ import {
   getSunDirectionECI
 } from '@takram/three-atmosphere'
 import {
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode,
   skyBackground
 } from '@takram/three-atmosphere/webgpu'
 import { Ellipsoid, Geodetic, radians } from '@takram/three-geospatial'
-import { dithering } from '@takram/three-geospatial/webgpu'
+import {
+  dithering,
+  highpVelocity,
+  lensFlare,
+  temporalAntialias
+} from '@takram/three-geospatial/webgpu'
 
 import type { StoryFC } from '../components/createStory'
 
@@ -66,11 +71,15 @@ async function init(container: HTMLDivElement): Promise<() => void> {
 
   // The atmosphere context manages resources like LUTs and uniforms shared by
   // multiple nodes:
-  const context = new AtmosphereContextNode()
+  const atmosphereContext = new AtmosphereContext()
+  renderer.contextNode = context({
+    ...renderer.contextNode.value,
+    getAtmosphere: () => atmosphereContext
+  })
 
   // Create a scene with a sky background:
   const scene = new Scene()
-  scene.backgroundNode = skyBackground(context).add(dithering)
+  scene.backgroundNode = skyBackground().add(dithering)
 
   const group = new Group()
   scene.add(group)
@@ -95,7 +104,7 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   // Create the atmospheric light. Note that this story omits the atmospheric
   // scattering, which is only plausible when the distance between the camera
   // and scene objects is small enough to ignore it.
-  const light = new AtmosphereLight(context)
+  const light = new AtmosphereLight()
   scene.add(light)
 
   const controls = new OrbitControls(camera, container)
@@ -103,35 +112,51 @@ async function init(container: HTMLDivElement): Promise<() => void> {
   controls.minDistance = 1
   controls.target.copy(positionECEF)
 
-  // Post-processing for applying dithering after tone mapping:
-  const passNode = pass(scene, camera, { samples: 4 })
-  const toneMappingNode = toneMapping(AgXToneMapping, 3, passNode)
+  // Post-processing:
+  const passNode = pass(scene, camera, { samples: 0 }).setMRT(
+    mrt({
+      output,
+      velocity: highpVelocity
+    })
+  )
+  const colorNode = passNode.getTextureNode('output')
+  const depthNode = passNode.getTextureNode('depth')
+  const velocityNode = passNode.getTextureNode('velocity')
+  const lensFlareNode = lensFlare(colorNode)
+  const toneMappingNode = toneMapping(AgXToneMapping, 3, lensFlareNode)
+  const taaNode = temporalAntialias(
+    toneMappingNode,
+    depthNode,
+    velocityNode,
+    camera
+  )
   const postProcessing = new PostProcessing(renderer)
-  postProcessing.outputNode = toneMappingNode.add(dithering)
+  postProcessing.outputNode = taaNode.add(dithering)
 
   // Rendering loop:
-  const clock = new Clock()
+  const timer = new Timer()
   const observerECEF = new Vector3()
-  void renderer.setAnimationLoop(() => {
+  void renderer.setAnimationLoop(time => {
+    timer.update(time)
     controls.update()
     camera.updateMatrixWorld()
     observerECEF.setFromMatrixPosition(camera.matrixWorld)
 
     // Configure the planetary conditions in the atmosphere context according to
     // the current date and optionally the point of observation:
-    const currentDate = +date + ((clock.getElapsedTime() * 5e6) % 864e5)
+    const currentDate = +date + ((timer.getElapsed() * 5e6) % 864e5)
     const matrixECIToECEF = getECIToECEFRotationMatrix(
       currentDate,
-      context.matrixECIToECEF.value
+      atmosphereContext.matrixECIToECEF.value
     )
     getSunDirectionECI(
       currentDate,
-      context.sunDirectionECEF.value,
+      atmosphereContext.sunDirectionECEF.value,
       observerECEF
     ).applyMatrix4(matrixECIToECEF)
     getMoonDirectionECI(
       currentDate,
-      context.moonDirectionECEF.value,
+      atmosphereContext.moonDirectionECEF.value,
       observerECEF
     ).applyMatrix4(matrixECIToECEF)
 
@@ -154,7 +179,7 @@ async function init(container: HTMLDivElement): Promise<() => void> {
     controls.dispose()
     geometry.dispose()
     material.dispose()
-    context.dispose()
+    atmosphereContext.dispose()
     renderer.dispose()
   }
 }

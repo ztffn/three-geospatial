@@ -10,13 +10,13 @@ import {
   type Node
 } from '@takram/three-geospatial/webgpu'
 
-import type { AtmosphereContextNode } from './AtmosphereContextNode'
+import { getAtmosphereContext } from './AtmosphereContext'
 import { MoonNode } from './MoonNode'
-import { getSkyLuminance } from './runtime'
+import { getIndirectLuminance } from './runtime'
 import { StarsNode } from './StarsNode'
 import { SunNode } from './SunNode'
 
-const cameraDirectionWorld = (camera: Camera): Node<'vec3'> => {
+const cameraDirectionWorld = (camera?: Camera | null): Node<'vec3'> => {
   const positionView = inverseProjectionMatrix(camera).mul(
     vec4(positionGeometry, 1)
   ).xyz
@@ -37,7 +37,6 @@ export class SkyNode extends TempNode {
   }
 
   private readonly scope: SkyNodeScope = CAMERA
-  private readonly atmosphereContext: AtmosphereContextNode
 
   shadowLengthNode?: Node<'float'> | null
 
@@ -45,19 +44,18 @@ export class SkyNode extends TempNode {
   moonNode: MoonNode
   starsNode: StarsNode
 
-  // Static options:
   showSun = true
   showMoon = true
   showStars = true
+  moonScattering = false
   useContextCamera = true
 
-  constructor(scope: SkyNodeScope, atmosphereContext: AtmosphereContextNode) {
+  constructor(scope: SkyNodeScope) {
     super('vec3')
     this.scope = scope
-    this.atmosphereContext = atmosphereContext
-    this.sunNode = new SunNode(atmosphereContext)
-    this.moonNode = new MoonNode(atmosphereContext)
-    this.starsNode = new StarsNode(atmosphereContext)
+    this.sunNode = new SunNode()
+    this.moonNode = new MoonNode()
+    this.starsNode = new StarsNode()
   }
 
   override customCacheKey(): number {
@@ -65,29 +63,29 @@ export class SkyNode extends TempNode {
       +this.showSun,
       +this.showMoon,
       +this.showStars,
+      +this.moonScattering,
       +this.useContextCamera
     )
   }
 
   override setup(builder: NodeBuilder): unknown {
-    builder.getContext().atmosphere = this.atmosphereContext
+    const atmosphereContext = getAtmosphereContext(builder)
 
     const {
       matrixWorldToECEF,
       sunDirectionECEF,
+      moonDirectionECEF,
       cameraPositionUnit,
       altitudeCorrectionUnit
-    } = this.atmosphereContext
+    } = atmosphereContext
 
     // Direction of the camera ray:
     let directionWorld
     switch (this.scope) {
       case CAMERA: {
-        const camera = this.useContextCamera
-          ? this.atmosphereContext.camera
-          : builder.camera
-        directionWorld =
-          camera != null ? cameraDirectionWorld(camera) : undefined
+        directionWorld = cameraDirectionWorld(
+          this.useContextCamera ? atmosphereContext.camera : null
+        )
         break
       }
       case EQUIRECTANGULAR:
@@ -97,21 +95,37 @@ export class SkyNode extends TempNode {
     if (directionWorld == null) {
       return
     }
-    const rayDirectionECEF = matrixWorldToECEF
-      .mul(vec4(directionWorld, 0))
-      .xyz.toVertexStage()
-      .normalize()
-
-    const luminanceTransfer = getSkyLuminance(
-      cameraPositionUnit.add(altitudeCorrectionUnit),
-      rayDirectionECEF,
-      this.shadowLengthNode ?? 0,
-      sunDirectionECEF
-    )
-    const inscatter = luminanceTransfer.get('luminance')
-    const transmittance = luminanceTransfer.get('transmittance')
 
     return Fn(() => {
+      const rayDirectionECEF = matrixWorldToECEF
+        .mul(vec4(directionWorld, 0))
+        .xyz.toVertexStage()
+        .normalize()
+        .toConst()
+
+      const solarLuminanceTransfer = getIndirectLuminance(
+        cameraPositionUnit.add(altitudeCorrectionUnit),
+        rayDirectionECEF,
+        this.shadowLengthNode ?? 0,
+        sunDirectionECEF
+      ).toConst()
+      const transmittance = solarLuminanceTransfer.get('transmittance')
+      let inscatter = solarLuminanceTransfer.get('luminance')
+
+      if (this.moonScattering) {
+        const lunarLuminanceTransfer = getIndirectLuminance(
+          cameraPositionUnit.add(altitudeCorrectionUnit),
+          rayDirectionECEF,
+          this.shadowLengthNode ?? 0,
+          moonDirectionECEF
+        )
+
+        // TODO: Consider moon phase
+        inscatter = inscatter.add(
+          lunarLuminanceTransfer.get('luminance').mul(2.5e-6)
+        )
+      }
+
       const luminance = vec3(0).toVar()
 
       if (this.showStars) {

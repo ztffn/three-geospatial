@@ -1,11 +1,11 @@
 import {
+  convertToTexture,
   Fn,
   globalId,
   If,
   luminance,
   max,
   Return,
-  select,
   texture,
   textureStore,
   time,
@@ -35,11 +35,7 @@ import {
 } from 'three/webgpu'
 
 import { reinterpretType } from '@takram/three-geospatial'
-import {
-  convertToTexture,
-  outputTexture,
-  type Node
-} from '@takram/three-geospatial/webgpu'
+import { outputTexture, type Node } from '@takram/three-geospatial/webgpu'
 
 const { resetRendererState, restoreRendererState } = RendererUtils
 
@@ -199,11 +195,10 @@ export class LongExposureNode extends TempNode {
   override setup(builder: NodeBuilder): unknown {
     const { material, copyMaterial } = this
 
-    material.fragmentNode = select(
-      time.sub(this.timerNode.x).lessThan(this.shutterSpeed),
-      max(this.inputNode, this.historyNode),
-      this.inputNode
-    )
+    material.fragmentNode = time
+      .sub(this.timerNode.x)
+      .lessThan(this.shutterSpeed)
+      .select(max(this.inputNode, this.historyNode), this.inputNode)
     material.needsUpdate = true
 
     copyMaterial.fragmentNode = this.inputNode
@@ -225,4 +220,4 @@ export class LongExposureNode extends TempNode {
 }
 
 export const longExposure = (inputNode: Node): LongExposureNode =>
-  new LongExposureNode(convertToTexture(inputNode, 'LongExposureNode.Input'))
+  new LongExposureNode(convertToTexture(inputNode))

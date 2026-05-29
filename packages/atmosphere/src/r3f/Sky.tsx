@@ -4,26 +4,24 @@ import { useContext, useEffect, useMemo, type FC } from 'react'
 import type { BufferGeometry, Color, Mesh, Vector3 } from 'three'
 
 import type { AtmosphereMaterialProps } from '../AtmosphereMaterialBase'
-import { SKY_RENDER_ORDER } from '../constants'
 import { SkyMaterial, skyMaterialParametersDefaults } from '../SkyMaterial'
 import { AtmosphereContext } from './Atmosphere'
 import { separateProps } from './separateProps'
 
 export type SkyImpl = Mesh<BufferGeometry, SkyMaterial>
 
-export interface SkyProps
-  extends ElementProps<
-    typeof Mesh,
-    Mesh &
-      Required<AtmosphereMaterialProps> & {
-        sun: boolean
-        moon: boolean
-        moonDirection: Vector3
-        moonAngularRadius: number
-        lunarRadianceScale: number
-        groundAlbedo: Color
-      }
-  > {}
+export interface SkyProps extends ElementProps<
+  typeof Mesh,
+  Mesh &
+    Required<AtmosphereMaterialProps> & {
+      sun: boolean
+      moon: boolean
+      moonDirection: Vector3
+      moonAngularRadius: number
+      lunarRadianceScale: number
+      groundAlbedo: Color
+    }
+> {}
 
 export const Sky: FC<SkyProps> = ({ ref: forwardedRef, ...props }) => {
   const { textures, transientStates, ...contextProps } =
@@ -67,11 +65,7 @@ export const Sky: FC<SkyProps> = ({ ref: forwardedRef, ...props }) => {
   })
 
   return (
-    <ScreenQuad
-      renderOrder={SKY_RENDER_ORDER}
-      {...meshProps}
-      ref={forwardedRef}
-    >
+    <ScreenQuad {...meshProps} ref={forwardedRef}>
       <primitive
         object={material}
         {...atmosphereParameters}

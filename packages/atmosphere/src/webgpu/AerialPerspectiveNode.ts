@@ -1,11 +1,11 @@
 import { hash } from 'three/src/nodes/core/NodeUtils.js'
 import {
+  add,
   Fn,
   If,
   mix,
   positionGeometry,
   remapClamp,
-  select,
   uv,
   vec3,
   vec4
@@ -24,8 +24,8 @@ import {
   type Node
 } from '@takram/three-geospatial/webgpu'
 
-import type { AtmosphereContextNode } from './AtmosphereContextNode'
-import { getSkyLuminanceToPoint, getSunAndSkyIlluminance } from './runtime'
+import { getAtmosphereContext } from './AtmosphereContext'
+import { getIndirectLuminanceToPoint, getSplitIlluminance } from './runtime'
 import { sky } from './SkyNode'
 
 export class AerialPerspectiveNode extends TempNode {
@@ -33,32 +33,28 @@ export class AerialPerspectiveNode extends TempNode {
     return 'AerialPerspectiveNode'
   }
 
-  private readonly atmosphereContext: AtmosphereContextNode
-
   colorNode: Node<'vec4'>
   depthNode: Node<'float'>
   normalNode?: Node<'vec3'> | null
   skyNode?: Node<'vec3'> | null
   shadowLengthNode?: Node<'float'> | null
 
-  // Static options:
   correctGeometricError = true
   lighting = false
   transmittance = true
   inscatter = true
+  moonScattering = false
 
   constructor(
-    atmosphereContext: AtmosphereContextNode,
     colorNode: Node<'vec4'>,
     depthNode: Node<'float'>,
     normalNode?: Node<'vec3'> | null
   ) {
     super('vec4')
-    this.atmosphereContext = atmosphereContext
     this.colorNode = colorNode
     this.depthNode = depthNode
     this.normalNode = normalNode
-    this.skyNode = sky(atmosphereContext)
+    this.skyNode = sky()
 
     this.lighting = normalNode != null
   }
@@ -68,29 +64,31 @@ export class AerialPerspectiveNode extends TempNode {
       +this.correctGeometricError,
       +this.lighting,
       +this.transmittance,
-      +this.inscatter
+      +this.inscatter,
+      +this.moonScattering
     )
   }
 
   override setup(builder: NodeBuilder): unknown {
-    const camera = this.atmosphereContext.camera ?? builder.camera
+    const atmosphereContext = getAtmosphereContext(builder)
+
+    const camera = atmosphereContext.camera ?? builder.camera
     if (camera == null) {
       return
     }
 
-    builder.getContext().atmosphere = this.atmosphereContext
-
+    const { worldToUnit } = atmosphereContext.parametersNode
     const {
       ellipsoid,
-      worldToUnit,
       matrixWorldToECEF,
       sunDirectionECEF,
+      moonDirectionECEF,
       cameraPositionUnit,
       altitudeCorrectionUnit
-    } = this.atmosphereContext
+    } = atmosphereContext
 
     const { colorNode, depthNode, normalNode } = this
-    const depth = depthNode.r.toVar()
+    const depth = depthNode.r.toConst()
 
     const getSurfacePositionECEF = (): Node<'vec3'> => {
       const viewZ = depthToViewZ(depth, cameraNear(camera), cameraFar(camera), {
@@ -146,8 +144,7 @@ export class AerialPerspectiveNode extends TempNode {
           radiiUnit
         ).x // Near side
 
-        const positionCorrected = select(
-          intersection.greaterThanEqual(0),
+        const positionCorrected = intersection.greaterThanEqual(0).select(
           rayDirectionECEF.mul(intersection).add(cameraPositionUnit),
           // Fallback to radial projection:
           normalCorrected.mul(radiiUnit)
@@ -158,34 +155,47 @@ export class AerialPerspectiveNode extends TempNode {
       }
 
       const illuminance = Fn(() => {
-        if (normalNode == null) {
-          throw new Error(
-            'The "normalNode" is required when the "light" is set.'
-          )
-        }
-
         // Normal vector of the surface:
-        const normalView = normalNode.xyz
-        const normalWorld = inverseViewMatrix(camera).mul(
-          vec4(normalView, 0)
-        ).xyz
-        const normalECEF = matrixWorldToECEF.mul(vec4(normalWorld, 0)).xyz
+        let normalECEF
+        if (normalNode != null) {
+          const normalView = normalNode.xyz
+          const normalWorld = inverseViewMatrix(camera).mul(
+            vec4(normalView, 0)
+          ).xyz
+          normalECEF = matrixWorldToECEF.mul(vec4(normalWorld, 0)).xyz
 
-        if (this.correctGeometricError) {
-          normalECEF.assign(
-            mix(normalECEF, normalCorrected, geometryCorrectionAmount)
-          )
+          if (this.correctGeometricError) {
+            normalECEF.assign(
+              mix(normalECEF, normalCorrected, geometryCorrectionAmount)
+            )
+          }
+        } else {
+          normalECEF = positionUnit.normalize()
         }
 
         // Direct and indirect illuminance on the surface:
-        const sunSkyIlluminance = getSunAndSkyIlluminance(
+        const solarIlluminance = getSplitIlluminance(
           positionUnit.add(altitudeCorrectionUnit),
           normalECEF,
           sunDirectionECEF
         )
-        const sunIlluminance = sunSkyIlluminance.get('sunIlluminance')
-        const skyIlluminance = sunSkyIlluminance.get('skyIlluminance')
-        return sunIlluminance.add(skyIlluminance)
+        let illuminance = add(
+          solarIlluminance.get('direct'),
+          solarIlluminance.get('indirect')
+        )
+        if (this.moonScattering) {
+          const lunarIlluminance = getSplitIlluminance(
+            positionUnit.add(altitudeCorrectionUnit),
+            normalECEF,
+            moonDirectionECEF
+          )
+          illuminance = add(
+            illuminance,
+            lunarIlluminance.get('direct'),
+            lunarIlluminance.get('indirect')
+          )
+        }
+        return illuminance
       })()
 
       const diffuse = this.lighting
@@ -193,14 +203,28 @@ export class AerialPerspectiveNode extends TempNode {
         : colorNode.rgb
 
       // Scattering between the camera to the surface:
-      const luminanceTransfer = getSkyLuminanceToPoint(
+      const solarLuminanceTransfer = getIndirectLuminanceToPoint(
         cameraPositionUnit.add(altitudeCorrectionUnit),
         positionUnit.add(altitudeCorrectionUnit),
         this.shadowLengthNode ?? 0,
         sunDirectionECEF
-      ).toVar()
-      const inscatter = luminanceTransfer.get('luminance')
-      const transmittance = luminanceTransfer.get('transmittance')
+      ).toConst()
+      const transmittance = solarLuminanceTransfer.get('transmittance')
+      let inscatter = solarLuminanceTransfer.get('luminance')
+
+      if (this.moonScattering) {
+        const lunarLuminanceTransfer = getIndirectLuminanceToPoint(
+          cameraPositionUnit.add(altitudeCorrectionUnit),
+          positionUnit.add(altitudeCorrectionUnit),
+          this.shadowLengthNode ?? 0,
+          moonDirectionECEF
+        ).toConst()
+
+        // TODO: Consider moon phase
+        inscatter = inscatter.add(
+          lunarLuminanceTransfer.get('luminance').mul(2.5e-6)
+        )
+      }
 
       let output = diffuse
       if (this.transmittance) {
@@ -210,7 +234,7 @@ export class AerialPerspectiveNode extends TempNode {
         output = output.add(inscatter)
       }
       return output
-    })().context(builder.getContext())
+    })()
 
     return Fn(() => {
       const luminance = colorNode.toVar()

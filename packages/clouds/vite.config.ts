@@ -1,4 +1,4 @@
-/// <reference types='vitest' />
+/// <reference types='vitest/config' />
 
 import * as path from 'node:path'
 import { nxCopyAssetsPlugin } from '@nx/vite/plugins/nx-copy-assets.plugin'
@@ -46,7 +46,8 @@ export default defineConfig({
       // Could also be a dictionary or array of multiple entry points.
       entry: {
         'build/index': 'src/index.ts',
-        'build/r3f': 'src/r3f/index.ts'
+        'build/r3f': 'src/r3f/index.ts',
+        'build/webgpu': 'src/webgpu/index.ts'
       },
       name: 'clouds'
     },

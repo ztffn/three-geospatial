@@ -20,6 +20,7 @@ import { useMotionValueEvent, type MotionValue } from 'motion/react'
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   type ComponentRef,
@@ -30,18 +31,18 @@ import {
   AgXToneMapping,
   BufferGeometry,
   Line,
-  LinearSRGBColorSpace,
   Matrix4,
   NoColorSpace,
   NoToneMapping,
   Object3D,
   Shape,
+  SRGBColorSpace,
   TextureLoader,
   Vector3,
   type Group,
   type PerspectiveCamera
 } from 'three'
-import { div, pass, texture, toneMapping, uniform } from 'three/tsl'
+import { context, div, pass, texture, toneMapping, uniform } from 'three/tsl'
 import {
   LineBasicNodeMaterial,
   LineDashedNodeMaterial,
@@ -56,7 +57,7 @@ import {
   getSunDirectionECI,
   toAstroTime
 } from '@takram/three-atmosphere'
-import { AtmosphereContextNode, sky } from '@takram/three-atmosphere/webgpu'
+import { AtmosphereContext, sky } from '@takram/three-atmosphere/webgpu'
 import {
   degrees,
   Geodetic,
@@ -270,43 +271,57 @@ const Content: FC<StoryProps> = () => {
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
 
-  const context = useResource(() => new AtmosphereContextNode(), [])
-  context.camera = camera
+  const atmosphereContext = useResource(() => new AtmosphereContext(), [])
+  atmosphereContext.camera = camera
+
+  useLayoutEffect(() => {
+    renderer.contextNode = context({
+      ...renderer.contextNode.value,
+      getAtmosphere: () => atmosphereContext
+    })
+  }, [renderer, atmosphereContext])
 
   // Post-processing:
 
-  const [postProcessing, skyNode, toneMappingNode] = useResource(
-    manage => {
-      const passNode = manage(pass(scene, camera))
+  const passNode = useResource(() => pass(scene, camera), [scene, camera])
 
-      const skyNode = manage(sky(context))
-      skyNode.moonNode.colorNode = texture(
-        new TextureLoader().load('public/moon/color_large.webp', texture => {
-          texture.colorSpace = LinearSRGBColorSpace
-          texture.anisotropy = 16
-        })
-      )
-      skyNode.moonNode.normalNode = texture(
-        new TextureLoader().load('public/moon/normal_large.webp', texture => {
+  const skyNode = useResource(() => {
+    const skyNode = sky()
+    skyNode.moonNode.colorNode = texture(
+      new TextureLoader().load('public/moon/color_large.webp', texture => {
+        texture.colorSpace = SRGBColorSpace
+        texture.anisotropy = 16
+      })
+    )
+    skyNode.moonNode.displacementNode = texture(
+      new TextureLoader().load(
+        'public/moon/displacement_large.webp',
+        texture => {
           texture.colorSpace = NoColorSpace
-          texture.anisotropy = 16
-        })
+          texture.generateMipmaps = false
+        }
       )
+    )
+    return skyNode
+  }, [])
 
-      const lensFlareNode = manage(lensFlare(skyNode))
-      const toneMappingNode = manage(
-        toneMapping(AgXToneMapping, uniform(1), lensFlareNode)
-      )
+  const lensFlareNode = useResource(() => lensFlare(skyNode), [skyNode])
 
-      const postProcessing = new PostProcessing(renderer)
-      postProcessing.outputNode = toneMappingNode.rgb
-        .mul(passNode.a.oneMinus())
-        .add(passNode.rgb)
-        .add(dithering)
+  const toneMappingNode = useResource(
+    () => toneMapping(AgXToneMapping, uniform(1), lensFlareNode),
+    [lensFlareNode]
+  )
 
-      return [postProcessing, skyNode, toneMappingNode]
-    },
-    [renderer, scene, camera, context]
+  const postProcessing = useResource(
+    () =>
+      new PostProcessing(
+        renderer,
+        toneMappingNode.rgb
+          .mul(passNode.a.oneMinus())
+          .add(passNode.rgb)
+          .add(dithering)
+      ),
+    [renderer, passNode, toneMappingNode]
   )
 
   useGuardedFrame(() => {
@@ -320,7 +335,7 @@ const Content: FC<StoryProps> = () => {
 
   // Location controls:
   const [longitude, latitude, height] = useLocationControls(
-    context.matrixWorldToECEF.value
+    atmosphereContext.matrixWorldToECEF.value
   )
 
   // Local date controls (depends on the longitude of the location):
@@ -346,7 +361,8 @@ const Content: FC<StoryProps> = () => {
   useCombinedChange(
     [longitude, latitude, height, date, moonScale, moonIntensity],
     ([longitude, latitude, height, date, moonScale, moonIntensity]) => {
-      const { matrixECIToECEF, sunDirectionECEF, moonDirectionECEF } = context
+      const { matrixECIToECEF, sunDirectionECEF, moonDirectionECEF } =
+        atmosphereContext
 
       const time = toAstroTime(date)
       getECIToECEFRotationMatrix(time, matrixECIToECEF.value)
@@ -359,7 +375,7 @@ const Content: FC<StoryProps> = () => {
         geodetic.set(radians(longitude), radians(latitude), height).toECEF()
       ).applyMatrix4(matrixECIToECEF.value)
 
-      const { matrixMoonFixedToECEF } = context
+      const { matrixMoonFixedToECEF } = atmosphereContext
       getMoonFixedToECIRotationMatrix(
         time,
         matrixMoonFixedToECEF.value
@@ -411,7 +427,7 @@ const Content: FC<StoryProps> = () => {
       return
     }
     if (northUp) {
-      matrix.copy(context.matrixWorldToECEF.value).transpose()
+      matrix.copy(atmosphereContext.matrixWorldToECEF.value).transpose()
       camera.up.set(0, 0, 1).applyMatrix4(matrix)
     } else {
       camera.up.copy(Object3D.DEFAULT_UP)
@@ -639,5 +655,3 @@ Story.argTypes = {
   ...toneMappingArgTypes(),
   ...rendererArgTypes()
 }
-
-export default Story

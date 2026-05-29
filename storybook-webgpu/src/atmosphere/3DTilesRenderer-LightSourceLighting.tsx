@@ -1,15 +1,12 @@
-import { useThree } from '@react-three/fiber'
-import { useMemo, type FC } from 'react'
+import { extend, useThree, type ThreeElement } from '@react-three/fiber'
+import { useLayoutEffect, useMemo, type FC } from 'react'
 import { AgXToneMapping, Scene } from 'three'
+import { context, mrt, output, pass, toneMapping, uniform } from 'three/tsl'
 import {
-  diffuseColor,
-  mrt,
-  normalView,
-  pass,
-  toneMapping,
-  uniform
-} from 'three/tsl'
-import { PostProcessing, type Renderer } from 'three/webgpu'
+  MeshLambertNodeMaterial,
+  PostProcessing,
+  type Renderer
+} from 'three/webgpu'
 
 import {
   getECIToECEFRotationMatrix,
@@ -18,7 +15,9 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode
+  AtmosphereContext,
+  AtmosphereLight,
+  AtmosphereLightNode
 } from '@takram/three-atmosphere/webgpu'
 import {
   dithering,
@@ -56,6 +55,14 @@ import { useGuardedFrame } from '../hooks/useGuardedFrame'
 import { usePointOfView, type PointOfViewProps } from '../hooks/usePointOfView'
 import { useResource } from '../hooks/useResource'
 
+declare module '@react-three/fiber' {
+  interface ThreeElements {
+    atmosphereLight: ThreeElement<typeof AtmosphereLight>
+  }
+}
+
+extend({ AtmosphereLight })
+
 const Content: FC<StoryProps> = ({
   longitude,
   latitude,
@@ -69,59 +76,69 @@ const Content: FC<StoryProps> = ({
   const camera = useThree(({ camera }) => camera)
   const overlayScene = useMemo(() => new Scene(), [])
 
-  const context = useResource(() => new AtmosphereContextNode(), [])
-  context.camera = camera
+  const atmosphereContext = useResource(() => new AtmosphereContext(), [])
+  atmosphereContext.camera = camera
+
+  useLayoutEffect(() => {
+    renderer.contextNode = context({
+      ...renderer.contextNode.value,
+      getAtmosphere: () => atmosphereContext
+    })
+  }, [renderer, atmosphereContext])
 
   // Post-processing:
 
-  const [postProcessing, passNode, toneMappingNode] = useResource(
-    manage => {
-      const passNode = manage(
-        pass(scene, camera, { samples: 0 }).setMRT(
-          mrt({
-            output: diffuseColor,
-            normal: normalView,
-            velocity: highpVelocity
-          })
-        )
-      )
-      const colorNode = passNode.getTextureNode('output')
-      const depthNode = passNode.getTextureNode('depth')
-      const normalNode = passNode.getTextureNode('normal')
-      const velocityNode = passNode.getTextureNode('velocity')
-
-      const aerialNode = manage(
-        aerialPerspective(context, colorNode.mul(2 / 3), depthNode, normalNode)
-      )
-      const lensFlareNode = manage(lensFlare(aerialNode))
-      const toneMappingNode = manage(
-        toneMapping(AgXToneMapping, uniform(0), lensFlareNode)
-      )
-      const taaNode = manage(
-        temporalAntialias(highpVelocity)(
-          toneMappingNode,
-          depthNode,
-          velocityNode,
-          camera
-        )
-      )
-
-      const overlayPassNode = manage(
-        pass(overlayScene, camera, {
-          samples: 0,
-          depthBuffer: false
+  const passNode = useResource(
+    () =>
+      pass(scene, camera, { samples: 0 }).setMRT(
+        mrt({
+          output,
+          velocity: highpVelocity
         })
-      )
+      ),
+    [scene, camera]
+  )
 
-      const postProcessing = new PostProcessing(renderer)
-      postProcessing.outputNode = taaNode
-        .add(dithering)
-        .mul(overlayPassNode.a.oneMinus())
-        .add(overlayPassNode)
+  const colorNode = passNode.getTextureNode('output')
+  const depthNode = passNode.getTextureNode('depth')
+  const velocityNode = passNode.getTextureNode('velocity')
 
-      return [postProcessing, passNode, toneMappingNode]
-    },
-    [renderer, camera, scene, overlayScene, context]
+  const aerialNode = useResource(
+    () => aerialPerspective(colorNode.mul(2 / 3), depthNode),
+    [colorNode, depthNode]
+  )
+
+  const lensFlareNode = useResource(() => lensFlare(aerialNode), [aerialNode])
+
+  const toneMappingNode = useResource(
+    () => toneMapping(AgXToneMapping, uniform(0), lensFlareNode),
+    [lensFlareNode]
+  )
+
+  const taaNode = useResource(
+    () => temporalAntialias(toneMappingNode, depthNode, velocityNode, camera),
+    [camera, depthNode, velocityNode, toneMappingNode]
+  )
+
+  const overlayPassNode = useResource(
+    () =>
+      pass(overlayScene, camera, {
+        samples: 0,
+        depthBuffer: false
+      }),
+    [camera, overlayScene]
+  )
+
+  const postProcessing = useResource(
+    () =>
+      new PostProcessing(
+        renderer,
+        taaNode
+          .add(dithering)
+          .mul(overlayPassNode.a.oneMinus())
+          .add(overlayPassNode)
+      ),
+    [renderer, taaNode, overlayPassNode]
   )
 
   useGuardedFrame(() => {
@@ -156,7 +173,8 @@ const Content: FC<StoryProps> = ({
 
   // Local date controls (depends on the longitude of the location):
   useLocalDateControls(longitude, date => {
-    const { matrixECIToECEF, sunDirectionECEF, moonDirectionECEF } = context
+    const { matrixECIToECEF, sunDirectionECEF, moonDirectionECEF } =
+      atmosphereContext
     getECIToECEFRotationMatrix(date, matrixECIToECEF.value)
     getSunDirectionECI(date, sunDirectionECEF.value).applyMatrix4(
       matrixECIToECEF.value
@@ -172,9 +190,15 @@ const Content: FC<StoryProps> = ({
   )
 
   return (
-    <Globe apiKey={apiKey}>
-      <GlobeControls enableDamping overlayScene={overlayScene} />
-    </Globe>
+    <>
+      <atmosphereLight />
+      <Globe
+        apiKey={apiKey}
+        materialHandler={() => new MeshLambertNodeMaterial()}
+      >
+        <GlobeControls enableDamping overlayScene={overlayScene} />
+      </Globe>
+    </>
   )
 }
 
@@ -185,7 +209,13 @@ interface StoryArgs extends OutputPassArgs, ToneMappingArgs, LocalDateArgs {
 }
 
 export const Story: StoryFC<StoryProps, StoryArgs> = props => (
-  <WebGPUCanvas>
+  <WebGPUCanvas
+    renderer={{
+      onInit: renderer => {
+        renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
+      }
+    }}
+  >
     <Content {...props} />
     <Description>
       <TilesAttribution />
@@ -208,5 +238,3 @@ Story.argTypes = {
   ...outputPassArgTypes(),
   ...rendererArgTypes()
 }
-
-export default Story

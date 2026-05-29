@@ -52,7 +52,7 @@ const textureUVW = FnVar((textureSize: Node<'vec3'>, zoom: Node<'float'>) => {
   If(index.greaterThanEqual(textureSize.z), () => {
     Discard()
   })
-  return vec3(uv.fract(), index.toFloat().add(0.5).div(textureSize.z))
+  return vec3(uv.fract(), index.toFloat().div(textureSize.z))
 })
 
 const Content: FC<StoryProps> = ({ name, ...options }) => {
@@ -64,7 +64,7 @@ const Content: FC<StoryProps> = ({ name, ...options }) => {
   const lutNode = useResource(() => {
     const parameters = new AtmosphereParameters()
     parameters.groundAlbedo.setScalar(0.1)
-    parameters.minCosSun = Math.cos(radians(120))
+    parameters.minCosLight = Math.cos(radians(120))
     return new AtmosphereLUTNode(parameters)
   }, [])
   Object.assign(lutNode.parameters, options)
@@ -121,5 +121,3 @@ Story.argTypes = {
   ...toneMappingArgTypes(),
   ...rendererArgTypes()
 }
-
-export default Story
