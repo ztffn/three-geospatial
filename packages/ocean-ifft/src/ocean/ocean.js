@@ -21,7 +21,10 @@ class OceanChunkManager extends entity.Component {
 
 		this.sun = new THREE.Vector3();
 
-		this.cubeRenderTarget = new THREE.WebGLCubeRenderTarget( 256 );
+		// three 0.183 webgpu build dropped WebGLCubeRenderTarget; CubeRenderTarget
+		// is the replacement. This target is a legacy artifact (layer-2 cube
+		// camera, nothing renders to it) but is constructed unconditionally in Init.
+		this.cubeRenderTarget = new THREE.CubeRenderTarget( 256 );
 		this.cubeRenderTarget.texture.format = THREE.RGBAFormat;
 		this.cubeRenderTarget.texture.type = THREE.HalfFloatType;
 		this.cubeRenderTarget.texture.minFilter = THREE.LinearMipMapLinearFilter;

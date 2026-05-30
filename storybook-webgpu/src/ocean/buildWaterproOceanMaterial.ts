@@ -27,7 +27,6 @@ import {
   vec2,
   vec3,
   vec4,
-  type ShaderNodeObject,
 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
@@ -207,7 +206,7 @@ export interface BuildWaterproOceanMaterialParams {
   sunDirLightUniform: UniformNode<Vector3>
   sunIntensityUniform: UniformNode<number>
   depthTexture: Texture
-  depthTextureEnabled: ShaderNodeObject<Node> | UniformNode<number>
+  depthTextureEnabled: Node | UniformNode<number>
   /** Live atmosphere sky cube — `envNode.renderTarget.texture`. */
   envCubeTexture: CubeTexture
   foamTexture: Texture
@@ -218,7 +217,7 @@ export interface BuildWaterproOceanMaterialParams {
    * chunks, it's the WGSL vertex stage that does morph + IFFT + Gerstner
    * internally.
    */
-  positionNode: ShaderNodeObject<Node> | Node
+  positionNode: Node | Node
 
   /**
    * Cascade fragment-UV source — read by the fragment graph to sample wave
@@ -230,7 +229,7 @@ export interface BuildWaterproOceanMaterialParams {
    * vDisplacedPosition varying directly (ocean-local frame). This is the one
    * place where chunks cannot be a literal carbon copy of the plane wiring.
    */
-  fragSurfaceXZ: ShaderNodeObject<Node>
+  fragSurfaceXZ: Node
 
   /**
    * World-space surface XZ — used by fresnel distance-to-camera, viewDir,
@@ -239,7 +238,7 @@ export interface BuildWaterproOceanMaterialParams {
    * fragSurfaceXZ; for chunks it differs (ocean-local vs ECEF). Passing the
    * same node for both works in the plane case, fails on chunks.
    */
-  worldSurfaceXZ?: ShaderNodeObject<Node>
+  worldSurfaceXZ?: Node
 
   /**
    * Full world-space surface position (vec3) used for viewDir. Plane callers
@@ -249,7 +248,7 @@ export interface BuildWaterproOceanMaterialParams {
    * Y ≈ 6.37×10⁶, not 0, and zeroing Y aims viewDir at Earth's centre,
    * producing a diagonal threshold-crossing in fresnel/reflection.
    */
-  worldSurfacePos?: ShaderNodeObject<Node>
+  worldSurfacePos?: Node
 
   /**
    * Optional override for `oceanDepth` (view-space surface depth) when the
@@ -258,13 +257,13 @@ export interface BuildWaterproOceanMaterialParams {
    * `modelViewMatrix × vDisplaced` here. Plane passes undefined (water-color
    * uses TSL `positionView` internally).
    */
-  oceanDepth?: ShaderNodeObject<Node>
+  oceanDepth?: Node
   /**
    * Optional override for `oceanPositionWorld` (used by water-column-depth's
    * grazing-angle divisor). Plane passes undefined; chunks pass
    * `modelWorldMatrix × vDisplaced`.
    */
-  oceanPositionWorld?: ShaderNodeObject<Node>
+  oceanPositionWorld?: Node
 
   /**
    * Optional actual surface Y (the displaced vertex height in ocean-local
@@ -275,7 +274,7 @@ export interface BuildWaterproOceanMaterialParams {
    * fragment XZ — which is OFF by lambda chop for peaks (foam ends up
    * next to the crest, not on it).
    */
-  surfaceHeight?: ShaderNodeObject<Node>
+  surfaceHeight?: Node
 
   /**
    * Optional tileable surface position (vec3) passed to ALL foam nodes
@@ -287,7 +286,7 @@ export interface BuildWaterproOceanMaterialParams {
    * Plane callers leave this undefined → nodes use TSL `positionWorld` which
    * equals the local frame at origin → same behaviour.
    */
-  tilingPosition?: ShaderNodeObject<Node>
+  tilingPosition?: Node
 }
 
 /**
@@ -644,5 +643,5 @@ export function buildWaterproOceanMaterial(
 // Re-exports so callers don't have to re-import for the displacement
 // computation that varies per caller.
 export { sampleWaveDisplacement, GerstnerOverlay, WaveSimulation }
-export type { ShaderNodeObject, Node, UniformNode }
+export type { Node, UniformNode }
 export { Vector2, Vector3, Vector4 }

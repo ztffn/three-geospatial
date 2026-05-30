@@ -3,7 +3,8 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useRef, type ReactElement } from 'react'
 import * as THREE from 'three'
-import type { AtmosphereContextNode } from '@takram/three-atmosphere/webgpu'
+import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
+// @ts-expect-error JS module
 import OceanChunkManager from '../ocean/ocean.js'
 
 interface WaveGeneratorLike {
@@ -24,7 +25,7 @@ interface OceanChunksProps {
   onOceanManagerReady?: (oceanManager: OceanManager) => void
   parent?: THREE.Object3D | null
   cameraOverride?: THREE.PerspectiveCamera | null
-  atmosphereContext?: AtmosphereContextNode | null
+  atmosphereContext?: AtmosphereContext | null
 }
 
 export default function OceanChunks({

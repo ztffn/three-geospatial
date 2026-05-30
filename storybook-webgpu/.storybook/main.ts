@@ -22,6 +22,16 @@ const config: StorybookConfig = {
     interactions: false
   },
 
+  // Disable react-docgen prop extraction. It runs a separate Babel parse over
+  // the import graph (incl. upstream package .ts like core/FilterNode.ts) and
+  // errors on takram's duplicate `type Node` import — valid for their esbuild
+  // build but fatal to Babel. Our stories define controls explicitly via
+  // argTypes, so auto-docgen prop tables aren't needed. Keeps upstream
+  // packages unmodified.
+  typescript: {
+    reactDocgen: false
+  },
+
   staticDirs: [
     { from: '../assets', to: '/public' },
     { from: '../../packages/ocean-ifft/public', to: '/ocean-ifft' },
@@ -30,7 +40,13 @@ const config: StorybookConfig = {
 
   viteFinal: config =>
     mergeConfig(config, {
-      plugins: [react(), nxViteTsPaths()],
+      // Route upstream package *.ts (non-JSX) through Vite's esbuild instead of
+      // @vitejs/plugin-react's Babel transform. esbuild strips type-only imports
+      // before parsing, so it tolerates files like core/FilterNode.ts that
+      // duplicate a `type Node` import (valid for takram's esbuild build, but
+      // Babel errors on the duplicate and fails the whole module graph). Keeps
+      // upstream packages unmodified. .tsx (components) still go through React.
+      plugins: [react({ exclude: [/packages[\\/].*\.ts$/] }), nxViteTsPaths()],
       // Load .env from repo root (where STORYBOOK_ION_API_TOKEN /
       // STORYBOOK_GOOGLE_MAP_API_KEY live). Without this, Vite's default
       // envDir is the storybook-webgpu/ cwd and root env vars never reach

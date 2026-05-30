@@ -12,7 +12,7 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode,
   skyEnvironment
@@ -45,6 +45,7 @@ import {
 } from '../controls/toneMappingControls'
 import { useGuardedFrame } from '../hooks/useGuardedFrame'
 import { useResource } from '../hooks/useResource'
+import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
 import { WaveGenerator, OceanChunks } from '@three-geospatial/ocean-ifft'
 
 declare module '@react-three/fiber' {
@@ -78,9 +79,10 @@ const Content: FC<StoryProps> = ({ longitude, latitude, height }) => {
   const camera = useThree(({ camera }) => camera)
   const [waveGenerator, setWaveGenerator] = useState<any>(null)
 
-  const context = useResource(() => new AtmosphereContextNode(), [])
+  const context = useResource(() => new AtmosphereContext(), [])
+  useAtmosphereContextNode(context)
   context.camera = camera
-  const envNode = useResource(() => skyEnvironment(context), [context])
+  const envNode = useResource(() => skyEnvironment(), [context])
   scene.environmentNode = envNode
 
   const {
@@ -132,7 +134,7 @@ const Content: FC<StoryProps> = ({ longitude, latitude, height }) => {
       const depthNode = passNode.getTextureNode('depth')
       const velocityNode = passNode.getTextureNode('velocity')
 
-      const aerialNode = manage(aerialPerspective(context, colorNode, depthNode))
+      const aerialNode = manage(aerialPerspective(colorNode, depthNode))
       const lensFlareNode = manage(lensFlare(aerialNode))
       const toneMappingNode = manage(
         toneMapping(AgXToneMapping, uniform(0), lensFlareNode)
@@ -192,7 +194,7 @@ const Content: FC<StoryProps> = ({ longitude, latitude, height }) => {
 
   return (
     <>
-      <atmosphereLight args={[context]} />
+      <atmosphereLight />
       <ambientLight intensity={0.5} />
       <OrbitControls target={targetPosition.toArray()} minDistance={1000} />
       <GlobeControls enableDamping overlayScene={scene} />
