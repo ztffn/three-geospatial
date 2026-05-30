@@ -81,6 +81,13 @@ async function detectWebGPU(): Promise<boolean> {
 // atmosphere can't disguise itself as a stuck ocean (and vice versa).
 type Phase = 'atmosphere' | 'ocean' | 'ready'
 
+// Stability debounce: require the readiness condition to hold for this many
+// consecutive frames before reporting. Then wait one additional rAF tick so
+// the first render-after-ready completes (gives WebGPU shader/material
+// compilation a frame to finish — chunks have geometry once Busy=false but
+// the pipeline compiles on first draw). 5 frames at 60 Hz is ~83 ms.
+const STABLE_FRAMES = 5
+
 const ReadinessProbe: FC<{
   refs: ContentReadinessRefs | null
   phase: Phase
@@ -92,16 +99,26 @@ const ReadinessProbe: FC<{
   useEffect(() => {
     if (refs == null) return
     let cancelled = false
+    let stableFrames = 0
     const phaseStart = performance.now()
+    const fire = (cb: (ms: number) => void): void => {
+      // One extra rAF after the stability window so the first render-after-
+      // ready has completed (shader/material compile during first draw).
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        cb(performance.now() - phaseStart)
+      })
+    }
     const tick = (): void => {
       if (cancelled) return
       if (phase === 'atmosphere' && !reportedAtmRef.current) {
         const lut = (refs.atmosphereContext as any)?.lutNode
         const atmosphereReady =
           lut != null && lut.currentVersion != null && lut.updating === false
-        if (atmosphereReady) {
+        stableFrames = atmosphereReady ? stableFrames + 1 : 0
+        if (stableFrames >= STABLE_FRAMES) {
           reportedAtmRef.current = true
-          onAtmosphereReady(performance.now() - phaseStart)
+          fire(onAtmosphereReady)
           return
         }
       } else if (phase === 'ocean' && !reportedOceanRef.current) {
@@ -113,9 +130,10 @@ const ReadinessProbe: FC<{
           mgr.builder_ != null &&
           mgr.builder_.Busy === false &&
           chunkCount > 0
-        if (oceanReady) {
+        stableFrames = oceanReady ? stableFrames + 1 : 0
+        if (stableFrames >= STABLE_FRAMES) {
           reportedOceanRef.current = true
-          onOceanReady(performance.now() - phaseStart)
+          fire(onOceanReady)
           return
         }
       } else {
@@ -153,34 +171,79 @@ const App: FC = () => {
   }, [])
 
   return (
-    <Canvas
-      camera={{ fov: 45, near: 1, far: 1e8 }}
-      style={{ position: 'fixed', inset: 0, background: '#101820' }}
-      gl={async props => {
-        const renderer = new WebGPURenderer({
-          ...(props as any),
-          antialias: true,
-          logarithmicDepthBuffer: true
-        })
-        await renderer.init()
-        renderer.highPrecision = true
-        renderer.outputColorSpace = SRGBColorSpace
-        renderer.toneMapping = NoToneMapping
-        renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
-        return renderer as unknown as Renderer
+    <>
+      <Canvas
+        camera={{ fov: 45, near: 1, far: 1e8 }}
+        style={{ position: 'fixed', inset: 0, background: '#101820' }}
+        gl={async props => {
+          const renderer = new WebGPURenderer({
+            ...(props as any),
+            antialias: true,
+            logarithmicDepthBuffer: true
+          })
+          await renderer.init()
+          renderer.highPrecision = true
+          renderer.outputColorSpace = SRGBColorSpace
+          renderer.toneMapping = NoToneMapping
+          renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
+          return renderer as unknown as Renderer
+        }}
+      >
+        <Content
+          onReadinessRefs={handleReadinessRefs}
+          disableOcean={phase === 'atmosphere'}
+        />
+        <ReadinessProbe
+          refs={refs}
+          phase={phase}
+          onAtmosphereReady={handleAtmosphereReady}
+          onOceanReady={handleOceanReady}
+        />
+      </Canvas>
+      <Splash visible={phase !== 'ready'} />
+    </>
+  )
+}
+
+// Minimal cover: full-bleed dark backdrop matching the canvas clear color, a
+// small spinner, and a single line of status. Fades out (500 ms) once the
+// loader reports ready. No spinning while ready — display:none after the
+// fade so the spinner doesn't burn cycles in the background.
+const Splash: FC<{ visible: boolean }> = ({ visible }) => {
+  const [mounted, setMounted] = useState(true)
+  useEffect(() => {
+    if (visible) return
+    const t = setTimeout(() => setMounted(false), 500)
+    return () => clearTimeout(t)
+  }, [visible])
+  if (!mounted) return null
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: '#101820',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        opacity: visible ? 1 : 0,
+        transition: 'opacity 500ms ease-out',
+        pointerEvents: visible ? 'auto' : 'none',
+        zIndex: 10
       }}
     >
-      <Content
-        onReadinessRefs={handleReadinessRefs}
-        disableOcean={phase === 'atmosphere'}
+      <div
+        style={{
+          width: 24,
+          height: 24,
+          borderRadius: '50%',
+          border: '2px solid rgba(207, 216, 227, 0.2)',
+          borderTopColor: 'rgba(207, 216, 227, 0.9)',
+          animation: 'gwp-spin 0.9s linear infinite'
+        }}
       />
-      <ReadinessProbe
-        refs={refs}
-        phase={phase}
-        onAtmosphereReady={handleAtmosphereReady}
-        onOceanReady={handleOceanReady}
-      />
-    </Canvas>
+      <style>{`@keyframes gwp-spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
   )
 }
 

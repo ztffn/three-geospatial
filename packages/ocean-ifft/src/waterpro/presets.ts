@@ -41,6 +41,12 @@ export interface WaterproPresetWaterFields {
   sparkle: { intensity: number; power: number }
   sss: { intensity: number; power: number }
   waves: { fftAmplitude: number; gerstnerAmplitude: number }
+  // Optional blocks — preset only writes these if defined AND the bag has the
+  // matching uniform. Used by stories that expose extra grading knobs beyond
+  // the original WaterPro field set (e.g. the AgX-tonemap atmosphere story
+  // exposes sky-reflection grading + turbulent foam intensity).
+  reflection?: { color: string; exposure: number; scale: number }
+  turbulent?: { intensity: number }
 }
 
 export type WaterproPresetName =
@@ -173,18 +179,24 @@ export const WATERPRO_PRESETS: Record<WaterproPresetName, WaterproPresetWaterFie
     sss: { intensity: 0.4, power: 3 },
     waves: { fftAmplitude: 0.25, gerstnerAmplitude: 0.8 },
   },
+  // Values transcribed from a user-tuned Karmøy/19:10 scene config (2026-05-27).
+  // Atmosphere/location/turbine/camera fields from that config were
+  // intentionally not written here — they belong on AtmosphereContextNode,
+  // not the ocean preset.
   tropical: {
-    color: { shallow: '#227272', deep: '#0a5e6b', depthFalloff: 250, transmission: '#30c4a8' },
+    color: { shallow: '#00e7e7', deep: '#0985b5', depthFalloff: 67, transmission: '#30c4a8' },
     foam: {
-      surface: { color: '#ffffff', coverage: 0.2, opacity: 0.06, size: 150 },
+      surface: { color: '#ffffff', coverage: 0, opacity: 0.14, size: 20 },
       shoreline: { color: '#e8fcff', coverage: 0.72, opacity: 0.35, range: 30, size: 178 },
-      waves: { color: '#ffffff', coverage: 0.2, crestCoverage: 0.2, opacity: 0.15, peakIntensity: 0.2, rippleWeight: 0.4, waveWeight: 0.8, windBias: 0.5, windStretch: 0.15, size: 160 },
+      waves: { color: '#ffffff', coverage: 0, crestCoverage: 0.31, opacity: 0.81, peakIntensity: 0.2, rippleWeight: 0.4, waveWeight: 0.8, windBias: 0.5, windStretch: 0.15, size: 160 },
     },
-    fresnel: { normalStrength: 0.97, power: 4.7 },
+    fresnel: { normalStrength: 0.2, power: 4.2 },
     fog: { fadeStart: 1150, fadePower: 1 },
-    sparkle: { intensity: 1, power: 960 },
-    sss: { intensity: 1.6, power: 2.2 },
-    waves: { fftAmplitude: 0.43, gerstnerAmplitude: 2.12 },
+    sparkle: { intensity: 1.5, power: 75.7 },
+    sss: { intensity: 0.5, power: 16 },
+    waves: { fftAmplitude: 0.56, gerstnerAmplitude: 0.42 },
+    reflection: { color: '#ffffff', exposure: 0.21, scale: 1.8 },
+    turbulent: { intensity: 0.1 },
   },
 }
 
@@ -233,6 +245,12 @@ export interface WaterproPresetUniformBag {
 
   fftAmplitude: { value: number }
   gerstnerAmplitude: { value: number }
+
+  // Optional — only present in stories that expose these uniforms.
+  skyReflectionColor?: { value: Vector3 }
+  skyReflectionExposure?: { value: number }
+  skyReflectionScale?: { value: number }
+  turbulentIntensity?: { value: number }
 }
 
 const scratchColor = new Color()
@@ -288,6 +306,21 @@ export function applyWaterproPreset(
 
   u.fftAmplitude.value = p.waves.fftAmplitude
   u.gerstnerAmplitude.value = p.waves.gerstnerAmplitude
+
+  if (p.reflection != null) {
+    if (u.skyReflectionColor != null) {
+      setHexAsLinearVec3(u.skyReflectionColor.value, p.reflection.color)
+    }
+    if (u.skyReflectionExposure != null) {
+      u.skyReflectionExposure.value = p.reflection.exposure
+    }
+    if (u.skyReflectionScale != null) {
+      u.skyReflectionScale.value = p.reflection.scale
+    }
+  }
+  if (p.turbulent != null && u.turbulentIntensity != null) {
+    u.turbulentIntensity.value = p.turbulent.intensity
+  }
 }
 
 export const WATERPRO_PRESET_NAMES: WaterproPresetName[] = Object.keys(
