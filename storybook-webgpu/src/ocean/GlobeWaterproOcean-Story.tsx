@@ -556,11 +556,12 @@ export const Content: FC<{
     opacity: { value: 0.85, min: 0, max: 1, step: 0.01 },
     coverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
     windSpeed: { value: 0.004, min: 0, max: 0.05, step: 0.001 },
-    tiles: { value: 10, min: 1, max: 100, step: 1 },
+    tiles: { value: 69, min: 1, max: 100, step: 1 },
     dayColor: '#ffffff',
     nightAmbient: { value: 0.03, min: 0, max: 0.5, step: 0.01 },
     density: { value: 0.1, min: 0, max: 1, step: 0.01 },
     intensity: { value: 2.5, min: 0, max: 6, step: 0.1 },
+    contrast: { value: 1, min: 0.5, max: 5, step: 0.1 },
   }))
 
   // Apply a preset's field bag to the sliders when the selector changes.
@@ -1238,6 +1239,7 @@ export const Content: FC<{
           nightAmbient={cloudControls.nightAmbient}
           density={cloudControls.density}
           intensity={cloudControls.intensity}
+          contrast={cloudControls.contrast}
           source={cloudControls.source as 'procedural' | 'live'}
         />
       )}

@@ -64,6 +64,12 @@ interface CloudLayerProps {
    */
   intensity?: number
   /**
+   * Coverage contrast (gamma). >1 thins partial cloud toward clear sky for a
+   * broken-cloud look; 1 = unchanged. Mainly for 'live', whose raw cover reads
+   * as a solid white veil otherwise.
+   */
+  contrast?: number
+  /**
    * Coverage source. 'procedural' = inline FBM noise (art-directable, the mood
    * presets). 'live' = near-real-time global cloud cover from matteason's Live
    * Cloud Maps (equirectangular, EUMETSAT-derived, refreshed ~3h). In live mode
@@ -88,6 +94,7 @@ export const CloudLayer: FC<CloudLayerProps> = ({
   nightAmbient = 0.03,
   density = 0.1,
   intensity = 2.5,
+  contrast = 1,
   source = 'procedural',
 }) => {
   // Stable uniforms so prop tweaks don't rebuild the material/graph.
@@ -99,6 +106,7 @@ export const CloudLayer: FC<CloudLayerProps> = ({
   const dayColorU = useMemo(() => uniform(new Color(dayColor)), [])
   const densityU = useMemo(() => uniform(density), [])
   const intensityU = useMemo(() => uniform(intensity), [])
+  const contrastU = useMemo(() => uniform(contrast), [])
   opacityU.value = opacity
   coverageU.value = coverage
   tilesU.value = tiles
@@ -107,6 +115,7 @@ export const CloudLayer: FC<CloudLayerProps> = ({
   dayColorU.value.set(dayColor)
   densityU.value = density
   intensityU.value = intensity
+  contrastU.value = contrast
 
   const radius = Ellipsoid.WGS84.maximumRadius + altitude
 
@@ -151,6 +160,8 @@ export const CloudLayer: FC<CloudLayerProps> = ({
       const n = mx_fractal_noise_float(p, 6, 2.0, 0.5)
       cov = n.mul(float(0.5)).add(float(0.5)).saturate()
     }
+    // Contrast/gamma: thins partial cloud toward clear sky (broken-cloud look).
+    cov = cov.pow(contrastU)
     const edged = smoothstep(coverageU, coverageU.add(float(0.25)), cov)
 
     // Day/night + terminator shading from the sun direction (TO-sun · cloud-up).
