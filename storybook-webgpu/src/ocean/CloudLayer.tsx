@@ -12,7 +12,6 @@ import {
   DoubleSide,
   NoColorSpace,
   RepeatWrapping,
-  SRGBColorSpace,
   TextureLoader,
   Vector3,
 } from 'three'
@@ -72,15 +71,11 @@ interface CloudLayerProps {
    * the grading knobs (color/density/intensity/sun) still apply. Requires
    * attribution: "Contains modified EUMETSAT data".
    */
-  source?: 'procedural' | 'live' | 'debug-earth'
+  source?: 'procedural' | 'live'
 }
 
 const LIVE_CLOUDS_URL =
   'https://clouds.matteason.co.uk/images/2048x1024/clouds-alpha.png'
-// Blue-Marble + clouds, RGB. Verification only: map continents with the same UV
-// math, semi-transparent, to check geographic registration against the terrain.
-const DEBUG_EARTH_URL =
-  'https://clouds.matteason.co.uk/images/2048x1024/earth.jpg'
 
 export const CloudLayer: FC<CloudLayerProps> = ({
   altitude = 4000,
@@ -117,11 +112,10 @@ export const CloudLayer: FC<CloudLayerProps> = ({
 
   // Live cloud-cover texture (equirectangular). Loaded only in 'live' mode.
   const cloudTex = useMemo(() => {
-    if (source === 'procedural') return null
-    const earth = source === 'debug-earth'
-    const t = new TextureLoader().load(earth ? DEBUG_EARTH_URL : LIVE_CLOUDS_URL)
+    if (source !== 'live') return null
+    const t = new TextureLoader().load(LIVE_CLOUDS_URL)
     t.wrapS = RepeatWrapping
-    t.colorSpace = earth ? SRGBColorSpace : NoColorSpace
+    t.colorSpace = NoColorSpace
     t.flipY = false // deterministic: image top row at v=0 (north), matches v below
     return t
   }, [source])
@@ -140,7 +134,7 @@ export const CloudLayer: FC<CloudLayerProps> = ({
 
     const dir = normalize(positionWorld)
     let cov
-    if (source !== 'procedural' && cloudTex != null) {
+    if (source === 'live' && cloudTex != null) {
       // Equirectangular UV from ECEF lon/lat. ECEF: +X→(0°N,0°E), +Y→(0°N,90°E),
       // +Z→north pole. With flipY=false, image top row (north) is at v=0.
       const lon = atan(dir.y, dir.x)
@@ -149,12 +143,6 @@ export const CloudLayer: FC<CloudLayerProps> = ({
         lon.div(Math.PI * 2).add(0.5),
         float(0.5).sub(lat.div(Math.PI))
       )
-      if (source === 'debug-earth') {
-        // Verification mode: paint continents semi-transparent over the terrain.
-        mat.colorNode = texture(cloudTex, equiUV).rgb
-        mat.opacityNode = float(0.6)
-        return mat
-      }
       cov = texture(cloudTex, equiUV).a.saturate() // alpha = cloud presence
     } else {
       // Fractal (FBM) noise sampled by world DIRECTION — uniform cloud scale, no

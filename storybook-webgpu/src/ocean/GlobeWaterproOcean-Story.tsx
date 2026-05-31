@@ -550,10 +550,7 @@ export const Content: FC<{
   // the sliders via `setCloudControls`. Slider defaults match the 'fair' preset.
   const [cloudControls, setCloudControls] = useControls('Clouds', () => ({
     enabled: { value: true },
-    source: {
-      value: 'procedural',
-      options: ['procedural', 'live', 'debug-earth'],
-    },
+    source: { value: 'procedural', options: ['procedural', 'live'] },
     preset: { value: 'fair' as CloudPresetName, options: CLOUD_PRESET_NAMES },
     altitude: { value: 4000, min: 500, max: 12000, step: 100 },
     opacity: { value: 0.85, min: 0, max: 1, step: 0.01 },
@@ -1241,7 +1238,7 @@ export const Content: FC<{
           nightAmbient={cloudControls.nightAmbient}
           density={cloudControls.density}
           intensity={cloudControls.intensity}
-          source={cloudControls.source as 'procedural' | 'live' | 'debug-earth'}
+          source={cloudControls.source as 'procedural' | 'live'}
         />
       )}
       <OrbitControls
