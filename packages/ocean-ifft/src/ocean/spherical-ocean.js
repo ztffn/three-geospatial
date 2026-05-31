@@ -29,8 +29,9 @@ class SphericalOceanChunkManager extends entity.Component {
 		// Sun position for lighting
 		this.sun = new THREE.Vector3();
 
-		// Environment cube camera (same as existing)
-		this.cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256);
+		// Environment cube camera (same as existing). three 0.183 webgpu build
+		// dropped WebGLCubeRenderTarget; CubeRenderTarget is the replacement.
+		this.cubeRenderTarget = new THREE.CubeRenderTarget(256);
 		this.cubeRenderTarget.texture.format = THREE.RGBAFormat;
 		this.cubeRenderTarget.texture.type = THREE.HalfFloatType;
 		this.cubeRenderTarget.texture.minFilter = THREE.LinearMipMapLinearFilter;

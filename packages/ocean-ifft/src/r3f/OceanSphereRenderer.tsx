@@ -3,7 +3,8 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import * as THREE from 'three'
-import type { AtmosphereContextNode } from '@takram/three-atmosphere/webgpu'
+import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
+// @ts-expect-error JS module
 import SphericalOceanChunkManager from '../ocean/spherical-ocean.js'
 import { SphericalMapping } from '../coordinates/SphericalMapping'
 
@@ -37,7 +38,7 @@ interface OceanSphereRendererProps {
   onOceanManagerReady?: (oceanManager: SphericalOceanManager) => void
   parent?: THREE.Object3D | null
   cameraOverride?: THREE.PerspectiveCamera | null
-  atmosphereContext?: AtmosphereContextNode | null
+  atmosphereContext?: AtmosphereContext | null
   children?: React.ReactNode
 }
 

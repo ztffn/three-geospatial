@@ -4,7 +4,7 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef, type ReactElement } from 'react'
 import * as THREE from 'three/webgpu'
 import { pass, toneMapping, uniform } from 'three/tsl'
-import type { AtmosphereContextNode } from '@takram/three-atmosphere/webgpu'
+import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
 import { aerialPerspective, StarsNode } from '@takram/three-atmosphere/webgpu'
 import { dithering, lensFlare } from '@takram/three-geospatial/webgpu'
 import type { AtmosphereSettings } from '../../components/AtmosphereLayer'
@@ -19,7 +19,7 @@ interface PostProcessingProps {
   lensFlare?: {
     bloomIntensity: number
   }
-  atmosphereContext: AtmosphereContextNode | null
+  atmosphereContext: AtmosphereContext | null
   atmosphereSettings: AtmosphereSettings
 }
 
@@ -46,14 +46,14 @@ export default function PostProcessing({
       const colorNode = scenePass.getTextureNode('output')
       const depthNode = scenePass.getTextureNode('depth')
 
-      const aerialNode = aerialPerspective(atmosphereContext, colorNode, depthNode)
+      const aerialNode = aerialPerspective(colorNode, depthNode)
       const skyNode = (aerialNode as { skyNode?: any }).skyNode
       if (skyNode) {
         skyNode.showSun = atmosphereSettings.showSun
         skyNode.showMoon = atmosphereSettings.showMoon
         skyNode.showStars = atmosphereSettings.showStars
         starsNodeRef.current?.dispose()
-        const starsNode = new StarsNode(atmosphereContext, STARS_ASSET_PATH)
+        const starsNode = new StarsNode(STARS_ASSET_PATH)
         starsNode.intensity.value = atmosphereSettings.showStars ? 1 : 0
         starsNodeRef.current = starsNode
         skyNode.starsNode = starsNode

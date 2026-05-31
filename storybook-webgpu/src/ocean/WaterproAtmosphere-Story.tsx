@@ -12,7 +12,14 @@
 
 import { OrbitControls } from '@react-three/drei'
 import { extend, useFrame, useThree, type ThreeElement } from '@react-three/fiber'
-import { useEffect, useMemo, useRef, useState, type FC } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FC,
+} from 'react'
 import {
   AgXToneMapping,
   Color,
@@ -21,8 +28,10 @@ import {
   HalfFloatType,
   LinearFilter,
   Matrix4,
+  type Group,
   type Mesh,
   type Material,
+  type Object3D,
   NearestFilter,
   PlaneGeometry,
   RenderTarget,
@@ -70,7 +79,7 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode,
   skyEnvironment,
@@ -97,6 +106,8 @@ import {
   useToneMappingControls,
   type ToneMappingArgs,
 } from '../controls/toneMappingControls'
+import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
+import { useGLTF } from '../hooks/useGLTF'
 import { useGuardedFrame } from '../hooks/useGuardedFrame'
 import { useResource } from '../hooks/useResource'
 import { useTransientControl } from '../hooks/useTransientControl'
@@ -212,6 +223,24 @@ interface StoryArgs extends ToneMappingArgs, LocationArgs, LocalDateArgs {
   waterDepth: number
   shallowColor: string
   deepColor: string
+  turbineHeight: number
+  turbineSpin: boolean
+  turbineSpinSpeed: number
+}
+
+const Turbine: FC<{
+  groupRef: React.RefObject<Group | null>
+  wingsRef: React.RefObject<Object3D | null>
+}> = ({ groupRef, wingsRef }) => {
+  const gltf = useGLTF('public/turbine-demo.glb')
+  useEffect(() => {
+    wingsRef.current = gltf.scene.getObjectByName('Windwings') ?? null
+  }, [gltf.scene, wingsRef])
+  return (
+    <group ref={groupRef}>
+      <primitive object={gltf.scene} position={[0, 0, 0]} scale={1} />
+    </group>
+  )
 }
 
 const Content: FC = () => {
@@ -222,6 +251,10 @@ const Content: FC = () => {
   const oceanMeshRef = useRef<Mesh>(null)
   const terrainMeshRef = useRef<Mesh>(null)
   const capsuleMeshRef = useRef<Mesh>(null)
+  const turbineGroupRef = useRef<Group>(null)
+  const turbineWingsRef = useRef<Object3D>(null)
+  const turbineSpinRef = useRef(true)
+  const turbineSpinSpeedRef = useRef(2.0)
   const depthMaterial = useMemo(() => createLinearDepthMaterial(), [])
 
   // Atmosphere context + sky environment. environmentNode is load-bearing: it
@@ -229,9 +262,10 @@ const Content: FC = () => {
   // doesn't collapse to black at low sun angles. (Without it, NdotL→0 zeroes
   // the diffuse term, the only thing left is sky reflection inside finalColor,
   // and the ocean reads as pink sand at sunset.)
-  const context = useResource(() => new AtmosphereContextNode(), [])
+  const context = useResource(() => new AtmosphereContext(), [])
   context.camera = camera
-  const envNode = useResource(() => skyEnvironment(context), [context])
+  useAtmosphereContextNode(context)
+  const envNode = useResource(() => skyEnvironment(), [])
   scene.environmentNode = envNode as any
 
   // Wave simulation lifecycle.
@@ -418,6 +452,13 @@ const Content: FC = () => {
       sssPower: u.sssPower,
       fftAmplitude: u.fftAmplitude,
       gerstnerAmplitude: u.gerstnerAmplitude,
+      // Optional bag slots — applier only writes these when the preset defines
+      // the matching field. Lets presets like `tropical` carry user-tuned
+      // reflection grading + turbulent foam intensity.
+      skyReflectionColor: u.skyReflectionColor,
+      skyReflectionExposure: u.skyReflectionExposure,
+      skyReflectionScale: u.skyReflectionScale,
+      turbulentIntensity: u.turbulentIntensity,
     }),
     [u]
   )
@@ -479,6 +520,11 @@ const Content: FC = () => {
       u.shallowColor.value.set(cs.r, cs.g, cs.b)
       const cd = new Color().setStyle(args.deepColor)
       u.deepColor.value.set(cd.r, cd.g, cd.b)
+      if (turbineGroupRef.current) {
+        turbineGroupRef.current.position.y = args.turbineHeight
+      }
+      turbineSpinRef.current = args.turbineSpin
+      turbineSpinSpeedRef.current = args.turbineSpinSpeed
     }
   )
 
@@ -783,7 +829,7 @@ const Content: FC = () => {
       const depthNode = passNode.getTextureNode('depth')
       // colorNode.mul(SCENE_RADIANCE_SCALE) — matches GlobeOceanProto:513.
       const aerialNode = manage(
-        aerialPerspective(context, colorNode.mul(SCENE_RADIANCE_SCALE), depthNode)
+        aerialPerspective(colorNode.mul(SCENE_RADIANCE_SCALE), depthNode)
       )
       const lensFlareNode = manage(lensFlare(aerialNode))
       const toneMappingNode = manage(
@@ -833,8 +879,15 @@ const Content: FC = () => {
     const r = renderer as any
     const swapped: Array<{ mesh: Mesh; mat: Material | Material[] }> = []
     if (oceanMesh) oceanMesh.visible = false
-    ;[terrainMeshRef.current, capsuleMeshRef.current].forEach(m => {
-      if (m == null) return
+    const depthMeshes: Mesh[] = []
+    if (terrainMeshRef.current) depthMeshes.push(terrainMeshRef.current)
+    if (capsuleMeshRef.current) depthMeshes.push(capsuleMeshRef.current)
+    if (turbineGroupRef.current) {
+      turbineGroupRef.current.traverse(o => {
+        if ((o as Mesh).isMesh) depthMeshes.push(o as Mesh)
+      })
+    }
+    depthMeshes.forEach(m => {
       swapped.push({ mesh: m, mat: m.material as Material | Material[] })
       m.material = depthMaterial as unknown as Material
     })
@@ -857,13 +910,18 @@ const Content: FC = () => {
     postProcessing.render()
   }, 1)
 
-  useFrame(() => {
+  useFrame((_, dt) => {
     camera.layers.enableAll()
+    if (turbineSpinRef.current && turbineWingsRef.current) {
+      // Blender's local +Y (rotor shaft) → glTF local -Z after the
+      // Z-up→Y-up axis conversion the exporter applies.
+      turbineWingsRef.current.rotation.z += turbineSpinSpeedRef.current * dt
+    }
   })
 
   return (
     <>
-      <atmosphereLight args={[context]} />
+      <atmosphereLight />
       <OrbitControls target={[0, 0, 0]} />
 
       <mesh ref={terrainMeshRef} position={[0, -15, 0]} rotation={[0.6, 0, 0]}>
@@ -875,6 +933,8 @@ const Content: FC = () => {
         <capsuleGeometry args={[3, 4, 8, 24]} />
         <meshStandardMaterial color="#c04040" />
       </mesh>
+
+      <Turbine groupRef={turbineGroupRef} wingsRef={turbineWingsRef} />
 
       {/* DEBUG: sky-cube probe. Renders the SkyEnvironmentNode renderTarget on
           a sphere via cubeTexture(tex, normalLocal). Gradient = cube populated;
@@ -955,6 +1015,9 @@ Story.args = {
   shallowColor: '#00e7e7',
   // deepColor: linear (0, 0.2, 0.4) ≈ sRGB #007baa
   deepColor: '#007baa',
+  turbineHeight: -28,
+  turbineSpin: true,
+  turbineSpinSpeed: 2.0,
 }
 
 Story.argTypes = {
@@ -1025,4 +1088,7 @@ Story.argTypes = {
     control: { type: 'color' },
     table: { category: 'Water color' },
   },
+  turbineHeight: { ...range(-50, 50, 0.1), table: { category: 'Turbine' } },
+  turbineSpin: { control: 'boolean', table: { category: 'Turbine' } },
+  turbineSpinSpeed: { ...range(0, 20, 0.1), table: { category: 'Turbine' } },
 }

@@ -1,10 +1,11 @@
 'use client';
 
 import { useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three/webgpu';
+import { context as tslContext } from 'three/tsl';
 import {
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode,
   skyBackground,
@@ -31,7 +32,7 @@ export interface AtmosphereSettings {
 
 interface AtmosphereLayerProps {
   settings: AtmosphereSettings;
-  onContextReady?: (context: AtmosphereContextNode | null) => void;
+  onContextReady?: (context: AtmosphereContext | null) => void;
   onSunDirectionChange?: (direction: THREE.Vector3) => void;
 }
 
@@ -43,17 +44,27 @@ export default function AtmosphereLayer({ settings, onContextReady, onSunDirecti
   const renderer = gl as unknown as THREE.WebGPURenderer;
   const sceneWithNodes = scene as typeof scene & { backgroundNode?: any };
   const context = useMemo(() => {
-    const node = new AtmosphereContextNode();
+    const node = new AtmosphereContext();
     node.constrainCamera = false;
     node.correctAltitude = true;
     return node;
   }, []);
-  const atmosphereLight = useMemo(() => new AtmosphereLight(context, 500000), [context]);
+  // New takram atmosphere API: nodes resolve the context via getAtmosphere() off
+  // the renderer's contextNode rather than taking it as a constructor argument.
+  useLayoutEffect(() => {
+    renderer.contextNode = tslContext({
+      ...(renderer.contextNode as any).value,
+      getAtmosphere: () => context,
+    });
+  }, [renderer, context]);
+  // AtmosphereLight(distance, body) — was (context, distance); context now flows
+  // through contextNode. Preserve the 500000 distance.
+  const atmosphereLight = useMemo(() => new AtmosphereLight(500000), []);
   const backgroundNode = useMemo(() => {
-    const node = skyBackground(context);
-    node.starsNode = new StarsNode(context, STARS_ASSET_PATH);
+    const node = skyBackground();
+    node.starsNode = new StarsNode(STARS_ASSET_PATH);
     return node;
-  }, [context]);
+  }, []);
   const lightRegistered = useRef(false);
   const sunWorldRef = useRef(new THREE.Vector3());
 

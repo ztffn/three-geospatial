@@ -2,6 +2,7 @@
 
 import { useThree } from '@react-three/fiber'
 import { useEffect, useRef, type ReactElement } from 'react'
+// @ts-expect-error JS module
 import { wave_generator } from '../waves/wave-generator.js'
 import { GUIAdapter } from '../../components/GUIAdapter'
 

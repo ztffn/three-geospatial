@@ -17,7 +17,7 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode
+  AtmosphereContext
 } from '@takram/three-atmosphere/webgpu'
 import {
   dithering,
@@ -52,6 +52,7 @@ import {
 import { useGuardedFrame } from '../hooks/useGuardedFrame'
 import { usePointOfView, type PointOfViewProps } from '../hooks/usePointOfView'
 import { useResource } from '../hooks/useResource'
+import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
 import { useTransientControl } from '../hooks/useTransientControl'
 import { TilesFadePlugin } from '../plugins/fade/TilesFadePlugin'
 import { TileMaterialReplacementPlugin } from '../plugins/TileMaterialReplacementPlugin'
@@ -69,7 +70,8 @@ const Content: FC<StoryProps> = ({
   const camera = useThree(({ camera }) => camera)
   const overlayScene = useMemo(() => new Scene(), [])
 
-  const context = useResource(() => new AtmosphereContextNode(), [])
+  const context = useResource(() => new AtmosphereContext(), [])
+  useAtmosphereContextNode(context)
   context.camera = camera
 
   const [postProcessing, passNode, aerialNode, toneMappingNode] = useResource(
@@ -89,7 +91,7 @@ const Content: FC<StoryProps> = ({
       const velocityNode = passNode.getTextureNode('velocity')
 
       const aerialNode = manage(
-        aerialPerspective(context, colorNode, depthNode, normalNode)
+        aerialPerspective(colorNode, depthNode, normalNode)
       )
       const lensFlareNode = manage(lensFlare(aerialNode))
       const toneMappingNode = manage(

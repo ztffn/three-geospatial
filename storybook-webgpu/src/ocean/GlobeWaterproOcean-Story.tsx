@@ -57,7 +57,7 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode,
   skyEnvironment,
@@ -80,6 +80,13 @@ import {
 import { Color } from 'three'
 
 import OceanChunksWaterpro from './OceanChunksWaterpro'
+import { CloudLayer } from './CloudLayer'
+import {
+  CLOUD_PRESETS,
+  CLOUD_PRESET_NAMES,
+  type CloudPresetName,
+} from './cloud-presets'
+import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
 import type { WaterproOceanUniforms } from './buildWaterproOceanMaterial'
 import type { UniformNode } from 'three/webgpu'
 
@@ -257,7 +264,7 @@ foamTexture.wrapT = RepeatWrapping
 
 const OceanSurface: FC<{
   target: Vector3
-  atmosphereContext: AtmosphereContextNode
+  atmosphereContext: AtmosphereContext
   envCubeTexture: THREE.CubeTexture
   onUniformsReady: (uniforms: WaterproOceanUniforms) => void
   onVertexUniformsReady: (vu: VertexUniformsBag) => void
@@ -433,7 +440,7 @@ const SCENE_RADIANCE_SCALE = 0.28
 // available so a host page can poll their compute/build state and decide
 // when to reveal the scene. See examples/ocean-globe-waterpro-demo/main.tsx.
 export interface ContentReadinessRefs {
-  atmosphereContext: AtmosphereContextNode
+  atmosphereContext: AtmosphereContext
   getOceanManager: () => any | null
 }
 
@@ -456,7 +463,9 @@ export const Content: FC<{
   const [vertexUniforms, setVertexUniforms] =
     useState<VertexUniformsBag | null>(null)
   const overlayScene = useMemo(() => new Scene(), [])
-  const context = useMemo(() => new AtmosphereContextNode(), [])
+  const context = useMemo(() => new AtmosphereContext(), [])
+  context.camera = camera
+  useAtmosphereContextNode(context)
 
   // Surface the context + a live getter for the ocean manager once, so a
   // host page (standalone deploy) can poll readiness without re-reading
@@ -477,7 +486,7 @@ export const Content: FC<{
   // it, MeshStandardNodeMaterial collapses to ~black at low sun angles (NdotL
   // → 0 zeroes the diffuse term, leaving only emissive). PORT-STATUS §11
   // documents this. Mirrors WaterproAtmosphere-Story.tsx:232-235.
-  const envNode = useMemo(() => skyEnvironment(context), [context])
+  const envNode = useMemo(() => skyEnvironment(), [])
   useEffect(() => {
     scene.environmentNode = envNode as any
     return () => {
@@ -537,6 +546,35 @@ export const Content: FC<{
     starsIntensity: { value: 20, min: 0, max: 100, step: 1 },
   })
 
+  // Function-form useControls so a preset selection can push values back into
+  // the sliders via `setCloudControls`. Slider defaults match the 'fair' preset.
+  const [cloudControls, setCloudControls] = useControls('Clouds', () => ({
+    enabled: { value: true },
+    source: { value: 'procedural', options: ['procedural', 'live'] },
+    preset: { value: 'fair' as CloudPresetName, options: CLOUD_PRESET_NAMES },
+    altitude: { value: 4000, min: 500, max: 12000, step: 100 },
+    opacity: { value: 0.85, min: 0, max: 1, step: 0.01 },
+    coverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
+    windSpeed: { value: 0.004, min: 0, max: 0.05, step: 0.001 },
+    tiles: { value: 69, min: 1, max: 100, step: 1 },
+    dayColor: '#ffffff',
+    nightAmbient: { value: 0.03, min: 0, max: 0.5, step: 0.01 },
+    density: { value: 0.1, min: 0, max: 1, step: 0.01 },
+    intensity: { value: 2.5, min: 0, max: 6, step: 0.1 },
+    contrast: { value: 1, min: 0.5, max: 5, step: 0.1 },
+  }))
+
+  // Apply a preset's field bag to the sliders when the selector changes.
+  // (Manual slider edits afterward just override live; the selector label
+  // stays on the last-chosen preset — a scaffold simplification.)
+  const prevCloudPresetRef = useRef<CloudPresetName>(cloudControls.preset)
+  useEffect(() => {
+    if (cloudControls.preset === prevCloudPresetRef.current) return
+    prevCloudPresetRef.current = cloudControls.preset
+    // CloudPresetFields keys all match the Clouds leva control keys.
+    setCloudControls({ ...CLOUD_PRESETS[cloudControls.preset] })
+  }, [cloudControls.preset, setCloudControls])
+
   const oceanFrameControls = useControls('Ocean Frame', {
     seaLevelOffset: {
       value: 29,
@@ -565,7 +603,7 @@ export const Content: FC<{
     []
   )
   const presetControls = useControls('Ocean Preset', {
-    preset: { value: 'custom', options: presetOptions },
+    preset: { value: 'tranquil', options: presetOptions },
   })
 
   const toggleControls = useControls('Ocean Toggles', {
@@ -588,8 +626,8 @@ export const Content: FC<{
 
   const cameraControls = useControls('Camera', {
     minDistance: { value: 50, min: 1, max: 5000, step: 1 },
-    maxDistance: { value: 100000, min: 1000, max: 1_000_000, step: 1000 },
-    autoOrbit: { value: false },
+    maxDistance: { value: 100000, min: 1000, max: 50_000_000, step: 100_000 },
+    autoOrbit: { value: true },
     orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
   })
 
@@ -865,7 +903,6 @@ export const Content: FC<{
     const depthNode = passNode.getTextureNode('depth')
 
     const aerialNode = aerialPerspective(
-      context,
       colorNode.mul(SCENE_RADIANCE_SCALE),
       depthNode
     )
@@ -878,7 +915,6 @@ export const Content: FC<{
       }
       if (atmosphereControls.showStars) {
         const starsNode = new StarsNode(
-          context,
           new URL(
             '../../../packages/atmosphere/assets/stars.bin',
             import.meta.url
@@ -1190,7 +1226,23 @@ export const Content: FC<{
 
   return (
     <>
-      <atmosphereLight args={[context]} />
+      <atmosphereLight />
+      {cloudControls.enabled && (
+        <CloudLayer
+          altitude={cloudControls.altitude}
+          opacity={cloudControls.opacity}
+          coverage={cloudControls.coverage}
+          windSpeed={cloudControls.windSpeed}
+          tiles={cloudControls.tiles}
+          sunDirection={context.sunDirectionECEF as any}
+          dayColor={cloudControls.dayColor}
+          nightAmbient={cloudControls.nightAmbient}
+          density={cloudControls.density}
+          intensity={cloudControls.intensity}
+          contrast={cloudControls.contrast}
+          source={cloudControls.source as 'procedural' | 'live'}
+        />
+      )}
       <OrbitControls
         makeDefault
         enableDamping

@@ -12,7 +12,7 @@ import {
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
-  AtmosphereContextNode,
+  AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode,
   skyEnvironment
@@ -43,6 +43,7 @@ import {
 } from '../controls/toneMappingControls'
 import { useGuardedFrame } from '../hooks/useGuardedFrame'
 import { useResource } from '../hooks/useResource'
+import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
 import { useTransientControl } from '../hooks/useTransientControl'
 
 // Import our new spherical ocean components
@@ -67,7 +68,8 @@ const Content: FC<StoryProps> = () => {
   const camera = useThree(({ camera }) => camera)
   const [waveGenerator, setWaveGenerator] = useState<any>(null)
 
-  const context = useResource(() => new AtmosphereContextNode(), [])
+  const context = useResource(() => new AtmosphereContext(), [])
+  useAtmosphereContextNode(context)
   context.camera = camera
 
   // Post-processing:
@@ -78,7 +80,7 @@ const Content: FC<StoryProps> = () => {
       const depthNode = passNode.getTextureNode('depth')
 
       const aerialNode = manage(
-        aerialPerspective(context, colorNode, depthNode)
+        aerialPerspective(colorNode, depthNode)
       )
       const lensFlareNode = manage(lensFlare(aerialNode))
       const toneMappingNode = manage(
@@ -120,7 +122,7 @@ const Content: FC<StoryProps> = () => {
   })
 
   // Simple lighting toggles:
-  const envNode = useResource(() => skyEnvironment(context), [context])
+  const envNode = useResource(() => skyEnvironment(), [])
   const lightRef = useRef<AtmosphereLight>(null)
   useTransientControl(
     ({ directLight, indirectLight, environmentMap }: StoryArgs) => ({
@@ -147,7 +149,7 @@ const Content: FC<StoryProps> = () => {
 
   return (
     <>
-      <atmosphereLight ref={lightRef} args={[context]} />
+      <atmosphereLight ref={lightRef} />
       
       {/* Terrain sphere using 3D tiles - positioned at world origin */}
       <Globe>

@@ -33,11 +33,10 @@ import {
   vec3,
   vec4,
   float,
-  type ShaderNodeObject,
 } from 'three/tsl'
 import type { Node, UniformNode } from 'three/webgpu'
 
-import type { AtmosphereContextNode } from '@takram/three-atmosphere/webgpu'
+import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
 
 // @ts-expect-error JS module
 import OceanChunkManager from '../../../packages/ocean-ifft/src/ocean/ocean.js'
@@ -74,7 +73,7 @@ interface OceanChunksWaterproProps {
   /** Group that the ocean chunks attach to (positioned at sea level in ECEF). */
   parent: Object3D
   /** Atmosphere context — drives sun direction per frame. */
-  atmosphereContext: AtmosphereContextNode
+  atmosphereContext: AtmosphereContext
   /** Live atmosphere sky cube — `envNode.renderTarget.texture`. */
   envCubeTexture: CubeTexture
   /** Simplex-noise foam texture. */
@@ -309,8 +308,8 @@ export default function OceanChunksWaterpro({
     // worldSurfaceXZ stays on the actual displaced world position because
     // it feeds fresnel distance-to-camera and viewDir — both of which
     // SHOULD track the rendered surface.
-    const vDisplaced = vertexStageWGSL.vDisplacedPosition as unknown as ShaderNodeObject<Node>
-    const vMorphed = vertexStageWGSL.vMorphedPosition as unknown as ShaderNodeObject<Node>
+    const vDisplaced = vertexStageWGSL.vDisplacedPosition as unknown as Node
+    const vMorphed = vertexStageWGSL.vMorphedPosition as unknown as Node
     const fragSurfaceXZ = vec2(vMorphed.x, vMorphed.z)
     const displacedView = modelViewMatrix.mul(vec4(vDisplaced, float(1)))
     const oceanDepth = displacedView.z.negate()
@@ -345,7 +344,7 @@ export default function OceanChunksWaterpro({
       // Exact ocean-local Y produced by the WGSL vertex stage (cascade +
       // gerstner + swell modulation). Tip foam reads this directly so it
       // aligns with actual wave peaks instead of cascade-sample drift.
-      surfaceHeight: vDisplaced.y as unknown as ShaderNodeObject<Node>,
+      surfaceHeight: vDisplaced.y as unknown as Node,
     })
   }, [
     useDiagnosticMaterial,
@@ -521,6 +520,7 @@ export default function OceanChunksWaterpro({
     }
 
     const overridden: Array<{ mesh: Mesh; mat: Material }> = []
+    const hiddenTransparent: Mesh[] = []
     defaultScene.traverse(obj => {
       if (!(obj as any).isMesh) return
       if (!obj.visible) return
@@ -545,8 +545,16 @@ export default function OceanChunksWaterpro({
       // ranges mapped to material slots).
       const geom = (mesh as any).geometry
       if (geom?.groups != null && geom.groups.length > 1) return
-      // Pure-transparent surfaces don't write meaningful depth.
-      if (mat.transparent && !(mat.alphaTest > 0)) return
+      // Pure-transparent surfaces don't write meaningful depth — and must be
+      // EXCLUDED from the depth render entirely, not rendered with their own
+      // material: alpha blending into the FloatType (Rgba32Float) depth target
+      // is invalid in WebGPU ("Rgba32Float is not blendable") and fails the
+      // pipeline, so the mesh never draws. Hide for the duration, restore after.
+      if (mat.transparent && !(mat.alphaTest > 0)) {
+        hiddenTransparent.push(mesh)
+        mesh.visible = false
+        return
+      }
       overridden.push({ mesh, mat: mat as Material })
       mesh.material = depthMaterial as unknown as Material
     })
@@ -575,6 +583,9 @@ export default function OceanChunksWaterpro({
       ;(defaultScene as any).environmentNode = prevEnv
       overridden.forEach(({ mesh, mat }) => {
         mesh.material = mat
+      })
+      hiddenTransparent.forEach(mesh => {
+        mesh.visible = true
       })
       if (oceanGroup != null && wasVisible !== undefined)
         oceanGroup.visible = wasVisible
