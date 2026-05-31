@@ -1,22 +1,34 @@
 // CloudLayer.tsx — Lightweight planetary cloud shell for the WebGPU globe scene.
-// Renders a transparent BackSide sphere at cloud altitude over the WGS84
-// ellipsoid whose opacity is driven by inline TSL fractal noise
-// (mx_fractal_noise_float) over the sphere UVs, scrolled by time. No volumetric
-// raymarch and no compute pipeline — a single textured shell, cheap;
-// atmospheric tint comes from the aerial-perspective post-pass since the shell
-// is ordinary scene geometry.
+// A transparent DoubleSide sphere at cloud altitude over the WGS84 ellipsoid whose
+// opacity comes from one of two coverage sources: 'procedural' (inline TSL FBM
+// noise, art-directable for the mood presets) or 'live' (near-real-time global
+// cloud cover from matteason's Live Cloud Maps, equirectangular, EUMETSAT-
+// derived). No volumetric raymarch — a single textured shell, cheap; atmospheric
+// tint comes from the aerial-perspective post-pass as ordinary scene geometry.
 
-import { useMemo, type FC } from 'react'
-import { BackSide, Color, Vector3 } from 'three'
+import { useEffect, useMemo, type FC } from 'react'
 import {
+  Color,
+  DoubleSide,
+  NoColorSpace,
+  RepeatWrapping,
+  SRGBColorSpace,
+  TextureLoader,
+  Vector3,
+} from 'three'
+import {
+  asin,
+  atan,
   dot,
   float,
   mx_fractal_noise_float,
   normalize,
   positionWorld,
   smoothstep,
+  texture,
   time,
   uniform,
+  vec2,
   vec3,
 } from 'three/tsl'
 import { MeshBasicNodeMaterial, type UniformNode } from 'three/webgpu'
@@ -52,7 +64,23 @@ interface CloudLayerProps {
    * instead of dissolving into the sky. Lower for dimmer/moodier skies.
    */
   intensity?: number
+  /**
+   * Coverage source. 'procedural' = inline FBM noise (art-directable, the mood
+   * presets). 'live' = near-real-time global cloud cover from matteason's Live
+   * Cloud Maps (equirectangular, EUMETSAT-derived, refreshed ~3h). In live mode
+   * cloud POSITIONS are real/fixed, so coverage/tiles/windSpeed have no effect;
+   * the grading knobs (color/density/intensity/sun) still apply. Requires
+   * attribution: "Contains modified EUMETSAT data".
+   */
+  source?: 'procedural' | 'live' | 'debug-earth'
 }
+
+const LIVE_CLOUDS_URL =
+  'https://clouds.matteason.co.uk/images/2048x1024/clouds-alpha.png'
+// Blue-Marble + clouds, RGB. Verification only: map continents with the same UV
+// math, semi-transparent, to check geographic registration against the terrain.
+const DEBUG_EARTH_URL =
+  'https://clouds.matteason.co.uk/images/2048x1024/earth.jpg'
 
 export const CloudLayer: FC<CloudLayerProps> = ({
   altitude = 4000,
@@ -65,6 +93,7 @@ export const CloudLayer: FC<CloudLayerProps> = ({
   nightAmbient = 0.03,
   density = 0.1,
   intensity = 2.5,
+  source = 'procedural',
 }) => {
   // Stable uniforms so prop tweaks don't rebuild the material/graph.
   const opacityU = useMemo(() => uniform(opacity), [])
@@ -86,6 +115,18 @@ export const CloudLayer: FC<CloudLayerProps> = ({
 
   const radius = Ellipsoid.WGS84.maximumRadius + altitude
 
+  // Live cloud-cover texture (equirectangular). Loaded only in 'live' mode.
+  const cloudTex = useMemo(() => {
+    if (source === 'procedural') return null
+    const earth = source === 'debug-earth'
+    const t = new TextureLoader().load(earth ? DEBUG_EARTH_URL : LIVE_CLOUDS_URL)
+    t.wrapS = RepeatWrapping
+    t.colorSpace = earth ? SRGBColorSpace : NoColorSpace
+    t.flipY = false // deterministic: image top row at v=0 (north), matches v below
+    return t
+  }, [source])
+  useEffect(() => () => cloudTex?.dispose(), [cloudTex])
+
   const material = useMemo(() => {
     const mat = new MeshBasicNodeMaterial()
     mat.transparent = true
@@ -95,16 +136,33 @@ export const CloudLayer: FC<CloudLayerProps> = ({
     // fogged dome from depth-written transparent gaps).
     mat.depthWrite = true
     mat.alphaTest = 0.05
-    mat.side = BackSide
+    mat.side = DoubleSide // visible from inside (ground) and outside (space)
 
-    // Fractal (FBM) noise sampled by world DIRECTION on the shell (not the
-    // equirectangular UV, which distorts at the poles and barely varies across
-    // the small patch of sky visible from ground level). `tiles` is the angular
-    // frequency — higher = smaller, more numerous cloud blobs. Scrolled by wind.
     const dir = normalize(positionWorld)
-    const p = dir.mul(tilesU).add(vec3(time.mul(windU), float(0), float(0)))
-    const n = mx_fractal_noise_float(p, 6, 2.0, 0.5)
-    const cov = n.mul(float(0.5)).add(float(0.5)).saturate()
+    let cov
+    if (source !== 'procedural' && cloudTex != null) {
+      // Equirectangular UV from ECEF lon/lat. ECEF: +X→(0°N,0°E), +Y→(0°N,90°E),
+      // +Z→north pole. With flipY=false, image top row (north) is at v=0.
+      const lon = atan(dir.y, dir.x)
+      const lat = asin(dir.z)
+      const equiUV = vec2(
+        lon.div(Math.PI * 2).add(0.5),
+        float(0.5).sub(lat.div(Math.PI))
+      )
+      if (source === 'debug-earth') {
+        // Verification mode: paint continents semi-transparent over the terrain.
+        mat.colorNode = texture(cloudTex, equiUV).rgb
+        mat.opacityNode = float(0.6)
+        return mat
+      }
+      cov = texture(cloudTex, equiUV).a.saturate() // alpha = cloud presence
+    } else {
+      // Fractal (FBM) noise sampled by world DIRECTION — uniform cloud scale, no
+      // pole distortion. `tiles` = angular frequency; scrolled by wind.
+      const p = dir.mul(tilesU).add(vec3(time.mul(windU), float(0), float(0)))
+      const n = mx_fractal_noise_float(p, 6, 2.0, 0.5)
+      cov = n.mul(float(0.5)).add(float(0.5)).saturate()
+    }
     const edged = smoothstep(coverageU, coverageU.add(float(0.25)), cov)
 
     // Day/night + terminator shading from the sun direction (TO-sun · cloud-up).
@@ -133,7 +191,7 @@ export const CloudLayer: FC<CloudLayerProps> = ({
     mat.opacityNode = edged.mul(opacityU)
     return mat
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [source, cloudTex])
 
   return (
     <mesh material={material} frustumCulled={false}>
