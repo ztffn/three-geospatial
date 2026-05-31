@@ -254,6 +254,15 @@ export interface WaterproPresetUniformBag {
 }
 
 const scratchColor = new Color()
+// INTENTIONAL DOUBLE DECODE — do NOT "fix" to a single conversion.
+// ColorManagement is enabled (three's default, incl. the WebGPU renderer) and
+// is never disabled in source, so `Color.set(hex)` already decodes sRGB→linear;
+// the chained `.convertSRGBToLinear()` decodes a SECOND time. Every preset hex
+// above was hand-tuned by eye against this live double-converting pipeline, so
+// the values already bake in the compensation. Removing the second decode (the
+// textbook Color.setStyle double-convert footgun) would brighten/shift every
+// preset color and break the tuned look. See presets.test.ts (asserts channel
+// mapping/ordering/range, not absolute magnitude, so it survives either way).
 function setHexAsLinearVec3(target: Vector3, hex: string): void {
   scratchColor.set(hex).convertSRGBToLinear()
   target.set(scratchColor.r, scratchColor.g, scratchColor.b)
