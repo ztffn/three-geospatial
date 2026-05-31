@@ -603,7 +603,7 @@ export const Content: FC<{
     []
   )
   const presetControls = useControls('Ocean Preset', {
-    preset: { value: 'custom', options: presetOptions },
+    preset: { value: 'tranquil', options: presetOptions },
   })
 
   const toggleControls = useControls('Ocean Toggles', {
@@ -627,7 +627,7 @@ export const Content: FC<{
   const cameraControls = useControls('Camera', {
     minDistance: { value: 50, min: 1, max: 5000, step: 1 },
     maxDistance: { value: 100000, min: 1000, max: 50_000_000, step: 100_000 },
-    autoOrbit: { value: false },
+    autoOrbit: { value: true },
     orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
   })
 
