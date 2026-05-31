@@ -122,7 +122,7 @@ const Content: FC<StoryProps> = () => {
   })
 
   // Simple lighting toggles:
-  const envNode = useResource(() => skyEnvironment(), [context])
+  const envNode = useResource(() => skyEnvironment(), [])
   const lightRef = useRef<AtmosphereLight>(null)
   useTransientControl(
     ({ directLight, indirectLight, environmentMap }: StoryArgs) => ({

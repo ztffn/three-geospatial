@@ -217,7 +217,7 @@ export interface BuildWaterproOceanMaterialParams {
    * chunks, it's the WGSL vertex stage that does morph + IFFT + Gerstner
    * internally.
    */
-  positionNode: Node | Node
+  positionNode: Node
 
   /**
    * Cascade fragment-UV source — read by the fragment graph to sample wave

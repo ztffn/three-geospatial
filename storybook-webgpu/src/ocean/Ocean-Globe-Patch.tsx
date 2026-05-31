@@ -82,7 +82,7 @@ const Content: FC<StoryProps> = ({ longitude, latitude, height }) => {
   const context = useResource(() => new AtmosphereContext(), [])
   useAtmosphereContextNode(context)
   context.camera = camera
-  const envNode = useResource(() => skyEnvironment(), [context])
+  const envNode = useResource(() => skyEnvironment(), [])
   scene.environmentNode = envNode
 
   const {
