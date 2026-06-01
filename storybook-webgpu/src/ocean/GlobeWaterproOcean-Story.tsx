@@ -86,9 +86,18 @@ import {
   CLOUD_PRESET_NAMES,
   type CloudPresetName,
 } from './cloud-presets'
+import { createCloudField, type CloudField } from './cloud-coverage'
 import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
 import type { WaterproOceanUniforms } from './buildWaterproOceanMaterial'
-import type { UniformNode } from 'three/webgpu'
+import type { Node, UniformNode } from 'three/webgpu'
+
+// Gate the analytic cloud reflection/shadow injection into the ocean material,
+// independent of the leva `enabled` (which also controls the cloud shell). Kept
+// as a kill switch: this is the path that broke once (ECEF-scale ray↔shell math
+// → NaN → AgX black/white, atmosphere never resolved). The intersection is now
+// done in radius-normalized units (see cloud-coverage.ts rayShellDir), so it's
+// safe; flip false to bisect quickly if the ocean ever goes black again.
+const CLOUD_OCEAN_EFFECTS = true
 
 // WGSL-vertex-stage uniform handles exposed by OceanChunksWaterpro.onReady.
 // Story-side controls (Swell, future LOD slider, etc.) write through these.
@@ -275,6 +284,11 @@ const OceanSurface: FC<{
   useDiagnosticMaterial: boolean
   skipDepthPrepass: boolean
   depthPrepassStage: number
+  cloudReflect?: (reflectDir: Node, originWorld: Node) => {
+    color: Node
+    blend: Node
+  }
+  cloudShadow?: (originWorld: Node) => Node
 }> = ({
   target,
   atmosphereContext,
@@ -288,6 +302,8 @@ const OceanSurface: FC<{
   useDiagnosticMaterial,
   skipDepthPrepass,
   depthPrepassStage,
+  cloudReflect,
+  cloudShadow,
 }) => {
   const [oceanParent, setOceanParent] = useState<THREE.Group | null>(null)
   const handleOceanParent = useCallback((group: THREE.Group | null) => {
@@ -328,6 +344,8 @@ const OceanSurface: FC<{
           useDiagnosticMaterial={useDiagnosticMaterial}
           skipDepthPrepass={skipDepthPrepass}
           depthPrepassStage={depthPrepassStage}
+          cloudReflect={cloudReflect}
+          cloudShadow={cloudShadow}
           onReady={({ uniforms, vertexUniforms, oceanManager }) => {
             onUniformsReady(uniforms)
             onVertexUniformsReady(vertexUniforms)
@@ -562,6 +580,9 @@ export const Content: FC<{
     density: { value: 0.1, min: 0, max: 1, step: 0.01 },
     intensity: { value: 2.5, min: 0, max: 6, step: 0.1 },
     contrast: { value: 1, min: 0.5, max: 5, step: 0.1 },
+    // Analytic effects on the ocean (shared coverage; no extra passes).
+    reflectionStrength: { value: 0.5, min: 0, max: 1, step: 0.01 },
+    shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 },
   }))
 
   // Apply a preset's field bag to the sliders when the selector changes.
@@ -574,6 +595,34 @@ export const Content: FC<{
     // CloudPresetFields keys all match the Clouds leva control keys.
     setCloudControls({ ...CLOUD_PRESETS[cloudControls.preset] })
   }, [cloudControls.preset, setCloudControls])
+
+  // Shared cloud field — ONE coverage model feeding the shell, the ocean's
+  // cloud reflection, and the ocean's cloud shadow. Rebuilt only when the
+  // source toggles; synced from leva each render so slider tweaks update all
+  // three with no graph rebuild.
+  const cloudField: CloudField = useMemo(
+    () =>
+      createCloudField({
+        source: cloudControls.source as 'procedural' | 'live',
+        sunDirection: context.sunDirectionECEF as any,
+      }),
+    [cloudControls.source, context]
+  )
+  useEffect(() => () => cloudField.dispose(), [cloudField])
+  cloudField.sync({
+    altitude: cloudControls.altitude,
+    opacity: cloudControls.opacity,
+    coverage: cloudControls.coverage,
+    windSpeed: cloudControls.windSpeed,
+    tiles: cloudControls.tiles,
+    dayColor: cloudControls.dayColor,
+    nightAmbient: cloudControls.nightAmbient,
+    density: cloudControls.density,
+    intensity: cloudControls.intensity,
+    contrast: cloudControls.contrast,
+    reflectionStrength: cloudControls.reflectionStrength,
+    shadowStrength: cloudControls.shadowStrength,
+  })
 
   const oceanFrameControls = useControls('Ocean Frame', {
     seaLevelOffset: {
@@ -1228,20 +1277,7 @@ export const Content: FC<{
     <>
       <atmosphereLight />
       {cloudControls.enabled && (
-        <CloudLayer
-          altitude={cloudControls.altitude}
-          opacity={cloudControls.opacity}
-          coverage={cloudControls.coverage}
-          windSpeed={cloudControls.windSpeed}
-          tiles={cloudControls.tiles}
-          sunDirection={context.sunDirectionECEF as any}
-          dayColor={cloudControls.dayColor}
-          nightAmbient={cloudControls.nightAmbient}
-          density={cloudControls.density}
-          intensity={cloudControls.intensity}
-          contrast={cloudControls.contrast}
-          source={cloudControls.source as 'procedural' | 'live'}
-        />
+        <CloudLayer field={cloudField} altitude={cloudControls.altitude} />
       )}
       <OrbitControls
         makeDefault
@@ -1285,6 +1321,16 @@ export const Content: FC<{
           useDiagnosticMaterial={oceanDebugParams.useDiagnosticMaterial}
           skipDepthPrepass={oceanDebugParams.skipDepthPrepass}
           depthPrepassStage={oceanDebugParams.depthPrepassStage}
+          cloudReflect={
+            CLOUD_OCEAN_EFFECTS && cloudControls.enabled
+              ? cloudField.reflect
+              : undefined
+          }
+          cloudShadow={
+            CLOUD_OCEAN_EFFECTS && cloudControls.enabled
+              ? cloudField.shadow
+              : undefined
+          }
           onUniformsReady={setOceanUniforms}
           onVertexUniformsReady={setVertexUniforms}
           onOceanManagerReady={setOceanManager}
@@ -1296,7 +1342,58 @@ export const Content: FC<{
 
 interface StoryArgs {}
 
+// Staged load. Mounting the atmosphere, the (heavy, cloud-reflection/shadow-
+// augmented) ocean, and the cloud shell all on the first frame makes the ocean
+// pipeline compile race the atmosphere LUT compute — the LUT loses and the sky
+// never resolves (permanent black/white). So keep the ocean UNMOUNTED until the
+// LUT has finished, then mount it. Readiness is polled from real state
+// (lutNode.currentVersion / .updating), not a timer — mirrors the standalone
+// (examples/ocean-globe-waterpro-demo/main.tsx) and the project's no-timer rule.
+// The 8 s fallback is only a safety net so a stuck probe can't hide the ocean
+// forever; it warns rather than failing silently.
+const ATMOSPHERE_STABLE_FRAMES = 5
+const STAGE_FALLBACK_MS = 8000
+
 export const Story: StoryFC<{}, StoryArgs> = () => {
+  const [phase, setPhase] = useState<'atmosphere' | 'ready'>('atmosphere')
+  const refsRef = useRef<ContentReadinessRefs | null>(null)
+  const handleRefs = useCallback((r: ContentReadinessRefs) => {
+    refsRef.current = r
+  }, [])
+
+  useEffect(() => {
+    if (phase !== 'atmosphere') return
+    let cancelled = false
+    let stable = 0
+    let raf = 0
+    const tick = (): void => {
+      if (cancelled) return
+      const lut = (refsRef.current?.atmosphereContext as any)?.lutNode
+      const ready =
+        lut != null && lut.currentVersion != null && lut.updating === false
+      stable = ready ? stable + 1 : 0
+      if (stable >= ATMOSPHERE_STABLE_FRAMES) {
+        setPhase('ready')
+        return
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    const fallback = setTimeout(() => {
+      if (cancelled) return
+      console.warn(
+        '[GlobeWaterproOcean] atmosphere LUT readiness not detected in ' +
+          `${STAGE_FALLBACK_MS} ms; mounting ocean anyway.`
+      )
+      setPhase('ready')
+    }, STAGE_FALLBACK_MS)
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf)
+      clearTimeout(fallback)
+    }
+  }, [phase])
+
   return (
     <WebGPUCanvas
       camera={{ fov: 45, near: 1, far: 1e8 }}
@@ -1313,7 +1410,10 @@ export const Story: StoryFC<{}, StoryArgs> = () => {
         },
       }}
     >
-      <Content />
+      <Content
+        disableOcean={phase === 'atmosphere'}
+        onReadinessRefs={handleRefs}
+      />
     </WebGPUCanvas>
   )
 }

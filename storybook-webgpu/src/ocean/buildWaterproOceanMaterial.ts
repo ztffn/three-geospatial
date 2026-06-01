@@ -212,6 +212,25 @@ export interface BuildWaterproOceanMaterialParams {
   foamTexture: Texture
 
   /**
+   * Optional analytic cloud reflection. Given the world-frame reflection
+   * direction and the surface world position, returns the cloud albedo to
+   * composite OVER the sky reflection plus a [0,1] blend factor (edged cloud
+   * coverage along the reflection ray × reflection strength). Omitted → ocean
+   * reflects sky only. See cloud-coverage.ts.
+   */
+  cloudReflect?: (reflectDir: Node, originWorld: Node) => {
+    color: Node
+    blend: Node
+  }
+  /**
+   * Optional analytic cloud shadow. Given the surface world position, returns a
+   * [0,1] sun factor (1 = full sun, lower = shadowed by cloud along the sun
+   * ray). Multiplies the sun-driven terms (colour body + sparkle + SSS); the
+   * sky-driven reflection is left unshadowed. Omitted → no shadow.
+   */
+  cloudShadow?: (originWorld: Node) => Node
+
+  /**
    * Vertex displacement node — set as `material.positionNode`. For the plane,
    * this is the TSL expression `localPos + ifftDisp + gerstnerDispVtx`. For
    * chunks, it's the WGSL vertex stage that does morph + IFFT + Gerstner
@@ -319,6 +338,8 @@ export function buildWaterproOceanMaterial(
     oceanPositionWorld,
     tilingPosition,
     surfaceHeight,
+    cloudReflect,
+    cloudShadow,
   } = params
 
   // Defaults to fragSurfaceXZ — preserves the literal plane behaviour. Chunks
@@ -541,10 +562,25 @@ export function buildWaterproOceanMaterial(
   const tonemappedSky = float(1).sub(
     exp(rawSky.mul(u.skyReflectionExposure).negate())
   )
-  const skyReflection = tonemappedSky
+  const skyReflectionBase = tonemappedSky
     .mul(u.skyReflectionColor)
     .mul(u.skyReflectionScale)
+  // Analytic cloud reflection: composite cloud albedo OVER the sky reflection by
+  // edged coverage along the reflection ray. Modest albedo (no emissive punch),
+  // blended (not added) so AgX doesn't saturate — PORT-STATUS §10.
+  const skyReflection =
+    cloudReflect != null
+      ? (() => {
+          const cr = cloudReflect(reflectDir, surfaceWorldPoint)
+          return mix(skyReflectionBase, cr.color, cr.blend)
+        })()
+      : skyReflectionBase
   const gatedFresnel = fresnelRaw.mul(u.skyReflectionOn)
+
+  // Analytic cloud shadow along the sun ray (1 = full sun). Attenuates the sun-
+  // driven terms — colour body + sparkle (folded into finalColor) and SSS — but
+  // NOT the sky-driven reflection.
+  const cloudSun = cloudShadow != null ? cloudShadow(surfaceWorldPoint) : float(1)
 
   // colorNode composition.
   const transmittedBody = waterColor.mul(float(1).sub(gatedFresnel))
@@ -616,7 +652,9 @@ export function buildWaterproOceanMaterial(
   )
   const withTipFoam = mix(withShoreline, u.tipFoamColor, tipFoamStrength)
 
-  const finalColor = withTipFoam
+  // Cloud shadow dims the lit surface (body + foam + sparkle glow) under cloud.
+  // cloudSun = 1 when no cloud or no shadow closure → unchanged.
+  const finalColor = withTipFoam.mul(cloudSun)
 
   // emissiveNode composition. Foam mask = 1 - (combined foam + tip foam),
   // clamped — reflection / SSS are zeroed out where any foam covers the
@@ -628,6 +666,7 @@ export function buildWaterproOceanMaterial(
   const sssEmissive = sssOut.scattering
     .mul(float(1).sub(gatedFresnel))
     .mul(foamMask)
+    .mul(cloudSun)
   const totalEmissive = reflectionEmissive.add(sssEmissive)
 
   // Material.

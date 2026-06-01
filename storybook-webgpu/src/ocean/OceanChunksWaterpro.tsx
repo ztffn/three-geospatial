@@ -94,6 +94,13 @@ interface OceanChunksWaterproProps {
    *   4 = stage 3 + material swap (current production path)
    */
   depthPrepassStage?: number
+  /** Optional analytic cloud reflection closure (see buildWaterproOceanMaterial). */
+  cloudReflect?: (reflectDir: Node, originWorld: Node) => {
+    color: Node
+    blend: Node
+  }
+  /** Optional analytic cloud shadow closure (see buildWaterproOceanMaterial). */
+  cloudShadow?: (originWorld: Node) => Node
   onReady?: (ctx: {
     waveSim: WaveSimulation
     gerstner: GerstnerOverlay
@@ -121,6 +128,8 @@ export default function OceanChunksWaterpro({
   useDiagnosticMaterial = false,
   skipDepthPrepass = false,
   depthPrepassStage = 4,
+  cloudReflect,
+  cloudShadow,
   onReady,
 }: OceanChunksWaterproProps): ReactElement | null {
   const { gl, scene: defaultScene, camera, size } = useThree()
@@ -345,6 +354,8 @@ export default function OceanChunksWaterpro({
       // gerstner + swell modulation). Tip foam reads this directly so it
       // aligns with actual wave peaks instead of cascade-sample drift.
       surfaceHeight: vDisplaced.y as unknown as Node,
+      ...(cloudReflect != null ? { cloudReflect } : {}),
+      ...(cloudShadow != null ? { cloudShadow } : {}),
     })
   }, [
     useDiagnosticMaterial,
@@ -359,6 +370,8 @@ export default function OceanChunksWaterpro({
     depthTextureEnabledUniform,
     envCubeTexture,
     foamTexture,
+    cloudReflect,
+    cloudShadow,
   ])
 
   // OceanChunkManager init.
