@@ -139,7 +139,7 @@ export function createCloudField(opts: {
     density: uniform(0.1),
     intensity: uniform(2.5),
     contrast: uniform(1),
-    reflectionStrength: uniform(0.5),
+    reflectionStrength: uniform(0.05),
     shadowStrength: uniform(0.6),
     debugMode: uniform(0),
   }

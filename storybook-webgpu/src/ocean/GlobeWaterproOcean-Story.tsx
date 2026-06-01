@@ -589,7 +589,7 @@ export const Content: FC<{
     intensity: { value: 2.5, min: 0, max: 6, step: 0.1 },
     contrast: { value: 1, min: 0.5, max: 5, step: 0.1 },
     // Analytic effects on the ocean (shared coverage; no extra passes).
-    reflectionStrength: { value: 0.5, min: 0, max: 1, step: 0.01 },
+    reflectionStrength: { value: 0.05, min: 0, max: 1, step: 0.01 },
     shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 },
     // DEBUG: paint a reflection term onto the ocean to locate the line artefact.
     // 0=off 1=gate 2=horizon 3=edged coverage 4=hit dir(RGB) 5=reflectDir(RGB).
