@@ -101,6 +101,11 @@ interface OceanChunksWaterproProps {
   }
   /** Optional analytic cloud shadow closure (see buildWaterproOceanMaterial). */
   cloudShadow?: (originWorld: Node) => Node
+  /** DEBUG: paint a cloud-reflection term on the surface (see buildWaterproOceanMaterial). */
+  cloudDebug?: (reflectDir: Node, originWorld: Node) => {
+    color: Node
+    active: Node
+  }
   onReady?: (ctx: {
     waveSim: WaveSimulation
     gerstner: GerstnerOverlay
@@ -130,6 +135,7 @@ export default function OceanChunksWaterpro({
   depthPrepassStage = 4,
   cloudReflect,
   cloudShadow,
+  cloudDebug,
   onReady,
 }: OceanChunksWaterproProps): ReactElement | null {
   const { gl, scene: defaultScene, camera, size } = useThree()
@@ -356,6 +362,7 @@ export default function OceanChunksWaterpro({
       surfaceHeight: vDisplaced.y as unknown as Node,
       ...(cloudReflect != null ? { cloudReflect } : {}),
       ...(cloudShadow != null ? { cloudShadow } : {}),
+      ...(cloudDebug != null ? { cloudDebug } : {}),
     })
   }, [
     useDiagnosticMaterial,
@@ -372,6 +379,7 @@ export default function OceanChunksWaterpro({
     foamTexture,
     cloudReflect,
     cloudShadow,
+    cloudDebug,
   ])
 
   // OceanChunkManager init.

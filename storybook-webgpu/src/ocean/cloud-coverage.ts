@@ -5,7 +5,14 @@
 // a single uniform bag. No probe, no extra passes — a ray-sphere + one coverage
 // eval per fragment per effect. Built once per source by the globe story.
 
-import { Color, NoColorSpace, RepeatWrapping, TextureLoader, Vector3 } from 'three'
+import {
+  Color,
+  LinearFilter,
+  NoColorSpace,
+  RepeatWrapping,
+  TextureLoader,
+  Vector3,
+} from 'three'
 import type { Texture } from 'three'
 import {
   asin,
@@ -47,6 +54,8 @@ export interface CloudFieldValues {
   contrast: number
   reflectionStrength: number
   shadowStrength: number
+  /** DEBUG: 0=off, else paint a reflection term on the ocean (see `debug`). */
+  debugMode: number
 }
 
 export interface CloudFieldUniforms {
@@ -63,6 +72,7 @@ export interface CloudFieldUniforms {
   contrast: UniformNode<number>
   reflectionStrength: UniformNode<number>
   shadowStrength: UniformNode<number>
+  debugMode: UniformNode<number>
 }
 
 export interface CloudField {
@@ -95,6 +105,13 @@ export interface CloudField {
    * Returns constant 1 when no sun direction was supplied.
    */
   shadow: (originWorld: Node) => Node
+  /**
+   * DEBUG: returns { color, active } for the reflection ray. When debugMode>0,
+   * `active` is true and `color` paints the selected term onto the ocean so the
+   * artefact's source can be SEEN instead of guessed. Modes: 1=gate, 2=horizon,
+   * 3=edged coverage, 4=ray↔shell hit dir (RGB), 5=scrubbed reflectDir (RGB).
+   */
+  debug: (reflectDir: Node, originWorld: Node) => { color: Node; active: Node }
   /** Push CPU leva values into the uniforms. Call each render. */
   sync: (v: CloudFieldValues) => void
   dispose: () => void
@@ -124,6 +141,7 @@ export function createCloudField(opts: {
     contrast: uniform(1),
     reflectionStrength: uniform(0.5),
     shadowStrength: uniform(0.6),
+    debugMode: uniform(0),
   }
 
   let cloudTex: Texture | null = null
@@ -132,6 +150,14 @@ export function createCloudField(opts: {
     t.wrapS = RepeatWrapping
     t.colorSpace = NoColorSpace
     t.flipY = false // image top row at v=0 (north), matches the v below
+    // No mipmaps. With auto-mip selection, the equirect UV's screen-space
+    // derivative spikes at the antimeridian (lon wraps +π→−π, u jumps ~1→0), so
+    // the sampler picks the coarsest mip along that one meridian → a thin,
+    // view-dependent, sun-independent seam line on the reflection. Bilinear-only
+    // (wrapS=Repeat handles the wrap) is seamless for a global map.
+    t.minFilter = LinearFilter
+    t.magFilter = LinearFilter
+    t.generateMipmaps = false
     cloudTex = t
   }
 
@@ -244,6 +270,45 @@ export function createCloudField(opts: {
     return float(1).sub((s as any).a.mul(u.shadowStrength))
   }
 
+  const debug = (
+    reflectDir: Node,
+    originWorld: Node
+  ): { color: Node; active: Node } => {
+    // Recompute the reflection path's terms and expose each for live inspection.
+    const f = finiteDir(reflectDir)
+    const hit = rayShellDir(originWorld, f.dir)
+    const s = sampleAlong(originWorld, f.dir)
+    const up = normalize(originWorld)
+    const horizon = smoothstep(float(0.0), float(0.1), dot(f.dir, up))
+    const gate = (f.ok as any).select(float(1), float(0))
+    const m = u.debugMode as any
+    // 1=gate 2=horizon 3=edged coverage 4=hit dir(RGB) 5=scrubbed reflectDir(RGB)
+    const c4 = (hit as any).mul(float(0.5)).add(float(0.5))
+    const c5 = (f.dir as any).mul(float(0.5)).add(float(0.5))
+    const color = m
+      .equal(5)
+      .select(
+        c5,
+        m
+          .equal(4)
+          .select(
+            c4,
+            m
+              .equal(3)
+              .select(
+                vec3((s as any).a),
+                m
+                  .equal(2)
+                  .select(
+                    vec3(horizon),
+                    m.equal(1).select(vec3(gate), vec3(float(0)))
+                  )
+              )
+          )
+      )
+    return { color, active: m.greaterThan(float(0)) }
+  }
+
   const sync = (v: CloudFieldValues): void => {
     u.radius.value = Ellipsoid.WGS84.maximumRadius + v.altitude
     u.opacity.value = v.opacity
@@ -257,6 +322,7 @@ export function createCloudField(opts: {
     u.contrast.value = v.contrast
     u.reflectionStrength.value = v.reflectionStrength
     u.shadowStrength.value = v.shadowStrength
+    u.debugMode.value = v.debugMode
   }
 
   const dispose = (): void => {
@@ -270,6 +336,7 @@ export function createCloudField(opts: {
     rayShellDir,
     reflect,
     shadow,
+    debug,
     sync,
     dispose,
   }

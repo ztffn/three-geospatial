@@ -229,6 +229,15 @@ export interface BuildWaterproOceanMaterialParams {
    * sky-driven reflection is left unshadowed. Omitted → no shadow.
    */
   cloudShadow?: (originWorld: Node) => Node
+  /**
+   * DEBUG: paint a cloud-reflection term onto the surface when active. Returns
+   * `{ color, active }`; when active, colorNode = color and emissive is killed.
+   * See cloud-coverage.ts `debug`.
+   */
+  cloudDebug?: (reflectDir: Node, originWorld: Node) => {
+    color: Node
+    active: Node
+  }
 
   /**
    * Vertex displacement node — set as `material.positionNode`. For the plane,
@@ -340,6 +349,7 @@ export function buildWaterproOceanMaterial(
     surfaceHeight,
     cloudReflect,
     cloudShadow,
+    cloudDebug,
   } = params
 
   // Defaults to fragSurfaceXZ — preserves the literal plane behaviour. Chunks
@@ -672,8 +682,23 @@ export function buildWaterproOceanMaterial(
   // Material.
   const mat = new MeshStandardNodeMaterial()
   mat.positionNode = positionNode as any
-  mat.colorNode = vec4(finalColor, float(1))
-  ;(mat as any).emissiveNode = totalEmissive
+  // DEBUG: when a cloudDebug closure reports active (debugMode>0), paint its
+  // term straight onto the surface (and kill emissive) so the cloud-reflection
+  // artefact can be SEEN. Off → normal composition.
+  if (cloudDebug != null) {
+    const dbg = cloudDebug(reflectDir, surfaceWorldPoint)
+    mat.colorNode = (dbg.active as any).select(
+      vec4(dbg.color, float(1)),
+      vec4(finalColor, float(1))
+    )
+    ;(mat as any).emissiveNode = (dbg.active as any).select(
+      vec3(float(0)),
+      totalEmissive
+    )
+  } else {
+    mat.colorNode = vec4(finalColor, float(1))
+    ;(mat as any).emissiveNode = totalEmissive
+  }
   mat.side = DoubleSide
   ;(mat as any).colorSpace = SRGBColorSpace
   return mat

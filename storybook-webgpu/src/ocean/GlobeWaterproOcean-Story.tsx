@@ -289,6 +289,10 @@ const OceanSurface: FC<{
     blend: Node
   }
   cloudShadow?: (originWorld: Node) => Node
+  cloudDebug?: (reflectDir: Node, originWorld: Node) => {
+    color: Node
+    active: Node
+  }
 }> = ({
   target,
   atmosphereContext,
@@ -304,6 +308,7 @@ const OceanSurface: FC<{
   depthPrepassStage,
   cloudReflect,
   cloudShadow,
+  cloudDebug,
 }) => {
   const [oceanParent, setOceanParent] = useState<THREE.Group | null>(null)
   const handleOceanParent = useCallback((group: THREE.Group | null) => {
@@ -346,6 +351,7 @@ const OceanSurface: FC<{
           depthPrepassStage={depthPrepassStage}
           cloudReflect={cloudReflect}
           cloudShadow={cloudShadow}
+          cloudDebug={cloudDebug}
           onReady={({ uniforms, vertexUniforms, oceanManager }) => {
             onUniformsReady(uniforms)
             onVertexUniformsReady(vertexUniforms)
@@ -471,7 +477,9 @@ export const Content: FC<{
   // false to bring the ocean in. Defaults to false so Storybook mounts the
   // full scene as it always has.
   disableOcean?: boolean
-}> = ({ onReadinessRefs, disableOcean = false }) => {
+  // DEBUG: a DOM node to write the compass/heading HUD into each frame.
+  hudRef?: React.RefObject<HTMLDivElement | null>
+}> = ({ onReadinessRefs, disableOcean = false, hudRef }) => {
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
@@ -583,6 +591,9 @@ export const Content: FC<{
     // Analytic effects on the ocean (shared coverage; no extra passes).
     reflectionStrength: { value: 0.5, min: 0, max: 1, step: 0.01 },
     shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 },
+    // DEBUG: paint a reflection term onto the ocean to locate the line artefact.
+    // 0=off 1=gate 2=horizon 3=edged coverage 4=hit dir(RGB) 5=reflectDir(RGB).
+    debugMode: { value: 0, min: 0, max: 5, step: 1 },
   }))
 
   // Apply a preset's field bag to the sliders when the selector changes.
@@ -622,6 +633,7 @@ export const Content: FC<{
     contrast: cloudControls.contrast,
     reflectionStrength: cloudControls.reflectionStrength,
     shadowStrength: cloudControls.shadowStrength,
+    debugMode: cloudControls.debugMode,
   })
   const cloudEffectsEnabled = CLOUD_OCEAN_EFFECTS && cloudControls.enabled
 
@@ -1266,6 +1278,42 @@ export const Content: FC<{
     ).applyMatrix4(matrixECIToECEF)
   })
 
+  // DEBUG compass HUD: camera heading + sun azimuth/elevation in the local
+  // East-North-Up frame at the ocean target, written to a DOM node each frame.
+  // Lets us name the artefact line's direction and then rotate sun/camera to see
+  // what it tracks. Temporary — remove with the artefact investigation.
+  const hudScratch = useMemo(
+    () => ({
+      e: new Vector3(),
+      n: new Vector3(),
+      up: new Vector3(),
+      fwd: new Vector3(),
+    }),
+    []
+  )
+  const CARDINALS = useMemo(
+    () =>
+      ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'] as const,
+    []
+  )
+  useFrame(() => {
+    const el = hudRef?.current
+    if (el == null) return
+    const { e, n, up, fwd } = hudScratch
+    Ellipsoid.WGS84.getEastNorthUpVectors(target, e, n, up)
+    camera.getWorldDirection(fwd)
+    const deg = (r: number): number => ((r * 180) / Math.PI + 360) % 360
+    const card = (d: number): string => CARDINALS[Math.round(d / 22.5) % 16]
+    const camHeading = deg(Math.atan2(fwd.dot(e), fwd.dot(n)))
+    const camPitch = (Math.asin(Math.max(-1, Math.min(1, fwd.dot(up)))) * 180) / Math.PI
+    const sun = context.sunDirectionECEF.value
+    const sunAz = deg(Math.atan2(sun.dot(e), sun.dot(n)))
+    const sunEl = (Math.asin(Math.max(-1, Math.min(1, sun.dot(up)))) * 180) / Math.PI
+    el.textContent =
+      `CAM heading ${camHeading.toFixed(1)}° ${card(camHeading)}  pitch ${camPitch.toFixed(1)}°\n` +
+      `SUN azimuth ${sunAz.toFixed(1)}° ${card(sunAz)}  elev ${sunEl.toFixed(1)}°`
+  })
+
   useFrame(() => {
     postProcessingData.postProcessing.render()
   }, 1)
@@ -1324,6 +1372,7 @@ export const Content: FC<{
           depthPrepassStage={oceanDebugParams.depthPrepassStage}
           cloudReflect={cloudEffectsEnabled ? cloudField.reflect : undefined}
           cloudShadow={cloudEffectsEnabled ? cloudField.shadow : undefined}
+          cloudDebug={cloudEffectsEnabled ? cloudField.debug : undefined}
           onUniformsReady={setOceanUniforms}
           onVertexUniformsReady={setVertexUniforms}
           onOceanManagerReady={setOceanManager}
@@ -1350,6 +1399,7 @@ const STAGE_FALLBACK_MS = 8000
 export const Story: StoryFC<{}, StoryArgs> = () => {
   const [phase, setPhase] = useState<'atmosphere' | 'ready'>('atmosphere')
   const refsRef = useRef<ContentReadinessRefs | null>(null)
+  const hudRef = useRef<HTMLDivElement>(null)
   const handleRefs = useCallback((r: ContentReadinessRefs) => {
     refsRef.current = r
   }, [])
@@ -1388,28 +1438,56 @@ export const Story: StoryFC<{}, StoryArgs> = () => {
   }, [phase])
 
   return (
-    <WebGPUCanvas
-      camera={{ fov: 45, near: 1, far: 1e8 }}
-      style={{ background: '#101820' }}
-      renderer={{
-        antialias: true,
-        // Globe-scale terrain needs log depth to avoid z-fighting between
-        // far terrain (~1e7 m) and near ocean chunks at cameraFar = 1e8.
-        logarithmicDepthBuffer: true,
-        onInit: r => {
-          r.outputColorSpace = SRGBColorSpace
-          r.toneMapping = THREE.NoToneMapping
-          r.library.addLight(AtmosphereLightNode, AtmosphereLight)
-        },
-      }}
-    >
-      <Content
-        disableOcean={phase === 'atmosphere'}
-        onReadinessRefs={handleRefs}
-      />
-    </WebGPUCanvas>
+    <>
+      <WebGPUCanvas
+        camera={{ fov: 45, near: 1, far: 1e8 }}
+        style={{ background: '#101820' }}
+        renderer={{
+          antialias: true,
+          // Globe-scale terrain needs log depth to avoid z-fighting between
+          // far terrain (~1e7 m) and near ocean chunks at cameraFar = 1e8.
+          logarithmicDepthBuffer: true,
+          onInit: r => {
+            r.outputColorSpace = SRGBColorSpace
+            r.toneMapping = THREE.NoToneMapping
+            r.library.addLight(AtmosphereLightNode, AtmosphereLight)
+          },
+        }}
+      >
+        <Content
+          disableOcean={phase === 'atmosphere'}
+          onReadinessRefs={handleRefs}
+          hudRef={hudRef}
+        />
+      </WebGPUCanvas>
+      <DebugHud hudRef={hudRef} />
+    </>
   )
 }
+
+// DEBUG compass HUD overlay. The Content useFrame writes camera heading + sun
+// az/el here each frame. Temporary — remove with the line-artefact investigation.
+const DebugHud: FC<{ hudRef: React.RefObject<HTMLDivElement | null> }> = ({
+  hudRef,
+}) => (
+  <div
+    ref={hudRef}
+    style={{
+      position: 'fixed',
+      top: 8,
+      left: 8,
+      zIndex: 20,
+      padding: '6px 8px',
+      font: '11px/1.4 ui-monospace, Menlo, monospace',
+      whiteSpace: 'pre',
+      color: '#cfd8e3',
+      background: 'rgba(16,24,32,0.7)',
+      border: '1px solid rgba(207,216,227,0.2)',
+      borderRadius: 4,
+      pointerEvents: 'none',
+    }}
+  />
+)
 
 Story.args = {}
 Story.argTypes = {}
