@@ -36,9 +36,9 @@ export const CloudLayer: FC<CloudLayerProps> = ({ field, altitude = 4000 }) => {
     // sampleCloud → vec4(litAlbedo, edgedCoverage). Shell adds the emissive
     // `intensity` punch so clouds carry through the atmosphere wash; reflections
     // deliberately omit it (AgX-safe).
-    const s = field.sampleCloud(normalize(positionWorld))
-    mat.colorNode = (s as any).rgb.mul(field.uniforms.intensity)
-    mat.opacityNode = (s as any).a.mul(field.uniforms.opacity)
+    const s = field.sampleCloud(normalize(positionWorld)) as any
+    mat.colorNode = s.rgb.mul(field.uniforms.intensity)
+    mat.opacityNode = s.a.mul(field.uniforms.opacity)
     return mat
   }, [field])
 

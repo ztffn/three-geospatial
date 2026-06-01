@@ -209,20 +209,26 @@ export function createCloudField(opts: {
     return normalize((n as any).add((dir as any).mul(s)))
   }
 
+  // Shared path for both effects: intersect a ray with the shell, sample cloud.
+  const sampleAlong = (origin: Node, dir: Node): Node =>
+    sampleCloud(rayShellDir(origin, dir))
+
   const reflect = (
     reflectDir: Node,
     originWorld: Node
   ): { color: Node; blend: Node } => {
-    // Scrub the reflection ray first — feeds rayShellDir AND the horizon dot.
+    // Scrub the reflection ray first — it feeds rayShellDir AND the horizon dot,
+    // and reflectDir = reflect(viewDir, n) goes non-finite when the camera sits
+    // ≈ on a water point (degenerate viewDir). The sun ray (shadow) doesn't need
+    // this — it's a trusted uniform, used unguarded by the shell too.
     const f = finiteDir(reflectDir)
-    const dir = rayShellDir(originWorld, f.dir)
-    const s = sampleCloud(dir)
+    const s = sampleAlong(originWorld, f.dir)
     // Cull below-horizon reflections. The shell wraps the whole globe, so a
     // reflection ray dipping below the local horizon still hits it — "reflecting"
     // clouds from the lower hemisphere, which reads as fixed streak/line
-    // artefacts. Fade the cloud term to zero as the ray crosses the local
-    // horizon (geocentric up = normalized surface position). `gate` also zeroes
-    // the whole term if the reflection ray was degenerate.
+    // artefacts. Fade to zero as the ray crosses the local horizon (geocentric
+    // up = normalized surface position). `gate` also zeroes the whole term when
+    // the reflection ray was degenerate (sample then uses the fallback dir).
     const up = normalize(originWorld)
     const horizon = smoothstep(float(0.0), float(0.1), dot(f.dir, up))
     const gate = (f.ok as any).select(float(1), float(0))
@@ -234,11 +240,8 @@ export function createCloudField(opts: {
 
   const shadow = (originWorld: Node): Node => {
     if (sunDirection == null) return float(1)
-    const f = finiteDir(sunDirection)
-    const dir = rayShellDir(originWorld, f.dir)
-    const s = sampleCloud(dir)
-    const gate = (f.ok as any).select(float(1), float(0))
-    return float(1).sub((s as any).a.mul(u.shadowStrength).mul(gate))
+    const s = sampleAlong(originWorld, sunDirection)
+    return float(1).sub((s as any).a.mul(u.shadowStrength))
   }
 
   const sync = (v: CloudFieldValues): void => {

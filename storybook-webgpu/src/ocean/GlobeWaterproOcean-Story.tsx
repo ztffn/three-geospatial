@@ -623,6 +623,7 @@ export const Content: FC<{
     reflectionStrength: cloudControls.reflectionStrength,
     shadowStrength: cloudControls.shadowStrength,
   })
+  const cloudEffectsEnabled = CLOUD_OCEAN_EFFECTS && cloudControls.enabled
 
   const oceanFrameControls = useControls('Ocean Frame', {
     seaLevelOffset: {
@@ -1321,16 +1322,8 @@ export const Content: FC<{
           useDiagnosticMaterial={oceanDebugParams.useDiagnosticMaterial}
           skipDepthPrepass={oceanDebugParams.skipDepthPrepass}
           depthPrepassStage={oceanDebugParams.depthPrepassStage}
-          cloudReflect={
-            CLOUD_OCEAN_EFFECTS && cloudControls.enabled
-              ? cloudField.reflect
-              : undefined
-          }
-          cloudShadow={
-            CLOUD_OCEAN_EFFECTS && cloudControls.enabled
-              ? cloudField.shadow
-              : undefined
-          }
+          cloudReflect={cloudEffectsEnabled ? cloudField.reflect : undefined}
+          cloudShadow={cloudEffectsEnabled ? cloudField.shadow : undefined}
           onUniformsReady={setOceanUniforms}
           onVertexUniformsReady={setVertexUniforms}
           onOceanManagerReady={setOceanManager}
