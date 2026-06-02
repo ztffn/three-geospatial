@@ -21,15 +21,14 @@ const oceanIfftResources = path.resolve(repoRoot, 'packages/ocean-ifft/resources
 // pipeline (no .bin LUTs needed); stars.bin is bundled via `new URL(...)`.
 const staticAssets: Array<{ from: string; to: string }> = [
   // Draco+WebP compressed turbines (light farm model + detailed hero). ~440 KB
-  // and ~3.8 MB vs the 7 MB / 43 MB originals — decoded via the DRACOLoader the
-  // useGLTF hook configures.
+  // and ~6 MB — decoded via the DRACOLoader the useGLTF hook configures.
   {
     from: path.join(storybookAssets, 'turbine-demo_compressed.glb'),
     to: 'public/turbine-demo_compressed.glb'
   },
   {
-    from: path.join(storybookAssets, 'turbine-demo2_compressed.glb'),
-    to: 'public/turbine-demo2_compressed.glb'
+    from: path.join(storybookAssets, 'turbine-demo3_compressed.glb'),
+    to: 'public/turbine-demo3_compressed.glb'
   },
   // Huma brand mark (top-left overlay in main.tsx): favicon + HumaDisplay
   // wordmark font. Served at /public/brand/* (dev via sirv, build via copy).

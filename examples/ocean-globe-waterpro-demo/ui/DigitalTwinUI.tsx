@@ -430,6 +430,8 @@ export interface CameraControlsState {
   onZoom: (v: number) => void
   wingsOn: boolean
   onWings: (v: boolean) => void
+  coverOn: boolean
+  onCover: (v: boolean) => void
 }
 
 const PinIcon: FC = () => (
@@ -507,7 +509,9 @@ const ControlsPanel: FC<CameraControlsState> = ({
   zoomMax,
   onZoom,
   wingsOn,
-  onWings
+  onWings,
+  coverOn,
+  onCover
 }) => (
   <div
     style={{
@@ -570,13 +574,15 @@ const ControlsPanel: FC<CameraControlsState> = ({
           {Math.round(zoom)} m
         </span>
       </div>
-      {/* Larger value = farther out; invert so dragging right zooms IN. */}
+      {/* Larger value = farther out; invert so dragging right zooms IN.
+          1 m step: a coarse step that doesn't divide (max-min) leaves the
+          extremes unreachable (e.g. snapping to 20 m instead of 5 m). */}
       <input
         className="dt-scrub"
         type="range"
         min={zoomMin}
         max={zoomMax}
-        step={Math.max(1, Math.round((zoomMax - zoomMin) / 200))}
+        step={1}
         value={zoomMax + zoomMin - zoom}
         onChange={e => onZoom(zoomMax + zoomMin - Number(e.target.value))}
         style={{ width: '100%', display: 'block' }}
@@ -585,6 +591,7 @@ const ControlsPanel: FC<CameraControlsState> = ({
 
     <Toggle label="Auto-rotate" on={autoRotate} onChange={onAutoRotate} />
     <Toggle label="Rotor spin" on={wingsOn} onChange={onWings} />
+    <Toggle label="Cover" on={coverOn} onChange={onCover} />
   </div>
 )
 

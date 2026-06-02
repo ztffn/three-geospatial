@@ -124,6 +124,11 @@ extend({ AtmosphereLight })
 const heading = 180
 const pitch = -20
 const distance = 400
+// Minimum fly-to landing distance for turbine-FREE sites (focus null, e.g. Oslo
+// / Bergen). Their target sits at sea level (ellipsoid height 20), which is
+// underground for an onshore city — a close zoom would bury the camera in the
+// terrain (black). With no turbine to inspect, land at a city overview instead.
+const overviewDistance = 1500
 // 2275207 = Google Photorealistic 3D Tiles (color-baked photogrammetry).
 // Asset 1 is Cesium World Terrain — elevation-only quantized mesh, no imagery,
 // which is why TileMaterialReplacementPlugin's MeshBasicNodeMaterial rendered
@@ -397,7 +402,11 @@ const CameraRig: FC<{
   target: Vector3
   focus?: Vector3 | null
   zoomDistance?: number
-}> = ({ target, focus, zoomDistance }) => {
+  // Reports the camera's live distance to the orbit target when at rest
+  // (including after a mouse-wheel zoom), so a host slider can track it.
+  // Suppressed mid-fly and mid-slider-ease to avoid fighting those commands.
+  onDistance?: (distance: number) => void
+}> = ({ target, focus, zoomDistance, onDistance }) => {
   const camera = useThree(({ camera }) => camera)
   const controls = useThree(({ controls }) => controls as any)
 
@@ -413,12 +422,13 @@ const CameraRig: FC<{
   const appliedZoom = useRef<number | null>(null)
   const lastTarget = useRef<Vector3 | null>(null)
   const tmpAim = useRef(new Vector3())
+  const lastEmitted = useRef(-1)
 
-  // The camera always flies to / places at the LOCATION (target). The hero
-  // engine (`focus`) is applied separately as a small post-landing recentre —
-  // never as the fly destination, because `focus` lags a location change by a
-  // frame (it's recomputed from the new farm), which would aim the fly at the
-  // previous site and leave the new one off-screen.
+  // Initial placement and the fly's start anchor use the LOCATION (target). The
+  // fly DESTINATION, however, is the hero engine (`focus`, the nacelle/axle) —
+  // see the fly loop. `focus` lags a location change by ~1 frame (it's recomputed
+  // from the new farm), but the slerp at t≈0 is dominated by the start anchor, so
+  // reading it live there self-corrects without a visible mis-aim.
   const aimFor = useCallback(() => target.clone(), [target])
 
   const place = useCallback(
@@ -491,13 +501,25 @@ const CameraRig: FC<{
       const f = fly.current
       f.t = Math.min(1, f.t + dt / f.dur)
       const e = easeInOut(f.t)
-      const aim = geoSlerp(f.fromAim, f.toAim, e, tmpAim.current)
+      // Destination is the hero engine (`focus`, the nacelle/axle), not the sea-
+      // level location. Framing on the focus means a close zoom lands the right
+      // distance from the nacelle — not stranded ~80 m below it at the surface,
+      // which (nearly radially under the hub) drives OrbitControls into a
+      // degenerate pole and shows the planet interior. Read live so the ~1-frame
+      // `focus` lag self-corrects; fall back to the surface target if the site
+      // has no turbines (focus null).
+      const destAim = focus ?? f.toAim
+      const aim = geoSlerp(f.fromAim, destAim, e, tmpAim.current)
+      // Turbine-free sites (focus null) land at a city overview, never the close
+      // zoom — their target is underground onshore (see overviewDistance).
+      const landDist =
+        focus != null ? f.toDist : Math.max(f.toDist, overviewDistance)
       const dist =
-        MathUtils.lerp(f.fromDist, f.toDist, e) + f.bump * Math.sin(Math.PI * e)
+        MathUtils.lerp(f.fromDist, landDist, e) + f.bump * Math.sin(Math.PI * e)
+      // place() copies `aim` into controls.target, so at t=1 the orbit centre is
+      // the focus — no separate post-landing recentre needed.
       place(aim, dist)
       if (f.t >= 1) {
-        // Landed: recentre the orbit on the hero engine (if resolved).
-        if (focus != null) controls.target.copy(focus)
         controls.update?.()
         fly.current = null
       }
@@ -518,6 +540,19 @@ const CameraRig: FC<{
         if (Math.abs(next - zoomDistance) < zoomDistance * 0.01) {
           appliedZoom.current = zoomDistance
         }
+      }
+      return
+    }
+
+    // At rest (includes mouse-wheel zoom): report the live distance so a host
+    // slider can track it. Throttled to meaningful change to avoid per-frame
+    // host re-renders. Not reached mid-fly or mid-slider-ease (both return
+    // above), so this never fights an in-flight command.
+    if (onDistance != null) {
+      const live = camera.position.distanceTo(controls.target)
+      if (Math.abs(live - lastEmitted.current) > Math.max(0.5, live * 0.004)) {
+        lastEmitted.current = live
+        onDistance(live)
       }
     }
   })
@@ -601,8 +636,9 @@ function centreSlotIndex(count: number, stagger: boolean): number {
 }
 
 // Wind-turbine farm at the fly-to target — a staggered grid of `count` clones.
-// The centre slot uses the detailed "hero" GLB (turbine-demo2, with its base +
-// rig); the rest use the lightweight turbine-demo. Cloning with clone(true)
+// The centre slot uses the detailed "hero" GLB (turbine-demo3, with its base,
+// rig, axle and toggleable wall/cover); the rest use the lightweight
+// turbine-demo. Cloning with clone(true)
 // SHARES geometry + materials by reference, so the light turbines cost ~N× draw
 // calls but 1× GPU memory (cheap at farm sizes ~15; switch to InstancedMesh only
 // if scaling to hundreds). Each clone is laid out on the local East-North tangent
@@ -626,10 +662,14 @@ const TurbineFarm: FC<{
   // Master rotor on/off (deploy). false ramps the spin smoothly to a halt and
   // back, rather than cutting it. Undefined = on (Storybook).
   wingsEnabled?: boolean
-  // Reports the hero turbine's engine (rotor-hub) world position so the camera
+  // Reports the hero turbine's engine (axle origin) world position so the camera
   // can orbit/zoom to the nacelle rather than the base at sea level. null when
   // the site has no turbines (e.g. Oslo) — so the camera clears any stale focus.
   onHeroFocus?: (pos: Vector3 | null) => void
+  // Hero-only "cover" visibility toggle (only the hero GLB carries this node).
+  // Undefined = visible (the model's natural state). The "base-wall" node is
+  // always hidden on the hero (no control) so the engine reads clean.
+  heroCover?: boolean
 }> = ({
   target,
   scale,
@@ -642,34 +682,47 @@ const TurbineFarm: FC<{
   stagger,
   rotorRpm,
   wingsEnabled,
-  onHeroFocus
+  onHeroFocus,
+  heroCover
 }) => {
   const gltfFarm = useGLTF('public/turbine-demo_compressed.glb')
-  const gltfHero = useGLTF('public/turbine-demo2_compressed.glb')
+  const gltfHero = useGLTF('public/turbine-demo3_compressed.glb')
   const angleRef = useRef(0)
   const spinGainRef = useRef(1) // 0..1, lerps so on/off ramps in/out
 
   // One cloned scene per farm slot; clones share geometry/materials. The grid's
   // centre-most slot gets the detailed hero model, the rest the light one. Each
-  // clone's "Windwings" rotor is cached for per-frame spin. Rebuilt only when a
-  // model, the count, or the stagger (which shifts the centre) changes.
+  // clone's "Windwings" rotor is cached for per-frame spin; the hero also caches
+  // its "Axle" (spun with the wings) plus the toggleable "base-wall" / "cover"
+  // nodes. Rebuilt only when a model, the count, or the stagger changes.
   const instances = useMemo(() => {
     const heroIndex = centreSlotIndex(count, stagger)
     return Array.from({ length: count }, (_, i) => {
       const isHero = i === heroIndex
       const scene = (isHero ? gltfHero.scene : gltfFarm.scene).clone(true)
       if (isHero) {
-        // Hide the enclosure wall on the hero so the engine/turbine reads clean.
+        // base-wall is always hidden (no control) so the engine reads clean.
         const wall = scene.getObjectByName('base-wall')
         if (wall != null) wall.visible = false
       }
       return {
         scene,
         wings: scene.getObjectByName('Windwings') ?? null,
+        axle: isHero ? (scene.getObjectByName('Axle') ?? null) : null,
+        cover: isHero ? (scene.getObjectByName('cover') ?? null) : null,
         hero: isHero
       }
     })
   }, [gltfFarm.scene, gltfHero.scene, count, stagger])
+
+  // Apply the hero "cover" toggle. Undefined leaves it visible (the model's
+  // natural state); a deploy/leva `false` hides it. Re-runs on toggle and on
+  // rebuild (the clones are fresh, so visibility must be reset).
+  useEffect(() => {
+    for (const inst of instances) {
+      if (inst.cover != null) inst.cover.visible = heroCover !== false
+    }
+  }, [instances, heroCover])
 
   // Tangent-plane placement: a roughly square, optionally staggered grid centred
   // on the target. Shared orientation (yaw then align local Y to the surface up).
@@ -713,9 +766,11 @@ const TurbineFarm: FC<{
     return out
   }, [target, heightOffset, yawDeg, count, spacing, stagger])
 
-  // Hero engine (rotor hub) offset within the model, in the model's own frame.
+  // Hero engine (axle origin) offset within the model, in the model's own frame.
   const heroHubLocal = useMemo(() => {
-    const w = gltfHero.scene.getObjectByName('Windwings')
+    const w =
+      gltfHero.scene.getObjectByName('Axle') ??
+      gltfHero.scene.getObjectByName('Windwings')
     if (w == null) return null
     gltfHero.scene.updateMatrixWorld(true)
     return w.getWorldPosition(new Vector3())
@@ -758,8 +813,12 @@ const TurbineFarm: FC<{
     )
     angleRef.current += rate * spinGainRef.current * dt
     for (let i = 0; i < instances.length; i++) {
+      const z = angleRef.current + i * 0.37
       const wings = instances[i].wings
-      if (wings != null) wings.rotation.z = angleRef.current + i * 0.37
+      if (wings != null) wings.rotation.z = z
+      // Hero's axle shares the rotor shaft: same angle, same axis as the wings.
+      const axle = instances[i].axle
+      if (axle != null) axle.rotation.z = z
     }
   })
 
@@ -828,7 +887,13 @@ export const Content: FC<{
   flyTo?: { longitude: number; latitude: number; name: string } | null
   autoRotate?: boolean
   zoomDistance?: number
+  // Live orbit distance reported back each frame when the camera is at rest, so
+  // the deploy's zoom slider tracks mouse-wheel zoom. Additive; Storybook omits.
+  onZoomChange?: (distance: number) => void
   wingsEnabled?: boolean
+  // Hero "cover" visibility override from the deploy. When omitted, the leva
+  // Turbine panel governs (Storybook). false hides the cover.
+  heroCover?: boolean
   // Per-site farm size from the deploy; overrides the leva Turbine count.
   // Undefined in Storybook, where the leva count governs.
   farmCount?: number
@@ -842,7 +907,9 @@ export const Content: FC<{
   flyTo,
   autoRotate,
   zoomDistance,
+  onZoomChange,
   wingsEnabled,
+  heroCover,
   farmCount
 }) => {
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
@@ -1081,6 +1148,7 @@ export const Content: FC<{
     count: { value: 15, min: 1, max: 60, step: 1, label: 'Farm count' },
     spacing: { value: 320, min: 10, max: 4000, step: 5, label: 'Spacing (m)' },
     stagger: { value: true, label: 'Offset rows' },
+    cover: { value: true, label: 'Hero: cover' },
   })
 
   useEffect(() => {
@@ -1725,6 +1793,7 @@ export const Content: FC<{
         target={target}
         focus={heroFocus}
         zoomDistance={zoomDistance}
+        onDistance={onZoomChange}
       />
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth
@@ -1747,6 +1816,7 @@ export const Content: FC<{
         stagger={turbineControls.stagger}
         rotorRpm={turbineRpm}
         wingsEnabled={wingsEnabled}
+        heroCover={heroCover ?? turbineControls.cover}
         onHeroFocus={setHeroFocus}
       />
       <TilesRenderer key={terrainAssetId}>

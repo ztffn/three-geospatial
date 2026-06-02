@@ -89,7 +89,7 @@ const POIS: Poi[] = (
   longitude: locationPresets[name].longitude,
   latitude: locationPresets[name].latitude
 }))
-const ZOOM_MIN = 20
+const ZOOM_MIN = 5
 const ZOOM_MAX = 4000
 
 if (rootElement == null) {
@@ -222,8 +222,19 @@ const App: FC = () => {
 
   // Camera controls (ControlsPanel). flyTo drives the CameraRig fly animation.
   const [autoRotate, setAutoRotate] = useState(true)
+  // `zoom` is the COMMANDED orbit distance (drives the CameraRig ease).
+  // `liveZoom` is the camera's ACTUAL distance, reported back each frame, so the
+  // slider thumb tracks mouse-wheel zoom too. Dragging the slider commands both
+  // (snap the thumb, then the camera eases toward it).
   const [zoom, setZoom] = useState(600)
+  const [liveZoom, setLiveZoom] = useState(600)
+  const commandZoom = useCallback((v: number) => {
+    setZoom(v)
+    setLiveZoom(v)
+  }, [])
   const [wingsOn, setWingsOn] = useState(true)
+  // Hero-turbine cover toggle (only the hero GLB carries this node).
+  const [coverOn, setCoverOn] = useState(true)
   const [flyTo, setFlyTo] = useState<Poi | null>(null)
 
   // Flying to a POI also sets the farm size to that site's real unit count.
@@ -305,7 +316,9 @@ const App: FC = () => {
           farmCount={turbineCount}
           autoRotate={autoRotate}
           zoomDistance={zoom}
+          onZoomChange={setLiveZoom}
           wingsEnabled={wingsOn}
+          heroCover={coverOn}
         />
         <ReadinessProbe
           refs={refs}
@@ -334,12 +347,14 @@ const App: FC = () => {
             onFlyTo: handleFlyTo,
             autoRotate,
             onAutoRotate: setAutoRotate,
-            zoom,
+            zoom: liveZoom,
             zoomMin: ZOOM_MIN,
             zoomMax: ZOOM_MAX,
-            onZoom: setZoom,
+            onZoom: commandZoom,
             wingsOn,
-            onWings: setWingsOn
+            onWings: setWingsOn,
+            coverOn,
+            onCover: setCoverOn
           } satisfies CameraControlsState
         }
       />
