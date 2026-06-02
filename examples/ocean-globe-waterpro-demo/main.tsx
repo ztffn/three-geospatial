@@ -49,7 +49,11 @@ import { createRoot } from 'react-dom/client'
 import { NoToneMapping, SRGBColorSpace } from 'three'
 import { WebGPURenderer, type Renderer } from 'three/webgpu'
 
-import { DigitalTwinUI } from './ui/DigitalTwinUI'
+import {
+  DigitalTwinUI,
+  type CameraControlsState,
+  type Poi
+} from './ui/DigitalTwinUI'
 import { modelTurbine } from './ui/turbineModel'
 import { useMetForecast } from './ui/useMetForecast'
 
@@ -60,11 +64,33 @@ import {
 
 import {
   Content,
+  locationPresets,
   type ContentReadinessRefs
 } from '../../storybook-webgpu/src/ocean/GlobeWaterproOcean-Story'
 
 const rootElement = document.getElementById('root')
 const unsupportedElement = document.getElementById('unsupported')
+
+// Curated fly-to POIs: our Karmøy setup first, the real offshore wind farms,
+// then Oslo for a turbine-free view. `name` matches the scene preset key;
+// `label` is the (shorter) button text.
+const POIS: Poi[] = (
+  [
+    ['Karmøy', 'Karmøy', 15],
+    ['Hywind Tampen', 'Hywind Tampen', 11],
+    ['Zefyros', 'Zefyros', 1],
+    ['Oslo', 'Oslo', 0],
+    ['Bergen', 'Bergen', 0]
+  ] as const
+).map(([name, label, turbines]) => ({
+  name,
+  label,
+  turbines,
+  longitude: locationPresets[name].longitude,
+  latitude: locationPresets[name].latitude
+}))
+const ZOOM_MIN = 20
+const ZOOM_MAX = 4000
 
 if (rootElement == null) {
   throw new Error('Root element not found')
@@ -190,7 +216,21 @@ const App: FC = () => {
 
   // Farm size, surfaced from Content's leva Turbine control, so the inspector
   // can show the farm total (count × per-turbine output).
+  // Per-site turbine count (drives the farm AND the inspector total). Defaults
+  // to Karmøy's; updated on POI fly-to. App-owned, so it's the single source.
   const [turbineCount, setTurbineCount] = useState(15)
+
+  // Camera controls (ControlsPanel). flyTo drives the CameraRig fly animation.
+  const [autoRotate, setAutoRotate] = useState(true)
+  const [zoom, setZoom] = useState(600)
+  const [wingsOn, setWingsOn] = useState(true)
+  const [flyTo, setFlyTo] = useState<Poi | null>(null)
+
+  // Flying to a POI also sets the farm size to that site's real unit count.
+  const handleFlyTo = useCallback((poi: Poi) => {
+    setFlyTo(poi)
+    setTurbineCount(poi.turbines)
+  }, [])
 
   // Single source of truth for forecast-driven state, shared by the DOM cards
   // and the 3D turbine. Lives here (not in DigitalTwinUI) so the modelled rotor
@@ -239,7 +279,7 @@ const App: FC = () => {
   return (
     <>
       <Canvas
-        camera={{ fov: 45, near: 1, far: 1e8 }}
+        camera={{ fov: 45, near: 0.1, far: 1e8 }}
         style={{ position: 'fixed', inset: 0, background: '#101820' }}
         gl={async props => {
           const renderer = new WebGPURenderer({
@@ -261,7 +301,11 @@ const App: FC = () => {
           onLocationChange={handleLocationChange}
           turbineRpm={telemetry.rpm}
           clockMs={selected}
-          onTurbineCountChange={setTurbineCount}
+          flyTo={flyTo}
+          farmCount={turbineCount}
+          autoRotate={autoRotate}
+          zoomDistance={zoom}
+          wingsEnabled={wingsOn}
         />
         <ReadinessProbe
           refs={refs}
@@ -283,6 +327,21 @@ const App: FC = () => {
         now={clampedNow}
         selected={selected}
         onScrub={setScrubbed}
+        cameraControls={
+          {
+            pois: POIS,
+            activePoi: location.name,
+            onFlyTo: handleFlyTo,
+            autoRotate,
+            onAutoRotate: setAutoRotate,
+            zoom,
+            zoomMin: ZOOM_MIN,
+            zoomMax: ZOOM_MAX,
+            onZoom: setZoom,
+            wingsOn,
+            onWings: setWingsOn
+          } satisfies CameraControlsState
+        }
       />
       {/* Debug controls: kept, but collapsed by default and out of the way
           (top-right; the conditions HUD stacks below it). */}

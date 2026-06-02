@@ -239,33 +239,41 @@ const TurbineInspector: FC<{
             fontSize: 10,
             letterSpacing: '0.1em',
             textTransform: 'uppercase',
-            color: STATUS_COLOR[telemetry.status]
+            color: count === 0 ? MUTED : STATUS_COLOR[telemetry.status]
           }}
         >
-          {telemetry.status}
+          {count === 0 ? 'None' : telemetry.status}
         </span>
       }
     />
-    <Row label="Power">
-      {fmt(telemetry.powerMW, 'MW', 2)}
-      {telemetry.capacityFactor != null && (
-        <span style={{ color: MUTED }}>
-          {'  '}
-          {(telemetry.capacityFactor * 100).toFixed(0)}%
-        </span>
-      )}
-    </Row>
-    <Row label="Rotor">{fmt(telemetry.rpm, 'rpm')}</Row>
-    <Row label="Blade pitch">{fmt(telemetry.pitchDeg, '°')}</Row>
-    <Row label="Yaw">
-      <span style={{ color: MUTED }}>{fmtDir(telemetry.yawHeading)}</span>
-    </Row>
-    <Row label={`Farm · ${count}×`}>
-      {telemetry.powerMW == null
-        ? '—'
-        : `${(telemetry.powerMW * count).toFixed(1)} MW`}
-    </Row>
-    <Footnote>Modelled · {count} × 8 MW ref · from forecast wind</Footnote>
+    {count === 0 ? (
+      <div style={{ fontFamily: SANS, fontSize: 12, color: MUTED }}>
+        No turbines at this site.
+      </div>
+    ) : (
+      <>
+        <Row label="Power">
+          {fmt(telemetry.powerMW, 'MW', 2)}
+          {telemetry.capacityFactor != null && (
+            <span style={{ color: MUTED }}>
+              {'  '}
+              {(telemetry.capacityFactor * 100).toFixed(0)}%
+            </span>
+          )}
+        </Row>
+        <Row label="Rotor">{fmt(telemetry.rpm, 'rpm')}</Row>
+        <Row label="Blade pitch">{fmt(telemetry.pitchDeg, '°')}</Row>
+        <Row label="Yaw">
+          <span style={{ color: MUTED }}>{fmtDir(telemetry.yawHeading)}</span>
+        </Row>
+        <Row label={`Farm · ${count}×`}>
+          {telemetry.powerMW == null
+            ? '—'
+            : `${(telemetry.powerMW * count).toFixed(1)} MW`}
+        </Row>
+        <Footnote>Modelled · {count} × 8 MW ref · from forecast wind</Footnote>
+      </>
+    )}
   </div>
 )
 
@@ -401,6 +409,185 @@ const TimeScrubber: FC<{
   )
 }
 
+// --- camera controls panel ---------------------------------------------------
+export interface Poi {
+  name: string // must match a scene location-preset key
+  longitude: number
+  latitude: number
+  label?: string // optional shorter button text (defaults to name)
+  turbines: number // units at this site (0 = none, e.g. Oslo)
+}
+
+export interface CameraControlsState {
+  pois: Poi[]
+  activePoi: string
+  onFlyTo: (poi: Poi) => void
+  autoRotate: boolean
+  onAutoRotate: (v: boolean) => void
+  zoom: number
+  zoomMin: number
+  zoomMax: number
+  onZoom: (v: number) => void
+  wingsOn: boolean
+  onWings: (v: boolean) => void
+}
+
+const PinIcon: FC = () => (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden>
+    <path
+      d="M12 21s7-6.3 7-11a7 7 0 1 0-14 0c0 4.7 7 11 7 11z"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinejoin="round"
+    />
+    <circle cx="12" cy="10" r="2.2" fill="currentColor" />
+  </svg>
+)
+
+// On/off pill, gray when off, accent when on ("color for meaning").
+const Toggle: FC<{ label: string; on: boolean; onChange: (v: boolean) => void }> = ({
+  label,
+  on,
+  onChange
+}) => (
+  <button
+    type="button"
+    onClick={() => onChange(!on)}
+    style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      width: '100%',
+      gap: 10,
+      padding: '6px 8px',
+      fontFamily: SANS,
+      fontSize: 11,
+      letterSpacing: '0.04em',
+      color: TEXT,
+      background: 'transparent',
+      border: PANEL_BORDER,
+      borderRadius: 0,
+      cursor: 'pointer'
+    }}
+  >
+    {label}
+    <span
+      style={{
+        width: 28,
+        height: 14,
+        borderRadius: 0,
+        background: on ? ACCENT : 'rgba(255,255,255,0.15)',
+        position: 'relative',
+        transition: 'background-color 150ms cubic-bezier(0.4,0,0.2,1)'
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: on ? 16 : 2,
+          width: 10,
+          height: 10,
+          background: TEXT,
+          transition: 'left 150ms cubic-bezier(0.4,0,0.2,1)'
+        }}
+      />
+    </span>
+  </button>
+)
+
+const ControlsPanel: FC<CameraControlsState> = ({
+  pois,
+  activePoi,
+  onFlyTo,
+  autoRotate,
+  onAutoRotate,
+  zoom,
+  zoomMin,
+  zoomMax,
+  onZoom,
+  wingsOn,
+  onWings
+}) => (
+  <div
+    style={{
+      ...cardStyle({ bottom: 16, left: 16 }, 220),
+      pointerEvents: 'auto',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 10
+    }}
+  >
+    <CardHeader title="Camera" />
+
+    {/* POI fly-to buttons */}
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {pois.map(poi => {
+        const active = poi.name === activePoi
+        return (
+          <button
+            key={poi.name}
+            type="button"
+            onClick={() => onFlyTo(poi)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '5px 9px',
+              fontFamily: SANS,
+              fontSize: 11,
+              letterSpacing: '0.02em',
+              color: active ? ACCENT : TEXT,
+              background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+              border: PANEL_BORDER,
+              borderRadius: 0,
+              cursor: 'pointer'
+            }}
+          >
+            <PinIcon />
+            {poi.label ?? poi.name}
+          </button>
+        )
+      })}
+    </div>
+
+    {/* Zoom puller */}
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontFamily: SANS,
+          fontSize: 10,
+          letterSpacing: '0.14em',
+          textTransform: 'uppercase',
+          color: MUTED,
+          marginBottom: 4
+        }}
+      >
+        <span>Zoom</span>
+        <span style={{ fontFamily: MONO, fontVariantNumeric: 'tabular-nums' }}>
+          {Math.round(zoom)} m
+        </span>
+      </div>
+      {/* Larger value = farther out; invert so dragging right zooms IN. */}
+      <input
+        className="dt-scrub"
+        type="range"
+        min={zoomMin}
+        max={zoomMax}
+        step={Math.max(1, Math.round((zoomMax - zoomMin) / 200))}
+        value={zoomMax + zoomMin - zoom}
+        onChange={e => onZoom(zoomMax + zoomMin - Number(e.target.value))}
+        style={{ width: '100%', display: 'block' }}
+      />
+    </div>
+
+    <Toggle label="Auto-rotate" on={autoRotate} onChange={onAutoRotate} />
+    <Toggle label="Rotor spin" on={wingsOn} onChange={onWings} />
+  </div>
+)
+
 // --- composition (presentational) -------------------------------------------
 export const DigitalTwinUI: FC<{
   locationName: string
@@ -414,6 +601,7 @@ export const DigitalTwinUI: FC<{
   now: number
   selected: number
   onScrub: (ms: number | null) => void
+  cameraControls?: CameraControlsState
 }> = ({
   locationName,
   loading,
@@ -425,7 +613,8 @@ export const DigitalTwinUI: FC<{
   rangeEnd,
   now,
   selected,
-  onScrub
+  onScrub,
+  cameraControls
 }) => (
   <>
     <TurbineInspector telemetry={telemetry} count={turbineCount} />
@@ -435,6 +624,7 @@ export const DigitalTwinUI: FC<{
       loading={loading}
       error={error}
     />
+    {cameraControls != null && <ControlsPanel {...cameraControls} />}
     {rangeStart != null && rangeEnd != null && (
       <TimeScrubber
         rangeStart={rangeStart}

@@ -15,10 +15,15 @@ import {
   type ThreeElement,
 } from '@react-three/fiber'
 import { CesiumIonAuthPlugin } from '3d-tiles-renderer/plugins'
-import { TilesPlugin, TilesRenderer } from '3d-tiles-renderer/r3f'
+import {
+  TilesPlugin,
+  TilesRenderer,
+  TilesRendererContext
+} from '3d-tiles-renderer/r3f'
 import { button, levaStore, useControls } from 'leva'
 import {
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -127,9 +132,10 @@ const distance = 400
 const globalTerrainAssetId = 2275207
 const japanRegionalTerrainAssetId = 2767062
 
-const locationPresets = {
+export const locationPresets = {
   Tokyo: { longitude: 139.7671, latitude: 35.6812, height: 20 },
   Oslo: { longitude: 10.7522, latitude: 59.9139, height: 20 },
+  Bergen: { longitude: 5.3221, latitude: 60.3913, height: 20 },
   'New York': { longitude: -74.006, latitude: 40.7128, height: 20 },
   'Cape Town': { longitude: 18.4241, latitude: -33.9249, height: 20 },
   Sydney: { longitude: 151.2093, latitude: -33.8688, height: 20 },
@@ -137,6 +143,11 @@ const locationPresets = {
   // 59°24'57.1"N 5°13'36.8"E — North Sea, ~10 km offshore W of Karmøy
   // (Utsira Nord offshore-wind area, Norway).
   Karmøy: { longitude: 5.206866, latitude: 59.427348, height: 20 },
+  // Real offshore wind farms (fly-to POIs).
+  'Hywind Tampen': { longitude: 2.7, latitude: 61.329972, height: 20 }, // floating, North Sea NW of Bergen
+  // Hywind Demo / Unitech Zefyros — ~10 km SW of Karmøy. Approx: the marinelink
+  // listing's own coords (63.0,7.0) contradict its "west of Karmøy" text.
+  Zefyros: { longitude: 5.04, latitude: 59.16, height: 20 },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -353,40 +364,251 @@ const OceanSurface: FC<{
 // Simple camera placement: position the perspective camera at the given target
 // (no fly-to animation — that's a localhost:5173 nice-to-have, not load-bearing
 // for the scaffold). Re-runs whenever target changes (location preset switch).
-const CameraSetup: FC<{ target: Vector3 }> = ({ target }) => {
+// Great-circle interpolation between two ECEF points: slerp the direction from
+// the Earth's centre and lerp the radius, so a fly-to between far-apart POIs
+// arcs over the globe instead of cutting a chord through it.
+function geoSlerp(a: Vector3, b: Vector3, t: number, out: Vector3): Vector3 {
+  const da = a.clone().normalize()
+  const db = b.clone().normalize()
+  let dot = MathUtils.clamp(da.dot(db), -1, 1)
+  const omega = Math.acos(dot)
+  const mag = MathUtils.lerp(a.length(), b.length(), t)
+  if (omega < 1e-4) {
+    out.copy(da).lerp(db, t)
+  } else {
+    const s = Math.sin(omega)
+    const wa = Math.sin((1 - t) * omega) / s
+    const wb = Math.sin(t * omega) / s
+    out.copy(da).multiplyScalar(wa).addScaledVector(db, wb)
+  }
+  return out.normalize().multiplyScalar(mag)
+}
+
+const easeInOut = (t: number): number =>
+  t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2
+
+// Camera rig over the default OrbitControls. `focus` (hero engine) is the
+// look-at anchor. Changing `target` (POI / location) triggers a smooth fly-to:
+// the anchor slerps along the great circle while distance arcs out (more for
+// farther jumps) and settles at `zoomDistance`. Between flights, a change to
+// `zoomDistance` (the slider) eases the dolly distance to it — without fighting
+// mouse-wheel zoom, which owns distance until the next slider change.
+const CameraRig: FC<{
+  target: Vector3
+  focus?: Vector3 | null
+  zoomDistance?: number
+}> = ({ target, focus, zoomDistance }) => {
   const camera = useThree(({ camera }) => camera)
   const controls = useThree(({ controls }) => controls as any)
 
+  const fly = useRef<{
+    t: number
+    dur: number
+    fromAim: Vector3
+    toAim: Vector3
+    fromDist: number
+    toDist: number
+    bump: number
+  } | null>(null)
+  const appliedZoom = useRef<number | null>(null)
+  const lastTarget = useRef<Vector3 | null>(null)
+  const tmpAim = useRef(new Vector3())
+
+  // The camera always flies to / places at the LOCATION (target). The hero
+  // engine (`focus`) is applied separately as a small post-landing recentre —
+  // never as the fly destination, because `focus` lags a location change by a
+  // frame (it's recomputed from the new farm), which would aim the fly at the
+  // previous site and leave the new one off-screen.
+  const aimFor = useCallback(() => target.clone(), [target])
+
+  const place = useCallback(
+    (aim: Vector3, dist: number) => {
+      const cam = new THREE.PerspectiveCamera()
+      new PointOfView(dist, radians(heading), radians(pitch)).decompose(
+        aim,
+        cam.position,
+        cam.quaternion,
+        cam.up
+      )
+      camera.position.copy(cam.position)
+      camera.quaternion.copy(cam.quaternion)
+      camera.up.copy(cam.up)
+      camera.updateProjectionMatrix()
+      camera.updateMatrixWorld()
+      if (controls?.target != null) {
+        controls.target.copy(aim)
+        controls.update?.()
+      }
+    },
+    [camera, controls]
+  )
+
+  // Initial placement; afterwards, a target change starts a fly-to. Depends on
+  // `controls` too: OrbitControls (makeDefault) often isn't registered on first
+  // mount, and the initial placement must set controls.target — otherwise the
+  // orbit centre stays at the earth's centre and the camera stares into the
+  // planet (black) until something re-runs this. So wait for controls, then place.
   useLayoutEffect(() => {
-    const nextCamera = new THREE.PerspectiveCamera()
-    new PointOfView(distance, radians(heading), radians(pitch)).decompose(
-      target,
-      nextCamera.position,
-      nextCamera.quaternion,
-      nextCamera.up
-    )
-    camera.position.copy(nextCamera.position)
-    camera.quaternion.copy(nextCamera.quaternion)
-    camera.up.copy(nextCamera.up)
-    camera.updateProjectionMatrix()
-    camera.updateMatrixWorld()
-    if (controls?.target != null) {
-      controls.target.copy(target)
+    if (controls?.target == null) return
+    const aim = aimFor()
+    const dist = zoomDistance ?? distance
+    if (lastTarget.current == null) {
+      place(aim, dist)
+      appliedZoom.current = dist
+    } else if (!lastTarget.current.equals(target)) {
+      const fromAim = controls?.target?.clone() ?? lastTarget.current.clone()
+      const fromDist =
+        controls?.target != null
+          ? camera.position.distanceTo(controls.target)
+          : dist
+      // Angular separation drives how far the camera pulls out mid-arc.
+      const sep = Math.acos(
+        MathUtils.clamp(
+          fromAim.clone().normalize().dot(aim.clone().normalize()),
+          -1,
+          1
+        )
+      )
+      fly.current = {
+        t: 0,
+        dur: 1.6 + (sep / Math.PI) * 1.8,
+        fromAim,
+        toAim: aim,
+        fromDist,
+        toDist: dist,
+        bump: (sep / Math.PI) * 1.2e7 // up to ~globe scale for antipodal jumps
+      }
+      appliedZoom.current = dist
+    }
+    lastTarget.current = target.clone()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, controls])
+
+  useFrame((_, dt) => {
+    if (controls?.target == null) return
+
+    if (fly.current != null) {
+      const f = fly.current
+      f.t = Math.min(1, f.t + dt / f.dur)
+      const e = easeInOut(f.t)
+      const aim = geoSlerp(f.fromAim, f.toAim, e, tmpAim.current)
+      const dist =
+        MathUtils.lerp(f.fromDist, f.toDist, e) + f.bump * Math.sin(Math.PI * e)
+      place(aim, dist)
+      if (f.t >= 1) {
+        // Landed: recentre the orbit on the hero engine (if resolved).
+        if (focus != null) controls.target.copy(focus)
+        controls.update?.()
+        fly.current = null
+      }
+      return
+    }
+
+    // Slider zoom: ease distance toward zoomDistance only when it changed, so
+    // mouse-wheel zoom is left alone between slider moves.
+    if (zoomDistance != null && zoomDistance !== appliedZoom.current) {
+      const dir = camera.position.clone().sub(controls.target)
+      const cur = dir.length()
+      if (cur > 1e-6) {
+        const next = MathUtils.damp(cur, zoomDistance, 6, dt)
+        camera.position
+          .copy(controls.target)
+          .addScaledVector(dir.normalize(), next)
+        controls.update?.()
+        if (Math.abs(next - zoomDistance) < zoomDistance * 0.01) {
+          appliedZoom.current = zoomDistance
+        }
+      }
+    }
+  })
+
+  // Hero engine resolves after load → recentre orbit without re-placing camera.
+  useLayoutEffect(() => {
+    if (fly.current == null && controls?.target != null && focus != null) {
+      controls.target.copy(focus)
       controls.update?.()
     }
-  }, [camera, controls, target])
+  }, [controls, focus])
 
   return null
 }
 
-// Wind-turbine farm at the fly-to target — a staggered grid of `count` clones
-// of the GLB. Cloning with clone(true) SHARES geometry + materials by reference,
-// so N turbines cost ~N× draw calls but 1× GPU memory (cheap at farm sizes ~15;
-// switch to InstancedMesh only if scaling to hundreds). Each clone is laid out
-// on the local East-North tangent plane at `target`, oriented so local +Y (tower
-// up) aligns with the surface normal, and spins its "Windwings" rotor on local Y.
-// Participates in the depth pre-pass via normal traversal, so shoreline foam
-// still develops around each waterline.
+// Keeps the camera from dropping below the 3D terrain tiles. Rendered as a
+// child of <TilesRenderer> so it can read the tile group from context and
+// raycast it. Only LAND (terrain standing above sea level) acts as a floor —
+// over open ocean the tile sits at sea level, so the camera is free to descend
+// into the water. The IFFT ocean is a separate object and never raycast here.
+const _clampRay = new THREE.Raycaster()
+const TerrainClamp: FC<{ seaLevelRadius: number }> = ({ seaLevelRadius }) => {
+  const camera = useThree(({ camera }) => camera)
+  const controls = useThree(({ controls }) => controls as any)
+  const tiles = useContext(TilesRendererContext) as { group?: THREE.Group } | null
+  const frameRef = useRef(0)
+  const up = useRef(new Vector3())
+
+  useFrame(() => {
+    const group = tiles?.group
+    if (group == null || controls?.target == null) return
+    // Throttle: terrain raycasts are not free; every other frame is plenty.
+    frameRef.current = (frameRef.current + 1) % 2
+    if (frameRef.current !== 0) return
+
+    const cam = camera.position
+    up.current.copy(cam).normalize() // ECEF up at the camera
+    const probe = 12000
+    _clampRay.firstHitOnly = true
+    _clampRay.set(
+      cam.clone().addScaledVector(up.current, probe),
+      up.current.clone().negate()
+    )
+    _clampRay.far = probe * 3
+    const hit = _clampRay.intersectObject(group, true)[0]
+    if (hit == null) return
+
+    const terrainR = hit.point.length()
+    // Don't clamp at/under sea level — that's water, which is passable.
+    if (terrainR <= seaLevelRadius + 5) return
+    const floor = terrainR + 2
+    if (cam.length() < floor) {
+      cam.setLength(floor)
+      controls.update?.()
+    }
+  })
+
+  return null
+}
+
+// Index of the grid slot nearest the centre, in a roughly square (optionally
+// staggered) layout of `count` cells. That slot is pinned to the fly-to target
+// and gets the hero turbine, so zooming straight in lands on a turbine.
+function centreSlotIndex(count: number, stagger: boolean): number {
+  const cols = Math.ceil(Math.sqrt(count))
+  const rows = Math.ceil(count / cols)
+  let idx = 0
+  let best = Infinity
+  for (let i = 0; i < count; i++) {
+    const r = Math.floor(i / cols)
+    const c = i % cols
+    const ex = c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2
+    const nz = r - (rows - 1) / 2
+    const d = ex * ex + nz * nz
+    if (d < best) {
+      best = d
+      idx = i
+    }
+  }
+  return idx
+}
+
+// Wind-turbine farm at the fly-to target — a staggered grid of `count` clones.
+// The centre slot uses the detailed "hero" GLB (turbine-demo2, with its base +
+// rig); the rest use the lightweight turbine-demo. Cloning with clone(true)
+// SHARES geometry + materials by reference, so the light turbines cost ~N× draw
+// calls but 1× GPU memory (cheap at farm sizes ~15; switch to InstancedMesh only
+// if scaling to hundreds). Each clone is laid out on the local East-North tangent
+// plane at `target`, oriented so local +Y (tower up) aligns with the surface
+// normal, and spins its "Windwings" rotor on local Y. Participates in the depth
+// pre-pass via normal traversal, so shoreline foam still develops at each base.
 const TurbineFarm: FC<{
   target: Vector3
   scale: number
@@ -401,6 +623,13 @@ const TurbineFarm: FC<{
   // of the leva spinSpeed — converting rpm to rad/s. 0 rpm = parked/cut-out, so
   // the blades visibly stop. null falls back to spinSpeed (Storybook default).
   rotorRpm?: number | null
+  // Master rotor on/off (deploy). false ramps the spin smoothly to a halt and
+  // back, rather than cutting it. Undefined = on (Storybook).
+  wingsEnabled?: boolean
+  // Reports the hero turbine's engine (rotor-hub) world position so the camera
+  // can orbit/zoom to the nacelle rather than the base at sea level. null when
+  // the site has no turbines (e.g. Oslo) — so the camera clears any stale focus.
+  onHeroFocus?: (pos: Vector3 | null) => void
 }> = ({
   target,
   scale,
@@ -411,21 +640,36 @@ const TurbineFarm: FC<{
   count,
   spacing,
   stagger,
-  rotorRpm
+  rotorRpm,
+  wingsEnabled,
+  onHeroFocus
 }) => {
-  const gltf = useGLTF('public/turbine-demo.glb')
+  const gltfFarm = useGLTF('public/turbine-demo_compressed.glb')
+  const gltfHero = useGLTF('public/turbine-demo2_compressed.glb')
   const angleRef = useRef(0)
+  const spinGainRef = useRef(1) // 0..1, lerps so on/off ramps in/out
 
-  // One cloned scene per farm slot; clones share geometry/materials. Each clone's
-  // rotor is cached for per-frame spin. Rebuilt only when the model or count changes.
-  const instances = useMemo(
-    () =>
-      Array.from({ length: count }, () => {
-        const scene = gltf.scene.clone(true)
-        return { scene, wings: scene.getObjectByName('Windwings') ?? null }
-      }),
-    [gltf.scene, count]
-  )
+  // One cloned scene per farm slot; clones share geometry/materials. The grid's
+  // centre-most slot gets the detailed hero model, the rest the light one. Each
+  // clone's "Windwings" rotor is cached for per-frame spin. Rebuilt only when a
+  // model, the count, or the stagger (which shifts the centre) changes.
+  const instances = useMemo(() => {
+    const heroIndex = centreSlotIndex(count, stagger)
+    return Array.from({ length: count }, (_, i) => {
+      const isHero = i === heroIndex
+      const scene = (isHero ? gltfHero.scene : gltfFarm.scene).clone(true)
+      if (isHero) {
+        // Hide the enclosure wall on the hero so the engine/turbine reads clean.
+        const wall = scene.getObjectByName('base-wall')
+        if (wall != null) wall.visible = false
+      }
+      return {
+        scene,
+        wings: scene.getObjectByName('Windwings') ?? null,
+        hero: isHero
+      }
+    })
+  }, [gltfFarm.scene, gltfHero.scene, count, stagger])
 
   // Tangent-plane placement: a roughly square, optionally staggered grid centred
   // on the target. Shared orientation (yaw then align local Y to the surface up).
@@ -445,6 +689,7 @@ const TurbineFarm: FC<{
 
     const cols = Math.ceil(Math.sqrt(count))
     const rows = Math.ceil(count / cols)
+    const heroIndex = centreSlotIndex(count, stagger)
     const out: Array<{
       position: [number, number, number]
       quaternion: [number, number, number, number]
@@ -452,8 +697,12 @@ const TurbineFarm: FC<{
     for (let i = 0; i < count; i++) {
       const r = Math.floor(i / cols)
       const c = i % cols
-      const ex = (c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2) * spacing
-      const nz = (r - (rows - 1) / 2) * spacing
+      // Hero is pinned to the target (camera focus); the rest tile around it.
+      const ex =
+        i === heroIndex
+          ? 0
+          : (c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2) * spacing
+      const nz = i === heroIndex ? 0 : (r - (rows - 1) / 2) * spacing
       const pos = target
         .clone()
         .addScaledVector(east, ex)
@@ -464,13 +713,50 @@ const TurbineFarm: FC<{
     return out
   }, [target, heightOffset, yawDeg, count, spacing, stagger])
 
+  // Hero engine (rotor hub) offset within the model, in the model's own frame.
+  const heroHubLocal = useMemo(() => {
+    const w = gltfHero.scene.getObjectByName('Windwings')
+    if (w == null) return null
+    gltfHero.scene.updateMatrixWorld(true)
+    return w.getWorldPosition(new Vector3())
+  }, [gltfHero.scene])
+
+  // World position of the hero's engine = its placement transformed by the hub
+  // offset (scaled, rotated). Reported up so the camera can orbit it.
+  const heroFocus = useMemo(() => {
+    if (heroHubLocal == null) return null
+    const p = placements[centreSlotIndex(count, stagger)]
+    if (p == null) return null
+    const q = new Quaternion().fromArray(p.quaternion)
+    const offset = heroHubLocal.clone().multiplyScalar(scale).applyQuaternion(q)
+    return new Vector3().fromArray(p.position).add(offset)
+  }, [heroHubLocal, placements, scale, count, stagger])
+
+  useEffect(() => {
+    // Always report (incl. null) so a turbine-free site clears the prior focus.
+    onHeroFocus?.(heroFocus)
+  }, [onHeroFocus, heroFocus])
+
   useFrame((_, dt) => {
     if (!spin) return
     // Blender's local +Y (rotor shaft) → glTF local -Z after the Z-up→Y-up axis
     // conversion. One shared angle (all turbines see the same wind); a per-index
     // phase offset avoids an unnaturally phase-locked look.
-    const rate = rotorRpm != null ? (rotorRpm * Math.PI * 2) / 60 : spinSpeed
-    angleRef.current += rate * dt
+    //   undefined (Storybook): manual leva spinSpeed.
+    //   number  (deploy):      modelled rpm → rad/s, so the rotor matches the HUD.
+    //   null    (deploy, no wind data): idle — never the fast fallback.
+    const rate =
+      rotorRpm === undefined
+        ? spinSpeed
+        : ((rotorRpm ?? 0) * Math.PI * 2) / 60
+    // Ramp to a halt / back up when toggled, instead of an instant cut.
+    spinGainRef.current = MathUtils.damp(
+      spinGainRef.current,
+      wingsEnabled === false ? 0 : 1,
+      4,
+      dt
+    )
+    angleRef.current += rate * spinGainRef.current * dt
     for (let i = 0; i < instances.length; i++) {
       const wings = instances[i].wings
       if (wings != null) wings.rotation.z = angleRef.current + i * 0.37
@@ -534,18 +820,40 @@ export const Content: FC<{
   // Surfaces the leva-controlled turbine farm size to the host page so the HUD
   // inspector can show a farm total. Additive; Storybook ignores it.
   onTurbineCountChange?: (count: number) => void
+  // Deploy camera controls (ControlsPanel). All optional; when omitted the leva
+  // Camera panel governs (Storybook).
+  //   flyTo: a POI to smoothly fly to (changing it triggers the CameraRig fly).
+  //   autoRotate / zoomDistance: override the leva autoOrbit / orbit distance.
+  //   wingsEnabled: master on/off for rotor spin (lerps to a halt).
+  flyTo?: { longitude: number; latitude: number; name: string } | null
+  autoRotate?: boolean
+  zoomDistance?: number
+  wingsEnabled?: boolean
+  // Per-site farm size from the deploy; overrides the leva Turbine count.
+  // Undefined in Storybook, where the leva count governs.
+  farmCount?: number
 }> = ({
   onReadinessRefs,
   disableOcean = false,
   onLocationChange,
   turbineRpm,
   clockMs,
-  onTurbineCountChange
+  onTurbineCountChange,
+  flyTo,
+  autoRotate,
+  zoomDistance,
+  wingsEnabled,
+  farmCount
 }) => {
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
+  // Live OrbitControls handle (for the 'Dump view' button below).
+  const orbitControlsRef = useRef<any>(null)
+  orbitControlsRef.current = useThree(({ controls }) => controls)
   const [oceanManager, setOceanManager] = useState<any>(null)
+  // Hero turbine engine position, reported by the farm; the camera orbits it.
+  const [heroFocus, setHeroFocus] = useState<Vector3 | null>(null)
   const [oceanUniforms, setOceanUniforms] =
     useState<WaterproOceanUniforms | null>(null)
   const [vertexUniforms, setVertexUniforms] =
@@ -633,6 +941,21 @@ export const Content: FC<{
     activeLocation.latitude,
     locationControls.preset
   ])
+
+  // Deploy POI fly-to: push the requested location into the leva Location
+  // control, which moves `target` and triggers the CameraRig fly animation.
+  useEffect(() => {
+    if (flyTo == null) return
+    if (Object.prototype.hasOwnProperty.call(locationPresets, flyTo.name)) {
+      setLocation({ preset: flyTo.name })
+    } else {
+      setLocation({
+        preset: 'Custom',
+        longitude: flyTo.longitude,
+        latitude: flyTo.latitude
+      })
+    }
+  }, [flyTo, setLocation])
 
   const atmosphereControls = useControls('Atmosphere', {
     exposure: { value: 10, min: 0, max: 30, step: 0.25 },
@@ -756,7 +1079,7 @@ export const Content: FC<{
     spin: { value: true },
     spinSpeed: { value: 2.0, min: 0, max: 20, step: 0.1 },
     count: { value: 15, min: 1, max: 60, step: 1, label: 'Farm count' },
-    spacing: { value: 80, min: 10, max: 2000, step: 5, label: 'Spacing (m)' },
+    spacing: { value: 320, min: 10, max: 4000, step: 5, label: 'Spacing (m)' },
     stagger: { value: true, label: 'Offset rows' },
   })
 
@@ -765,10 +1088,26 @@ export const Content: FC<{
   }, [onTurbineCountChange, turbineControls.count])
 
   const cameraControls = useControls('Camera', {
-    minDistance: { value: 50, min: 1, max: 5000, step: 1 },
+    minDistance: { value: 1, min: 0.1, max: 5000, step: 0.1 },
     maxDistance: { value: 100000, min: 1000, max: 50_000_000, step: 100_000 },
     autoOrbit: { value: true },
     orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
+    // After a full load, frame the view you want, then click this. It logs +
+    // copies the exact camera pose so it can be hardcoded as the start view.
+    dumpView: button(() => {
+      const tgt = orbitControlsRef.current?.target
+      const data = {
+        position: camera.position.toArray(),
+        quaternion: camera.quaternion.toArray(),
+        up: camera.up.toArray(),
+        target: tgt != null ? tgt.toArray() : null,
+        distance: tgt != null ? camera.position.distanceTo(tgt) : null
+      }
+      const json = JSON.stringify(data, null, 2)
+      // eslint-disable-next-line no-console
+      console.log('[camera dump]\n' + json)
+      void navigator.clipboard?.writeText(json)
+    }),
   })
 
   // Snapshot button — dumps every leva value (across all panels) as JSON to
@@ -1379,13 +1718,23 @@ export const Content: FC<{
         enableDamping
         minDistance={cameraControls.minDistance}
         maxDistance={cameraControls.maxDistance}
-        autoRotate={cameraControls.autoOrbit}
+        autoRotate={autoRotate ?? cameraControls.autoOrbit}
         autoRotateSpeed={cameraControls.orbitSpeed}
       />
-      <CameraSetup target={target} />
+      <CameraRig
+        target={target}
+        focus={heroFocus}
+        zoomDistance={zoomDistance}
+      />
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth
-          pre-pass for shoreline-foam gating. */}
+          pre-pass for shoreline-foam gating.
+          Loaded eagerly: the compressed GLBs are small (~440 KB / ~3.8 MB,
+          Draco-decoded off-thread), so they're ready by reveal without starving
+          the atmosphere-LUT compute. NOTE: if you add a LARGE model here again,
+          re-gate it behind `{!disableOcean && (...)}` (as the ocean is) so its
+          download/parse doesn't compete with the stage-1 LUT pipeline — an
+          uncompressed 43 MB hero here once stalled that compute for ~80 s. */}
       <TurbineFarm
         target={target}
         scale={turbineControls.scale}
@@ -1393,10 +1742,12 @@ export const Content: FC<{
         yawDeg={turbineControls.yawDeg}
         spin={turbineControls.spin}
         spinSpeed={turbineControls.spinSpeed}
-        count={turbineControls.count}
+        count={farmCount ?? turbineControls.count}
         spacing={turbineControls.spacing}
         stagger={turbineControls.stagger}
         rotorRpm={turbineRpm}
+        wingsEnabled={wingsEnabled}
+        onHeroFocus={setHeroFocus}
       />
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
@@ -1408,6 +1759,7 @@ export const Content: FC<{
           }}
         />
         <TilesPlugin plugin={TileMaterialReplacementPlugin} />
+        <TerrainClamp seaLevelRadius={target.length()} />
       </TilesRenderer>
       {oceanDebugParams.enableOcean && !disableOcean && (
         <OceanSurface
