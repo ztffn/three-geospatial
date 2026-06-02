@@ -7,8 +7,8 @@ import react from '@vitejs/plugin-react'
 import { mergeConfig, type UserConfig } from 'vite'
 
 const require = createRequire(import.meta.url)
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const repoRoot = resolve(__dirname, '..', '..')
+const currentDir = dirname(fileURLToPath(import.meta.url))
+const repoRoot = resolve(currentDir, '..', '..')
 
 const config: StorybookConfig = {
   stories: ['../src/**/*.@(mdx|stories.@(js|jsx|ts|tsx))'],
