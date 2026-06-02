@@ -1,12 +1,14 @@
-// Digital-twin overlay layer for the deployed globe ocean scene. Composes the
-// live MET conditions card (floating glass, top-right) and the forecast time
-// scrubber (bottom-centre), sharing one selected-time state so scrubbing the
-// timeline re-reads the interpolated wind/wave/sea conditions. Plain DOM mounted
-// as a sibling of the R3F canvas; fed real data via useMetForecast (no mocks).
+// Digital-twin overlay layer for the deployed globe ocean scene. Presentational
+// only: the MET conditions card (top-right), the modelled turbine inspector
+// (top-left, under the brand mark), and the forecast time scrubber (bottom).
+// All data — the interpolated MET sample, the turbine telemetry, and the
+// selected time — is owned by main.tsx App and passed in, so the DOM cards and
+// the 3D turbine share one source of truth. Plain DOM sibling of the canvas.
 
-import { useEffect, useMemo, useState, type FC } from 'react'
+import { type FC } from 'react'
 
-import { useMetForecast, type MetSample } from './useMetForecast'
+import type { MetSample } from './useMetForecast'
+import type { TurbineTelemetry, TurbineStatus } from './turbineModel'
 
 // --- design tokens (Huma system, tuned for legibility over a 3D scene) -------
 const PANEL_BG = 'rgba(10, 18, 30, 0.55)'
@@ -14,10 +16,29 @@ const PANEL_BORDER = '1px solid rgba(255, 255, 255, 0.10)'
 const TEXT = '#e8eef5'
 const MUTED = 'rgba(232, 238, 245, 0.55)'
 const ACCENT = 'oklch(0.6671 0.2199 26.4681)' // huma primary (warm)
+const GOOD = 'oklch(0.72 0.17 145)' // generating/rated (green)
 const MONO =
   "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace"
 const SANS =
   "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+
+const cardStyle = (
+  pos: { top?: number; bottom?: number; left?: number; right?: number },
+  width: number
+): React.CSSProperties => ({
+  position: 'fixed',
+  ...pos,
+  width,
+  padding: '14px 16px',
+  background: PANEL_BG,
+  border: PANEL_BORDER,
+  borderRadius: 0,
+  backdropFilter: 'blur(12px)',
+  WebkitBackdropFilter: 'blur(12px)',
+  color: TEXT,
+  pointerEvents: 'none',
+  zIndex: 6
+})
 
 const CARDINALS = [
   'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
@@ -26,17 +47,71 @@ const CARDINALS = [
 const cardinal = (deg: number): string =>
   CARDINALS[Math.round(deg / 22.5) % 16]
 
-// Format a numeric field, rendering an em dash when MET has no value (rather
-// than a fabricated 0). `dir` appends the compass bearing + cardinal.
-const fmt = (
-  v: number | null,
-  unit: string,
-  digits = 1
-): string => (v == null ? '—' : `${v.toFixed(digits)} ${unit}`)
+// Render a numeric field as an em dash when MET has no value (rather than a
+// fabricated 0). `dir` renders the compass bearing + cardinal.
+const fmt = (v: number | null, unit: string, digits = 1): string =>
+  v == null ? '—' : `${v.toFixed(digits)} ${unit}`
 const fmtDir = (v: number | null): string =>
   v == null ? '' : `${cardinal(v)} ${Math.round(v)}°`
 
-// --- conditions card ---------------------------------------------------------
+// Humanise a MET symbol_code (e.g. 'partlycloudy_day', 'heavyrainandthunder')
+// into a readable condition. Cloud states are fixed phrases; precipitation
+// codes are composed from intensity + type + showers + thunder.
+const CONDITION_SPECIAL: Record<string, string> = {
+  clearsky: 'Clear sky',
+  fair: 'Fair',
+  partlycloudy: 'Partly cloudy',
+  cloudy: 'Overcast',
+  fog: 'Fog'
+}
+const conditionText = (code: string | null): string => {
+  if (code == null) return '—'
+  let c = code.replace(/_(day|night|polartwilight)$/, '')
+  if (CONDITION_SPECIAL[c] != null) return CONDITION_SPECIAL[c]
+  const thunder = c.endsWith('andthunder')
+  if (thunder) c = c.slice(0, -'andthunder'.length)
+  const showers = c.endsWith('showers')
+  if (showers) c = c.slice(0, -'showers'.length)
+  let intensity = ''
+  if (c.startsWith('light')) {
+    intensity = 'Light '
+    c = c.slice(5)
+  } else if (c.startsWith('heavy')) {
+    intensity = 'Heavy '
+    c = c.slice(5)
+  }
+  const text =
+    `${intensity}${c}${showers ? ' showers' : ''}${thunder ? ' and thunder' : ''}`.trim()
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+const CardHeader: FC<{ title: string; right?: React.ReactNode }> = ({
+  title,
+  right
+}) => (
+  <div
+    style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'baseline',
+      marginBottom: 8
+    }}
+  >
+    <span
+      style={{
+        fontFamily: SANS,
+        fontSize: 11,
+        letterSpacing: '0.18em',
+        textTransform: 'uppercase',
+        color: ACCENT
+      }}
+    >
+      {title}
+    </span>
+    {right}
+  </div>
+)
+
 const Row: FC<{ label: string; children: React.ReactNode }> = ({
   label,
   children
@@ -76,55 +151,36 @@ const Row: FC<{ label: string; children: React.ReactNode }> = ({
   </div>
 )
 
+const Footnote: FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div
+    style={{
+      marginTop: 10,
+      fontFamily: SANS,
+      fontSize: 9,
+      letterSpacing: '0.04em',
+      color: 'rgba(232,238,245,0.4)'
+    }}
+  >
+    {children}
+  </div>
+)
+
+// --- conditions card ---------------------------------------------------------
 const ConditionsCard: FC<{
   locationName: string
   sample: MetSample | null
   loading: boolean
   error: string | null
 }> = ({ locationName, sample, loading, error }) => (
-  <div
-    style={{
-      position: 'fixed',
-      // Below the collapsed Leva dev panel (top-right default ~40px bar); both
-      // right-aligned so they stack rather than overlap.
-      top: 60,
-      right: 16,
-      width: 248,
-      padding: '14px 16px',
-      background: PANEL_BG,
-      border: PANEL_BORDER,
-      borderRadius: 0,
-      backdropFilter: 'blur(12px)',
-      WebkitBackdropFilter: 'blur(12px)',
-      color: TEXT,
-      pointerEvents: 'none',
-      zIndex: 6
-    }}
-  >
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'baseline',
-        marginBottom: 8
-      }}
-    >
-      <span
-        style={{
-          fontFamily: SANS,
-          fontSize: 11,
-          letterSpacing: '0.18em',
-          textTransform: 'uppercase',
-          color: ACCENT
-        }}
-      >
-        Conditions
-      </span>
-      <span style={{ fontFamily: SANS, fontSize: 11, color: MUTED }}>
-        {locationName}
-      </span>
-    </div>
-
+  <div style={cardStyle({ top: 60, right: 16 }, 248)}>
+    <CardHeader
+      title="Conditions"
+      right={
+        <span style={{ fontFamily: SANS, fontSize: 11, color: MUTED }}>
+          {locationName}
+        </span>
+      }
+    />
     {error != null ? (
       <div style={{ fontFamily: SANS, fontSize: 12, color: MUTED }}>
         Data unavailable: {error}
@@ -135,6 +191,7 @@ const ConditionsCard: FC<{
       </div>
     ) : (
       <>
+        <Row label="Sky">{conditionText(sample.symbolCode)}</Row>
         <Row label="Wind">
           {fmt(sample.windSpeed, 'm/s')}{' '}
           <span style={{ color: MUTED }}>
@@ -142,6 +199,7 @@ const ConditionsCard: FC<{
           </span>
         </Row>
         <Row label="Gust">{fmt(sample.windGust, 'm/s')}</Row>
+        <Row label="Precip">{fmt(sample.precipitation, 'mm', 1)}</Row>
         <Row label="Wave">
           {fmt(sample.waveHeight, 'm')}{' '}
           <span style={{ color: MUTED }}>
@@ -154,18 +212,60 @@ const ConditionsCard: FC<{
         <Row label="Pressure">{fmt(sample.airPressure, 'hPa', 0)}</Row>
       </>
     )}
+    <Footnote>MET Norway · CC BY 4.0</Footnote>
+  </div>
+)
 
-    <div
-      style={{
-        marginTop: 10,
-        fontFamily: SANS,
-        fontSize: 9,
-        letterSpacing: '0.04em',
-        color: 'rgba(232,238,245,0.4)'
-      }}
-    >
-      MET Norway · CC BY 4.0
-    </div>
+// --- turbine inspector -------------------------------------------------------
+const STATUS_COLOR: Record<TurbineStatus, string> = {
+  'No data': MUTED,
+  Parked: MUTED,
+  Generating: GOOD,
+  Rated: GOOD,
+  'Cut-out': ACCENT
+}
+
+const TurbineInspector: FC<{
+  telemetry: TurbineTelemetry
+  count: number
+}> = ({ telemetry, count }) => (
+  <div style={cardStyle({ top: 76, left: 16 }, 232)}>
+    <CardHeader
+      title="Turbine"
+      right={
+        <span
+          style={{
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            color: STATUS_COLOR[telemetry.status]
+          }}
+        >
+          {telemetry.status}
+        </span>
+      }
+    />
+    <Row label="Power">
+      {fmt(telemetry.powerMW, 'MW', 2)}
+      {telemetry.capacityFactor != null && (
+        <span style={{ color: MUTED }}>
+          {'  '}
+          {(telemetry.capacityFactor * 100).toFixed(0)}%
+        </span>
+      )}
+    </Row>
+    <Row label="Rotor">{fmt(telemetry.rpm, 'rpm')}</Row>
+    <Row label="Blade pitch">{fmt(telemetry.pitchDeg, '°')}</Row>
+    <Row label="Yaw">
+      <span style={{ color: MUTED }}>{fmtDir(telemetry.yawHeading)}</span>
+    </Row>
+    <Row label={`Farm · ${count}×`}>
+      {telemetry.powerMW == null
+        ? '—'
+        : `${(telemetry.powerMW * count).toFixed(1)} MW`}
+    </Row>
+    <Footnote>Modelled · {count} × 8 MW ref · from forecast wind</Footnote>
   </div>
 )
 
@@ -189,7 +289,8 @@ const TimeScrubber: FC<{
   rangeEnd: number
   now: number
   selected: number
-  onChange: (ms: number) => void
+  // number = scrub to a fixed instant; null = resume following live 'now'.
+  onChange: (ms: number | null) => void
 }> = ({ rangeStart, rangeEnd, now, selected, onChange }) => {
   const nowPct =
     rangeEnd > rangeStart
@@ -244,7 +345,7 @@ const TimeScrubber: FC<{
         </span>
         <button
           type="button"
-          onClick={() => onChange(now)}
+          onClick={() => onChange(null)}
           style={{
             fontFamily: SANS,
             fontSize: 10,
@@ -300,54 +401,48 @@ const TimeScrubber: FC<{
   )
 }
 
-// --- composition -------------------------------------------------------------
+// --- composition (presentational) -------------------------------------------
 export const DigitalTwinUI: FC<{
-  latitude: number
-  longitude: number
   locationName: string
-}> = ({ latitude, longitude, locationName }) => {
-  const { loading, error, rangeStart, rangeEnd, sampleAt } = useMetForecast(
-    latitude,
-    longitude
-  )
-
-  // Selected forecast instant. Defaults to (and follows) now until the user
-  // scrubs. We re-clamp 'now' each minute so the live default stays current.
-  const [now, setNow] = useState(() => Date.now())
-  const [selected, setSelected] = useState<number | null>(null)
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 60 * 1000)
-    return () => clearInterval(id)
-  }, [])
-
-  const clampedNow = useMemo(() => {
-    if (rangeStart == null || rangeEnd == null) return now
-    return Math.min(Math.max(now, rangeStart), rangeEnd)
-  }, [now, rangeStart, rangeEnd])
-
-  const effectiveSelected = selected ?? clampedNow
-  const sample = useMemo(
-    () => sampleAt(new Date(effectiveSelected)),
-    [sampleAt, effectiveSelected]
-  )
-
-  return (
-    <>
-      <ConditionsCard
-        locationName={locationName}
-        sample={sample}
-        loading={loading}
-        error={error}
+  loading: boolean
+  error: string | null
+  sample: MetSample | null
+  telemetry: TurbineTelemetry
+  turbineCount: number
+  rangeStart: number | null
+  rangeEnd: number | null
+  now: number
+  selected: number
+  onScrub: (ms: number | null) => void
+}> = ({
+  locationName,
+  loading,
+  error,
+  sample,
+  telemetry,
+  turbineCount,
+  rangeStart,
+  rangeEnd,
+  now,
+  selected,
+  onScrub
+}) => (
+  <>
+    <TurbineInspector telemetry={telemetry} count={turbineCount} />
+    <ConditionsCard
+      locationName={locationName}
+      sample={sample}
+      loading={loading}
+      error={error}
+    />
+    {rangeStart != null && rangeEnd != null && (
+      <TimeScrubber
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
+        now={now}
+        selected={selected}
+        onChange={onScrub}
       />
-      {rangeStart != null && rangeEnd != null && (
-        <TimeScrubber
-          rangeStart={rangeStart}
-          rangeEnd={rangeEnd}
-          now={clampedNow}
-          selected={effectiveSelected}
-          onChange={setSelected}
-        />
-      )}
-    </>
-  )
-}
+    )}
+  </>
+)

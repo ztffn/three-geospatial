@@ -68,7 +68,10 @@ function interpolate(series: MetSample[], at: number): MetSample | null {
     waveFromDirection: field(lo, hi, f, 'waveFromDirection', true),
     seaTemperature: field(lo, hi, f, 'seaTemperature'),
     currentSpeed: field(lo, hi, f, 'currentSpeed'),
-    currentToDirection: field(lo, hi, f, 'currentToDirection', true)
+    currentToDirection: field(lo, hi, f, 'currentToDirection', true),
+    // Categorical/accumulated — take the containing hour (lo), don't interpolate.
+    symbolCode: lo.symbolCode,
+    precipitation: lo.precipitation
   }
 }
 

@@ -379,63 +379,117 @@ const CameraSetup: FC<{ target: Vector3 }> = ({ target }) => {
   return null
 }
 
-// Wind turbine probe at the fly-to target — replaces the capsule depth-foam
-// probe. Orients the model so its local +Y (tower up) aligns with the ECEF
-// surface normal at `target` (geocentric up — close enough to the geodetic
-// normal for visual placement). Spins the GLB child named "Windwings" on
-// local Y. Participates in the depth pre-pass via normal scene traversal,
-// so shoreline foam still develops around the waterline.
-const TurbineProbe: FC<{
+// Wind-turbine farm at the fly-to target — a staggered grid of `count` clones
+// of the GLB. Cloning with clone(true) SHARES geometry + materials by reference,
+// so N turbines cost ~N× draw calls but 1× GPU memory (cheap at farm sizes ~15;
+// switch to InstancedMesh only if scaling to hundreds). Each clone is laid out
+// on the local East-North tangent plane at `target`, oriented so local +Y (tower
+// up) aligns with the surface normal, and spins its "Windwings" rotor on local Y.
+// Participates in the depth pre-pass via normal traversal, so shoreline foam
+// still develops around each waterline.
+const TurbineFarm: FC<{
   target: Vector3
   scale: number
   heightOffset: number
   yawDeg: number
   spin: boolean
   spinSpeed: number
-}> = ({ target, scale, heightOffset, yawDeg, spin, spinSpeed }) => {
+  count: number
+  spacing: number // metres between turbines on the tangent plane
+  stagger: boolean // offset alternate rows by half a cell
+  // When provided (deploy's wind model), every rotor turns at this rate instead
+  // of the leva spinSpeed — converting rpm to rad/s. 0 rpm = parked/cut-out, so
+  // the blades visibly stop. null falls back to spinSpeed (Storybook default).
+  rotorRpm?: number | null
+}> = ({
+  target,
+  scale,
+  heightOffset,
+  yawDeg,
+  spin,
+  spinSpeed,
+  count,
+  spacing,
+  stagger,
+  rotorRpm
+}) => {
   const gltf = useGLTF('public/turbine-demo.glb')
-  const groupRef = useRef<Group>(null)
-  const wingsRef = useRef<Object3D | null>(null)
+  const angleRef = useRef(0)
 
-  useEffect(() => {
-    wingsRef.current = gltf.scene.getObjectByName('Windwings') ?? null
-  }, [gltf.scene])
+  // One cloned scene per farm slot; clones share geometry/materials. Each clone's
+  // rotor is cached for per-frame spin. Rebuilt only when the model or count changes.
+  const instances = useMemo(
+    () =>
+      Array.from({ length: count }, () => {
+        const scene = gltf.scene.clone(true)
+        return { scene, wings: scene.getObjectByName('Windwings') ?? null }
+      }),
+    [gltf.scene, count]
+  )
 
-  const { position, quaternion } = useMemo(() => {
-    const up = target.clone().normalize()
-    // Yaw is applied in local frame first (around local Y), then align rotates
-    // local Y onto the ECEF surface normal. q1*q2 applies q2 first to a vector,
-    // so yaw goes on the right.
+  // Tangent-plane placement: a roughly square, optionally staggered grid centred
+  // on the target. Shared orientation (yaw then align local Y to the surface up).
+  const placements = useMemo(() => {
+    const east = new Vector3()
+    const north = new Vector3()
+    const up = new Vector3()
+    Ellipsoid.WGS84.getEastNorthUpVectors(target, east, north, up)
     const yawQ = new Quaternion().setFromAxisAngle(
       new Vector3(0, 1, 0),
       MathUtils.degToRad(yawDeg)
     )
-    const alignQ = new Quaternion().setFromUnitVectors(
-      new Vector3(0, 1, 0),
-      up
-    )
-    const q = alignQ.multiply(yawQ)
-    const pos = target.clone().add(up.multiplyScalar(heightOffset))
-    return { position: pos, quaternion: q }
-  }, [target, heightOffset, yawDeg])
+    const alignQ = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), up)
+    const quaternion = alignQ
+      .multiply(yawQ)
+      .toArray() as [number, number, number, number]
+
+    const cols = Math.ceil(Math.sqrt(count))
+    const rows = Math.ceil(count / cols)
+    const out: Array<{
+      position: [number, number, number]
+      quaternion: [number, number, number, number]
+    }> = []
+    for (let i = 0; i < count; i++) {
+      const r = Math.floor(i / cols)
+      const c = i % cols
+      const ex = (c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2) * spacing
+      const nz = (r - (rows - 1) / 2) * spacing
+      const pos = target
+        .clone()
+        .addScaledVector(east, ex)
+        .addScaledVector(north, nz)
+        .addScaledVector(up, heightOffset)
+      out.push({ position: pos.toArray(), quaternion })
+    }
+    return out
+  }, [target, heightOffset, yawDeg, count, spacing, stagger])
 
   useFrame((_, dt) => {
-    if (spin && wingsRef.current) {
-      // Blender's local +Y (rotor shaft) → glTF local -Z after the
-      // Z-up→Y-up axis conversion the exporter applies.
-      wingsRef.current.rotation.z += spinSpeed * dt
+    if (!spin) return
+    // Blender's local +Y (rotor shaft) → glTF local -Z after the Z-up→Y-up axis
+    // conversion. One shared angle (all turbines see the same wind); a per-index
+    // phase offset avoids an unnaturally phase-locked look.
+    const rate = rotorRpm != null ? (rotorRpm * Math.PI * 2) / 60 : spinSpeed
+    angleRef.current += rate * dt
+    for (let i = 0; i < instances.length; i++) {
+      const wings = instances[i].wings
+      if (wings != null) wings.rotation.z = angleRef.current + i * 0.37
     }
   })
 
   return (
-    <group
-      ref={groupRef}
-      position={position.toArray()}
-      quaternion={quaternion.toArray() as [number, number, number, number]}
-      scale={scale}
-    >
-      <primitive object={gltf.scene} />
-    </group>
+    <>
+      {instances.map((inst, i) => (
+        <group
+          key={i}
+          position={placements[i].position}
+          quaternion={placements[i].quaternion}
+          scale={scale}
+        >
+          <primitive object={inst.scene} />
+        </group>
+      ))}
+    </>
   )
 }
 
@@ -469,7 +523,25 @@ export const Content: FC<{
   // fetch real weather/ocean data for the point currently in view. Additive;
   // Storybook ignores it.
   onLocationChange?: (longitude: number, latitude: number, name: string) => void
-}> = ({ onReadinessRefs, disableOcean = false, onLocationChange }) => {
+  // Modelled rotor speed (rpm) from the deploy's wind model; drives the turbine
+  // blade spin so the visible rotor turns at the real, forecast-derived rate.
+  // Undefined in Storybook, where the leva spinSpeed governs instead.
+  turbineRpm?: number | null
+  // Absolute UTC instant (ms) the scene's sun/moon should depict — the deploy's
+  // forecast scrubber time. When set, it overrides the leva day/time sliders so
+  // the lighting tracks the scrubbed forecast hour. Undefined in Storybook.
+  clockMs?: number | null
+  // Surfaces the leva-controlled turbine farm size to the host page so the HUD
+  // inspector can show a farm total. Additive; Storybook ignores it.
+  onTurbineCountChange?: (count: number) => void
+}> = ({
+  onReadinessRefs,
+  disableOcean = false,
+  onLocationChange,
+  turbineRpm,
+  clockMs,
+  onTurbineCountChange
+}) => {
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
@@ -664,7 +736,7 @@ export const Content: FC<{
     []
   )
   const presetControls = useControls('Ocean Preset', {
-    preset: { value: 'tranquil', options: presetOptions },
+    preset: { value: 'choppy', options: presetOptions },
   })
 
   const toggleControls = useControls('Ocean Toggles', {
@@ -683,7 +755,14 @@ export const Content: FC<{
     yawDeg: { value: 180, min: -180, max: 180, step: 1, label: 'Yaw (°)' },
     spin: { value: true },
     spinSpeed: { value: 2.0, min: 0, max: 20, step: 0.1 },
+    count: { value: 15, min: 1, max: 60, step: 1, label: 'Farm count' },
+    spacing: { value: 80, min: 10, max: 2000, step: 5, label: 'Spacing (m)' },
+    stagger: { value: true, label: 'Offset rows' },
   })
+
+  useEffect(() => {
+    onTurbineCountChange?.(turbineControls.count)
+  }, [onTurbineCountChange, turbineControls.count])
 
   const cameraControls = useControls('Camera', {
     minDistance: { value: 50, min: 1, max: 5000, step: 1 },
@@ -1017,6 +1096,9 @@ export const Content: FC<{
   ])
 
   const atmosphereDate = useMemo(() => {
+    // Deploy: the scrubber supplies a real UTC instant — depict the sun/moon at
+    // exactly that time. Storybook: derive from the leva day/time sliders.
+    if (clockMs != null) return new Date(clockMs)
     return getLocalDate(
       activeLocation.longitude,
       atmosphereControls.dayOfYear,
@@ -1024,6 +1106,7 @@ export const Content: FC<{
       atmosphereControls.year
     )
   }, [
+    clockMs,
     activeLocation.longitude,
     atmosphereControls.dayOfYear,
     atmosphereControls.timeOfDay,
@@ -1300,16 +1383,20 @@ export const Content: FC<{
         autoRotateSpeed={cameraControls.orbitSpeed}
       />
       <CameraSetup target={target} />
-      {/* Wind turbine probe at the fly-to target — replaces the prior capsule
-          depth-foam probe. Layer 0 (default) so it participates in the depth
+      {/* Wind-turbine farm centred on the fly-to target (staggered grid of
+          cloned GLBs). Layer 0 (default) so each participates in the depth
           pre-pass for shoreline-foam gating. */}
-      <TurbineProbe
+      <TurbineFarm
         target={target}
         scale={turbineControls.scale}
         heightOffset={turbineControls.heightOffset}
         yawDeg={turbineControls.yawDeg}
         spin={turbineControls.spin}
         spinSpeed={turbineControls.spinSpeed}
+        count={turbineControls.count}
+        spacing={turbineControls.spacing}
+        stagger={turbineControls.stagger}
+        rotorRpm={turbineRpm}
       />
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin

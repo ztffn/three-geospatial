@@ -31,6 +31,10 @@ export interface MetSample {
   seaTemperature: number | null // °C
   currentSpeed: number | null // m/s
   currentToDirection: number | null // deg (TO)
+  // MET weather symbol, e.g. 'partlycloudy_day' | 'cloudy' | 'lightrain'. Maps
+  // 1:1 to the official yr/MET icon set. Categorical — not interpolated.
+  symbolCode: string | null
+  precipitation: number | null // mm for the hour
 }
 
 export interface MetForecast {
@@ -42,9 +46,17 @@ export interface MetForecast {
   series: MetSample[]
 }
 
+interface MetPeriod {
+  summary?: { symbol_code?: string }
+  details?: Record<string, number>
+}
 interface MetTimeStep {
   time: string
-  data?: { instant?: { details?: Record<string, number> } }
+  data?: {
+    instant?: { details?: Record<string, number> }
+    next_1_hours?: MetPeriod
+    next_6_hours?: MetPeriod
+  }
 }
 
 async function fetchProduct(
@@ -103,6 +115,10 @@ export async function fetchMergedForecast(
   const series: MetSample[] = weather.steps.map(step => {
     const w = step.data?.instant?.details
     const o = oceanByTime.get(step.time)
+    // Symbol + precipitation live in the forward-looking period blocks; prefer
+    // the 1 h block, fall back to 6 h for far-future steps that lack hourly.
+    const p1 = step.data?.next_1_hours
+    const p6 = step.data?.next_6_hours
     return {
       time: step.time,
       windSpeed: num(w, 'wind_speed'),
@@ -116,7 +132,12 @@ export async function fetchMergedForecast(
       waveFromDirection: num(o, 'sea_surface_wave_from_direction'),
       seaTemperature: num(o, 'sea_water_temperature'),
       currentSpeed: num(o, 'sea_water_speed'),
-      currentToDirection: num(o, 'sea_water_to_direction')
+      currentToDirection: num(o, 'sea_water_to_direction'),
+      symbolCode: p1?.summary?.symbol_code ?? p6?.summary?.symbol_code ?? null,
+      precipitation:
+        num(p1?.details, 'precipitation_amount') ??
+        num(p6?.details, 'precipitation_amount') ??
+        null
     }
   })
 

@@ -37,12 +37,21 @@ if (typeof window !== 'undefined') {
 
 import { Canvas } from '@react-three/fiber'
 import { Leva } from 'leva'
-import { useCallback, useEffect, useRef, useState, type FC } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FC
+} from 'react'
 import { createRoot } from 'react-dom/client'
 import { NoToneMapping, SRGBColorSpace } from 'three'
 import { WebGPURenderer, type Renderer } from 'three/webgpu'
 
 import { DigitalTwinUI } from './ui/DigitalTwinUI'
+import { modelTurbine } from './ui/turbineModel'
+import { useMetForecast } from './ui/useMetForecast'
 
 import {
   AtmosphereLight,
@@ -179,6 +188,42 @@ const App: FC = () => {
     []
   )
 
+  // Farm size, surfaced from Content's leva Turbine control, so the inspector
+  // can show the farm total (count × per-turbine output).
+  const [turbineCount, setTurbineCount] = useState(15)
+
+  // Single source of truth for forecast-driven state, shared by the DOM cards
+  // and the 3D turbine. Lives here (not in DigitalTwinUI) so the modelled rotor
+  // RPM can feed Content -> TurbineProbe at the same selected time as the HUD.
+  const { loading, error, rangeStart, rangeEnd, sampleAt } = useMetForecast(
+    location.latitude,
+    location.longitude
+  )
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60 * 1000)
+    return () => clearInterval(id)
+  }, [])
+  // null = follow 'now'; a number = user has scrubbed to a fixed instant.
+  const [scrubbed, setScrubbed] = useState<number | null>(null)
+  const clampedNow = useMemo(() => {
+    if (rangeStart == null || rangeEnd == null) return nowMs
+    return Math.min(Math.max(nowMs, rangeStart), rangeEnd)
+  }, [nowMs, rangeStart, rangeEnd])
+  const selected = scrubbed ?? clampedNow
+  const sample = useMemo(
+    () => sampleAt(new Date(selected)),
+    [sampleAt, selected]
+  )
+  const telemetry = useMemo(
+    () =>
+      modelTurbine(
+        sample?.windSpeed ?? null,
+        sample?.windFromDirection ?? null
+      ),
+    [sample]
+  )
+
   const handleAtmosphereReady = useCallback((elapsedMs: number) => {
     // eslint-disable-next-line no-console
     console.log(`[ready] atmosphere LUTs computed in ${elapsedMs.toFixed(0)}ms`)
@@ -214,6 +259,9 @@ const App: FC = () => {
           onReadinessRefs={handleReadinessRefs}
           disableOcean={phase === 'atmosphere'}
           onLocationChange={handleLocationChange}
+          turbineRpm={telemetry.rpm}
+          clockMs={selected}
+          onTurbineCountChange={setTurbineCount}
         />
         <ReadinessProbe
           refs={refs}
@@ -224,9 +272,17 @@ const App: FC = () => {
       </Canvas>
       <BrandMark />
       <DigitalTwinUI
-        latitude={location.latitude}
-        longitude={location.longitude}
         locationName={location.name}
+        loading={loading}
+        error={error}
+        sample={sample}
+        telemetry={telemetry}
+        turbineCount={turbineCount}
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
+        now={clampedNow}
+        selected={selected}
+        onScrub={setScrubbed}
       />
       {/* Debug controls: kept, but collapsed by default and out of the way
           (top-right; the conditions HUD stacks below it). */}
