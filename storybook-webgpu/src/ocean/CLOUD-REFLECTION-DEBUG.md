@@ -4,6 +4,45 @@ Living reference for the single-line artefact on the globe WaterPro ocean.
 READ THIS before touching cloud-coverage.ts / buildWaterproOceanMaterial.ts.
 Do NOT re-ask the user things already confirmed below. Update as facts land.
 
+## ✅ RESOLUTION (do not reopen without reading this)
+
+The line is **NOT a wrong number** and **NOT localizable by visualization.**
+Proven this session by dumping and diffing the generated WGSL (debug-present vs
+debug-absent, procedural source):
+
+1. The cloud-reflection math (`reflect`/`rayShellDir`/`sampleCloud`/horizon/gate)
+   is **byte-identical** whether or not the line shows. There is no precision
+   bug to fix in the math — viewDir ECEF subtraction, `rayShellDir` cancellation,
+   the `finiteDir` gate, the noise hash were all checked and are identical or
+   provably continuous.
+2. The artefact is the **GPU driver scheduling/fusing that identical math
+   differently** depending on surrounding shader structure (register pressure /
+   FMA / instruction order). The old `debugMode`/`cloudDebug` path hid the line
+   only because it wrapped the emissive in an `if/else` scope as a side effect —
+   a real, deterministic structural change, not a 1-ULP fluke.
+3. Because observation requires *adding graph*, and adding graph changes the
+   structure, the line can NEVER be seen via a `debugMode`-style paint. Confirmed.
+
+**The fix (shipped) — the "compile-ordering fence":** in
+`buildWaterproOceanMaterial.ts`, the emissive is wrapped in an always-false
+`select` driven by a runtime uniform (`emissiveFence = uniform(0)`):
+`emissiveFence.greaterThan(0).select(vec3(0), totalEmissive)`. This forces the
+TSL→WGSL compiler to emit the emissive inside its own `if/else` scope (verified
+in the generated WGSL — the reflection compiles inside the `else`), so the driver
+builds the reflection in isolation and the sub-pixel line does not appear. The
+uniform must be runtime-valued — a literal `0` would be constant-folded and the
+box (and the line's absence) would vanish.
+
+Trade-off, stated honestly: this is **structural isolation**, not a corrected
+number. On the tested GPU/driver it is deterministic. A very different driver
+*could* schedule the isolated block differently — if the line ever returns,
+re-dump the WGSL and confirm the `if/else` box is still present before touching
+the reflection math (which is, again, not wrong).
+
+Verified: clean restart (vite cache cleared, fresh tab), debug fully stripped,
+fence in place → line gone, in both procedural and live source. WGSL shows
+`if ((emissiveFence > 0)) { e = vec3(0) } else { <reflection+shadow> }`.
+
 ## The artefact
 A single thin line (~1px native; waves chop it into a dashed look, projection
 widens it) on the ocean surface. See user screenshot: runs from near the

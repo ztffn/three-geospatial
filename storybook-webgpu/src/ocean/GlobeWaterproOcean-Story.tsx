@@ -282,10 +282,6 @@ const OceanSurface: FC<{
     blend: Node
   }
   cloudShadow?: (originWorld: Node) => Node
-  cloudDebug?: (reflectDir: Node, originWorld: Node) => {
-    color: Node
-    active: Node
-  }
 }> = ({
   target,
   atmosphereContext,
@@ -301,7 +297,6 @@ const OceanSurface: FC<{
   depthPrepassStage,
   cloudReflect,
   cloudShadow,
-  cloudDebug,
 }) => {
   const [oceanParent, setOceanParent] = useState<THREE.Group | null>(null)
   const handleOceanParent = useCallback((group: THREE.Group | null) => {
@@ -344,7 +339,6 @@ const OceanSurface: FC<{
           depthPrepassStage={depthPrepassStage}
           cloudReflect={cloudReflect}
           cloudShadow={cloudShadow}
-          cloudDebug={cloudDebug}
           onReady={({ uniforms, vertexUniforms, oceanManager }) => {
             onUniformsReady(uniforms)
             onVertexUniformsReady(vertexUniforms)
@@ -582,9 +576,6 @@ export const Content: FC<{
     // Analytic effects on the ocean (shared coverage; no extra passes).
     reflectionStrength: { value: 0.05, min: 0, max: 1, step: 0.01 },
     shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 },
-    // DEBUG: paint a reflection term onto the ocean to locate the line artefact.
-    // 0=off 1=gate 2=horizon 3=edged coverage 4=hit dir(RGB) 5=reflectDir(RGB).
-    debugMode: { value: 0, min: 0, max: 5, step: 1 },
   }))
 
   // Apply a preset's field bag to the sliders when the selector changes.
@@ -624,7 +615,6 @@ export const Content: FC<{
     contrast: cloudControls.contrast,
     reflectionStrength: cloudControls.reflectionStrength,
     shadowStrength: cloudControls.shadowStrength,
-    debugMode: cloudControls.debugMode,
   })
   const cloudEffectsEnabled = cloudControls.enabled
 
@@ -1327,7 +1317,6 @@ export const Content: FC<{
           depthPrepassStage={oceanDebugParams.depthPrepassStage}
           cloudReflect={cloudEffectsEnabled ? cloudField.reflect : undefined}
           cloudShadow={cloudEffectsEnabled ? cloudField.shadow : undefined}
-          cloudDebug={cloudEffectsEnabled ? cloudField.debug : undefined}
           onUniformsReady={setOceanUniforms}
           onVertexUniformsReady={setVertexUniforms}
           onOceanManagerReady={setOceanManager}

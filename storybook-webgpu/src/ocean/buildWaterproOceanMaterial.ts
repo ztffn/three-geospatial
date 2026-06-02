@@ -229,15 +229,6 @@ export interface BuildWaterproOceanMaterialParams {
    * sky-driven reflection is left unshadowed. Omitted → no shadow.
    */
   cloudShadow?: (originWorld: Node) => Node
-  /**
-   * DEBUG: paint a cloud-reflection term onto the surface when active. Returns
-   * `{ color, active }`; when active, colorNode = color and emissive is killed.
-   * See cloud-coverage.ts `debug`.
-   */
-  cloudDebug?: (reflectDir: Node, originWorld: Node) => {
-    color: Node
-    active: Node
-  }
 
   /**
    * Vertex displacement node — set as `material.positionNode`. For the plane,
@@ -349,7 +340,6 @@ export function buildWaterproOceanMaterial(
     surfaceHeight,
     cloudReflect,
     cloudShadow,
-    cloudDebug,
   } = params
 
   // Defaults to fragSurfaceXZ — preserves the literal plane behaviour. Chunks
@@ -682,23 +672,21 @@ export function buildWaterproOceanMaterial(
   // Material.
   const mat = new MeshStandardNodeMaterial()
   mat.positionNode = positionNode as any
-  // DEBUG: when a cloudDebug closure reports active (debugMode>0), paint its
-  // term straight onto the surface (and kill emissive) so the cloud-reflection
-  // artefact can be SEEN. Off → normal composition.
-  if (cloudDebug != null) {
-    const dbg = cloudDebug(reflectDir, surfaceWorldPoint)
-    mat.colorNode = (dbg.active as any).select(
-      vec4(dbg.color, float(1)),
-      vec4(finalColor, float(1))
-    )
-    ;(mat as any).emissiveNode = (dbg.active as any).select(
-      vec3(float(0)),
-      totalEmissive
-    )
-  } else {
-    mat.colorNode = vec4(finalColor, float(1))
-    ;(mat as any).emissiveNode = totalEmissive
-  }
+  mat.colorNode = vec4(finalColor, float(1))
+  // Compile-ordering fence (see CLOUD-REFLECTION-DEBUG.md §"Resolution"). The
+  // cloud-reflection math is byte-identical whether or not the thin vertical
+  // line shows (proven by a WGSL diff of the shipping shader vs the old debug
+  // build): the artefact is the GPU driver scheduling/fusing that identical math
+  // differently depending on surrounding shader structure. Wrapping the emissive
+  // in an always-false select forces the TSL→WGSL compiler to emit it inside its
+  // own if/else scope, so the driver builds the reflection in isolation and the
+  // sub-pixel line does not appear. `emissiveFence` is a runtime uniform so the
+  // branch is never constant-folded away — a literal 0 would be, and the line
+  // would return. Deterministic structural fence, not a debug visualization.
+  const emissiveFence = uniform(0)
+  ;(mat as any).emissiveNode = (
+    emissiveFence.greaterThan(float(0)) as any
+  ).select(vec3(float(0)), totalEmissive)
   mat.side = DoubleSide
   ;(mat as any).colorSpace = SRGBColorSpace
   return mat
