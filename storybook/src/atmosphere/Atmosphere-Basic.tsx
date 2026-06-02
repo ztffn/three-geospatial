@@ -4,7 +4,6 @@ import { OrbitControls, TorusKnot } from '@react-three/drei'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { SMAA, ToneMapping } from '@react-three/postprocessing'
 import type { StoryFn } from '@storybook/react-vite'
-import { CesiumIonAuthPlugin } from '3d-tiles-renderer/plugins'
 import { TilesPlugin, TilesRenderer } from '3d-tiles-renderer/r3f'
 import {
   Fragment,
@@ -39,11 +38,13 @@ import {
 } from '@takram/three-geospatial-effects/r3f'
 import { EastNorthUpFrame, EllipsoidMesh } from '@takram/three-geospatial/r3f'
 
+import { PLATEAU_TERRAIN_API_TOKEN } from '../constants'
 import { EffectComposer } from '../helpers/EffectComposer'
 import { Stats } from '../helpers/Stats'
 import { useControls } from '../helpers/useControls'
 import { useLocalDateControls } from '../helpers/useLocalDateControls'
 import { useToneMappingControls } from '../helpers/useToneMappingControls'
+import { CesiumIonTerrainPlugin } from '../plugins/CesiumIonTerrainPlugin'
 import { TileMeshPropsPlugin } from '../plugins/TileMeshPropsPlugin'
 
 const geodetic = new Geodetic(radians(138.5), radians(36.2), 5000)
@@ -134,10 +135,10 @@ const Scene: FC = () => {
       {/* Quantized mesh terrain */}
       <TilesRenderer>
         <TilesPlugin
-          plugin={CesiumIonAuthPlugin}
+          plugin={CesiumIonTerrainPlugin}
           args={{
-            apiToken: import.meta.env.STORYBOOK_ION_API_TOKEN,
-            assetId: 2767062, // Japan Regional Terrain
+            apiToken: PLATEAU_TERRAIN_API_TOKEN,
+            assetId: 3258112, // PLATEAU terrain dataset
             autoRefreshToken: true
           }}
         />

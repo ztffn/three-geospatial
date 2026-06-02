@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin'
 import type { StorybookConfig } from '@storybook/react-vite'
 import react from '@vitejs/plugin-react'
-import { mergeConfig } from 'vite'
+import { mergeConfig, type UserConfig } from 'vite'
 
 const require = createRequire(import.meta.url)
 const repoRoot = resolve(dirname(require.resolve(join('..', '..', 'package.json'))))
@@ -19,7 +19,8 @@ const config: StorybookConfig = {
     { from: '../assets', to: '/public' },
     { from: '../../packages/core/assets', to: '/core' },
     { from: '../../packages/atmosphere/assets', to: '/atmosphere' },
-    { from: '../../packages/clouds/assets', to: '/clouds' }
+    { from: '../../packages/clouds/assets', to: '/clouds' },
+    { from: '../../packages/ocean-ifft/public', to: '/ocean-ifft' }
   ],
 
   previewHead: head => `
@@ -44,9 +45,26 @@ const config: StorybookConfig = {
         plugins: () => [nxViteTsPaths()]
       },
       build: {
+        commonjsOptions: {
+          // Ignore built-in modules used by workerpool.
+          ignore: ['os', 'child_process', 'worker_threads']
+        },
         sourcemap: process.env.NODE_ENV !== 'production'
+      },
+      resolve: {
+        alias: {
+          '@three-geospatial/ocean-ifft': resolve(
+            repoRoot,
+            'packages/ocean-ifft/src/index.ts'
+          )
+        }
+      },
+      server: {
+        fs: {
+          allow: [repoRoot]
+        }
       }
-    })
+    } satisfies UserConfig)
 }
 
 export default config

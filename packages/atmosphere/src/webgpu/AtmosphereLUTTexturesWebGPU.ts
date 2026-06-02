@@ -243,7 +243,7 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
         textureStore(this.transmittance, globalId.xy, transmittance)
       }
     })()
-      .context({ atmosphere: context })
+      .context({ getAtmosphere: () => context })
       .compute(
         // @ts-expect-error "count" can be dimensional
         [Math.ceil(width / 8), Math.ceil(height / 8), 1],
@@ -279,7 +279,7 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
       textureStore(this.irradiance, globalId.xy, vec4(vec3(0), 1))
       textureStore(deltaIrradiance, globalId.xy, vec4(irradiance, 1))
     })()
-      .context({ atmosphere: context })
+      .context({ getAtmosphere: () => context })
       .compute(
         // @ts-expect-error "count" can be dimensional
         [Math.ceil(width / 8), Math.ceil(height / 8), 1],
@@ -336,7 +336,7 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
         vec4(mie.mul(luminanceFromRadiance), 1)
       )
     })()
-      .context({ atmosphere: context })
+      .context({ getAtmosphere: () => context })
       .compute(
         // @ts-expect-error "count" can be dimensional
         [Math.ceil(width / 4), Math.ceil(height / 4), Math.ceil(depth / 4)],
@@ -396,7 +396,7 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
 
       textureStore(deltaScatteringDensity, globalId, radiance)
     })()
-      .context({ atmosphere: context })
+      .context({ getAtmosphere: () => context })
       .compute(
         // @ts-expect-error "count" can be dimensional
         [Math.ceil(width / 4), Math.ceil(height / 4), Math.ceil(depth / 4)],
@@ -450,7 +450,7 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
       )
       textureStore(deltaIrradiance, globalId.xy, irradiance)
     })()
-      .context({ atmosphere: context })
+      .context({ getAtmosphere: () => context })
       .compute(
         // @ts-expect-error "count" can be dimensional
         [Math.ceil(width / 8), Math.ceil(height / 8), 1],
@@ -487,14 +487,16 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
       )
     )
     // TODO: Use NodeAccess.READ_ONLY, which appears to be not supported yet.
-    renderer.copyTextureToTexture(
-      this.higherOrderScattering,
-      higherOrderScatteringRead,
-      boxScratch.set(
-        boxScratch.min.setScalar(0),
-        parameters.scatteringTextureSize
+    if (parameters.higherOrderScatteringTexture) {
+      renderer.copyTextureToTexture(
+        this.higherOrderScattering,
+        higherOrderScatteringRead,
+        boxScratch.set(
+          boxScratch.min.setScalar(0),
+          parameters.scatteringTextureSize
+        )
       )
-    )
+    }
 
     this.multipleScatteringNode ??= Fn(() => {
       const size = uvec3(width, height, depth)
@@ -513,10 +515,10 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
       )
 
       const radiance = multipleScattering.get('radiance')
-      const cosViewSun = multipleScattering.get('cosViewSun')
+      const cosViewLight = multipleScattering.get('cosViewLight')
       const luminance = radiance
         .mul(luminanceFromRadiance)
-        .div(rayleighPhaseFunction(cosViewSun))
+        .div(rayleighPhaseFunction(cosViewLight))
 
       textureStore(
         this.scattering,
@@ -534,7 +536,7 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
         )
       }
     })()
-      .context({ atmosphere: context })
+      .context({ getAtmosphere: () => context })
       .compute(
         // @ts-expect-error "count" can be dimensional
         [Math.ceil(width / 4), Math.ceil(height / 4), Math.ceil(depth / 4)],
@@ -587,6 +589,12 @@ export class AtmosphereLUTTexturesWebGPU extends AtmosphereLUTTextures {
     this.scattering.dispose()
     this.singleMieScattering.dispose()
     this.higherOrderScattering.dispose()
+    this.transmittanceNode?.dispose()
+    this.directIrradianceNode?.dispose()
+    this.singleScatteringNode?.dispose()
+    this.scatteringDensityNode?.dispose()
+    this.indirectIrradianceNode?.dispose()
+    this.multipleScatteringNode?.dispose()
     super.dispose()
   }
 }

@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.7.4] - 2026-04-05
+
+This release contains internal dependency updates only.
+
+## [0.7.2, 0.7.3] - 2026-03-23
+
+### Fixed
+
+- Fixed depth test when logarithmic depth is used with `postprocessing >= 6.38.0`, [#100](https://github.com/takram-design-engineering/three-geospatial/issues/100).
+
+## [0.7.1] - 2026-03-10
+
+### Fixed
+
+- Fixed clouds not appearing when logarithmic depth is used, [#102](https://github.com/takram-design-engineering/three-geospatial/pull/102).
+
+## [0.7.0] - 2026-03-09
+
+### Changed
+
+- Updated the peer dependency for `postprocessing` to `>= 6.38.0`.
+- `CloudsEffect`: Removed deprecated `skyIrradianceScale`, `groundIrradianceScale` and `accurateSunSkyIrradiance` options.
+- Updated dependencies.
+
+### Fixed
+
+- Fixed logarithmic depth when used with `postprocessing >= 6.38.0`.
+
+## [0.6.0] - 2025-12-24
+
+### Changed
+
+- Migrated types to `@types/three@0.181.0`.
+- Updated dependencies.
+
 ## [0.5.2] - 2025-11-01
 
 ### Fixed

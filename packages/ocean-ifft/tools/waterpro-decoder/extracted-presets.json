@@ -1,0 +1,2292 @@
+{
+  "arctic": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.02,
+        "speed": 0.25,
+        "strength": 0.35
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 64
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#152535",
+      "depthFalloff": 45,
+      "shallowWaterColor": "#263a42",
+      "transmissionColor": "#719cb8"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.69,
+        "enabled": true,
+        "opacity": 0.45,
+        "range": 87,
+        "size": 178,
+        "texture": "foam3.jpg"
+      },
+      "surface": {
+        "color": "#ffffff",
+        "coverage": 0.11,
+        "enabled": true,
+        "opacity": 0.85,
+        "size": 134,
+        "texture": "foam1.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#ffffff",
+        "coverage": 0.25,
+        "crestCoverage": 0.35,
+        "enabled": false,
+        "opacity": 0.25,
+        "peakIntensity": 0.35,
+        "rippleWeight": 0.7,
+        "size": 150,
+        "texture": "foam3.jpg",
+        "waveWeight": 1,
+        "windBias": 0.45,
+        "windStretch": 0.3
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 1200
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.6,
+        "fadeStart": 0,
+        "normalStrength": 0.95,
+        "power": 3.5
+      },
+      "underwater": {
+        "normalStrength": 1.3,
+        "reflectionStrength": 0.45,
+        "refractionIOR": 1.12,
+        "refractionStrength": 0.35,
+        "waterAbsorption": 0.72
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 0.6,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.4,
+        "strength": 0.4,
+        "threshold": 0.85
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.018,
+        "distortionScale": 4,
+        "distortionSpeed": 1.3,
+        "enabled": true,
+        "fogDensity": 0.012
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.3,
+        "smoothness": 0.8
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.006,
+        "mieDirectionalG": 0.65,
+        "rayleighCoefficient": 0.8,
+        "skyBrightness": 0.74,
+        "skyColor": "#6b737b",
+        "turbidity": 2.5
+      },
+      "clouds": {
+        "color": "#d0d5dd",
+        "coverage": 0.65,
+        "enabled": true,
+        "height": 0.04,
+        "intensity": 1.3,
+        "lacunarity": 2,
+        "octaves": 4,
+        "opacityFalloff": 0.35,
+        "persistence": 0.5,
+        "scale": 0.0009,
+        "shadowColor": "#707580",
+        "speed": 0.018,
+        "thickness": 1.2
+      },
+      "sun": {
+        "azimuth": 265,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 85,
+        "intensity": 1.5
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.5,
+      "power": 2.8
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.36,
+        "animationSpeed": 3.8,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.28,
+            "scale": 249
+          },
+          "waves": {
+            "amplitudeScale": 0.24,
+            "scale": 1356
+          }
+        },
+        "choppiness": 1,
+        "directionalSpreading": 14.5,
+        "frequency": 1,
+        "standingWaveRatio": 0.35,
+        "windDirection": 0,
+        "windSpeed": 7.2
+      },
+      "gerstner": {
+        "amplitude": 3,
+        "directionalSpread": 1,
+        "wavelength": 700,
+        "wavelengthSpread": 2.2
+      }
+    }
+  },
+  "choppy": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.025,
+        "speed": 0.22,
+        "strength": 0.7
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 256
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#223f3f",
+      "depthFalloff": 60,
+      "shallowWaterColor": "#153c38",
+      "transmissionColor": "#4cbdac"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.77,
+        "enabled": true,
+        "opacity": 0.2,
+        "range": 35,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#ffffff",
+        "coverage": 0.14,
+        "enabled": true,
+        "opacity": 0.25,
+        "size": 206,
+        "texture": "foam2.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#ffffff",
+        "coverage": 0.33,
+        "crestCoverage": 0,
+        "enabled": true,
+        "opacity": 0.35,
+        "peakIntensity": 0.35,
+        "rippleWeight": 0.65,
+        "size": 500,
+        "texture": "foam3.jpg",
+        "waveWeight": 1,
+        "windBias": 0,
+        "windStretch": 0
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 500
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.5,
+        "fadeStart": 250,
+        "normalStrength": 0.5,
+        "power": 3.6
+      },
+      "underwater": {
+        "normalStrength": 1.2,
+        "reflectionStrength": 0.45,
+        "refractionIOR": 1.1,
+        "refractionStrength": 0.4,
+        "waterAbsorption": 0.55
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 1.8,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.45,
+        "strength": 1.4,
+        "threshold": 0.75
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.06
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.015,
+        "distortionScale": 4,
+        "distortionSpeed": 1.2,
+        "enabled": true,
+        "fogDensity": 0.0064
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.25,
+        "smoothness": 0.85
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.004,
+        "mieDirectionalG": 0.75,
+        "rayleighCoefficient": 1.1,
+        "skyBrightness": 0.26,
+        "skyColor": "#5e8eba",
+        "turbidity": 1.5
+      },
+      "clouds": {
+        "color": "#ffffff",
+        "coverage": 0.57,
+        "enabled": true,
+        "height": 0.03,
+        "intensity": 1.8,
+        "lacunarity": 2,
+        "octaves": 4,
+        "opacityFalloff": 0.27,
+        "persistence": 0.5,
+        "scale": 0.0006,
+        "shadowColor": "#ffffff",
+        "speed": 0.015,
+        "thickness": 0.6
+      },
+      "sun": {
+        "azimuth": 130,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 4,
+        "intensity": 0.4
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.6,
+      "power": 2.3
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.4,
+        "animationSpeed": 3.1,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.59,
+            "scale": 100
+          },
+          "waves": {
+            "amplitudeScale": 0.75,
+            "scale": 470
+          }
+        },
+        "choppiness": 2.26,
+        "directionalSpreading": 1,
+        "frequency": 1.92,
+        "standingWaveRatio": 0.72,
+        "windDirection": 0.890117918517108,
+        "windSpeed": 14.9
+      },
+      "gerstner": {
+        "amplitude": 0,
+        "directionalSpread": 1.09,
+        "wavelength": 361,
+        "wavelengthSpread": 2.25
+      }
+    }
+  },
+  "foggy": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.02,
+        "speed": 0.2,
+        "strength": 0.2
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 64
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#1a2a35",
+      "depthFalloff": 35,
+      "shallowWaterColor": "#3a4a55",
+      "transmissionColor": "#506570"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.69,
+        "enabled": true,
+        "opacity": 0.45,
+        "range": 87,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#e0e0e0",
+        "coverage": 0.13,
+        "enabled": true,
+        "opacity": 0.45,
+        "size": 189,
+        "texture": "foam1.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#e0e0e0",
+        "coverage": 0.35,
+        "crestCoverage": 0.35,
+        "enabled": true,
+        "opacity": 0.25,
+        "peakIntensity": 0.3,
+        "rippleWeight": 0.7,
+        "size": 140,
+        "texture": "foam3.jpg",
+        "waveWeight": 1,
+        "windBias": 0.6,
+        "windStretch": 0.25
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 200
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.6,
+        "fadeStart": 80,
+        "normalStrength": 0.8,
+        "power": 3
+      },
+      "underwater": {
+        "normalStrength": 1.1,
+        "reflectionStrength": 0.4,
+        "refractionIOR": 1.1,
+        "refractionStrength": 0.3,
+        "waterAbsorption": 0.78
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 0.4,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.5,
+        "strength": 0.3,
+        "threshold": 0.9
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.12
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.015,
+        "distortionScale": 4,
+        "distortionSpeed": 1,
+        "enabled": true,
+        "fogDensity": 0.018
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.5,
+        "smoothness": 0.7
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.012,
+        "mieDirectionalG": 0.2,
+        "rayleighCoefficient": 0.5,
+        "skyBrightness": 0.26,
+        "skyColor": "#a0aab8",
+        "turbidity": 4
+      },
+      "clouds": {
+        "color": "#909598",
+        "coverage": 0.9,
+        "enabled": false,
+        "height": 0,
+        "intensity": 0.3,
+        "lacunarity": 2,
+        "octaves": 3,
+        "opacityFalloff": 0.5,
+        "persistence": 0.6,
+        "scale": 0.0008,
+        "shadowColor": "#606468",
+        "speed": 0.003,
+        "thickness": 2
+      },
+      "sun": {
+        "azimuth": 265,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 22,
+        "intensity": 0.5
+      }
+    },
+    "sparkle": {
+      "enabled": false,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.3,
+      "power": 3.5
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.1,
+        "animationSpeed": 4.4,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.48,
+            "scale": 288
+          },
+          "waves": {
+            "amplitudeScale": 0.54,
+            "scale": 1400
+          }
+        },
+        "choppiness": 1.5,
+        "directionalSpreading": 1,
+        "frequency": 2.4,
+        "standingWaveRatio": 0.89,
+        "windDirection": 1.4486232791552935,
+        "windSpeed": 10.4
+      },
+      "gerstner": {
+        "amplitude": 1.5,
+        "directionalSpread": 0.9,
+        "wavelength": 500,
+        "wavelengthSpread": 1.8
+      }
+    }
+  },
+  "hurricane": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.02,
+        "speed": 0.4,
+        "strength": 0.15
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 64
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#02191d",
+      "depthFalloff": 55,
+      "shallowWaterColor": "#142828",
+      "transmissionColor": "#3a5a50"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.81,
+        "enabled": true,
+        "opacity": 0.1,
+        "range": 75,
+        "size": 178,
+        "texture": "foam3.jpg"
+      },
+      "surface": {
+        "color": "#ffffff",
+        "coverage": 0.16,
+        "enabled": true,
+        "opacity": 0.2,
+        "size": 94,
+        "texture": "foam1.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#ffffff",
+        "coverage": 0.31,
+        "crestCoverage": 0.45,
+        "enabled": true,
+        "opacity": 0.25,
+        "peakIntensity": 0.3,
+        "rippleWeight": 0.85,
+        "size": 136,
+        "texture": "foam3.jpg",
+        "waveWeight": 1,
+        "windBias": 0.6,
+        "windStretch": 0.51
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 900
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 1.3,
+        "fadeStart": 120,
+        "normalStrength": 0.63,
+        "power": 6.1
+      },
+      "underwater": {
+        "normalStrength": 1.4,
+        "reflectionStrength": 0.55,
+        "refractionIOR": 1.13,
+        "refractionStrength": 0.35,
+        "waterAbsorption": 0.85
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 0.2,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.4,
+        "strength": 0.3,
+        "threshold": 0.85
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.18
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.03,
+        "distortionScale": 5,
+        "distortionSpeed": 2,
+        "enabled": true,
+        "fogDensity": 0.02
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.55,
+        "smoothness": 0.7
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.003,
+        "mieDirectionalG": 0.28,
+        "rayleighCoefficient": 0.6,
+        "skyBrightness": 0.28,
+        "skyColor": "#335361",
+        "turbidity": 2.5
+      },
+      "clouds": {
+        "color": "#404040",
+        "coverage": 0.66,
+        "enabled": true,
+        "height": 0,
+        "intensity": 1.4,
+        "lacunarity": 2.2,
+        "octaves": 5,
+        "opacityFalloff": 0.35,
+        "persistence": 0.55,
+        "scale": 0.0002,
+        "shadowColor": "#000000",
+        "speed": 0.027,
+        "thickness": 3
+      },
+      "sun": {
+        "azimuth": 114,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 26,
+        "intensity": 0.6
+      }
+    },
+    "sparkle": {
+      "enabled": false,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 1.03,
+      "power": 1.28
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.65,
+        "animationSpeed": 4.1,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.35,
+            "scale": 255
+          },
+          "waves": {
+            "amplitudeScale": 0.53,
+            "scale": 2492
+          }
+        },
+        "choppiness": 1.19,
+        "directionalSpreading": 4,
+        "frequency": 1.32,
+        "standingWaveRatio": 0,
+        "windDirection": 3.1764992386296798,
+        "windSpeed": 27
+      },
+      "gerstner": {
+        "amplitude": 5.42,
+        "directionalSpread": 2,
+        "wavelength": 731,
+        "wavelengthSpread": 1.82
+      }
+    }
+  },
+  "moonlit": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.02,
+        "speed": 0.15,
+        "strength": 0.15
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 64
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#000005",
+      "depthFalloff": 45,
+      "shallowWaterColor": "#000000",
+      "transmissionColor": "#ffffff"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.69,
+        "enabled": true,
+        "opacity": 0.45,
+        "range": 87,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#c0c8d0",
+        "coverage": 0.27,
+        "enabled": true,
+        "opacity": 0.05,
+        "size": 206,
+        "texture": "foam3.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#c0c8d0",
+        "coverage": 0.4,
+        "crestCoverage": 0.2,
+        "enabled": true,
+        "opacity": 0.12,
+        "peakIntensity": 0.2,
+        "rippleWeight": 0.5,
+        "size": 150,
+        "texture": "foam3.jpg",
+        "waveWeight": 0.8,
+        "windBias": 0.5,
+        "windStretch": 0.2
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 300
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 4.1,
+        "fadeStart": 150,
+        "normalStrength": 0.4,
+        "power": 1.8
+      },
+      "underwater": {
+        "normalStrength": 1.2,
+        "reflectionStrength": 0.55,
+        "refractionIOR": 1.1,
+        "refractionStrength": 0.3,
+        "waterAbsorption": 0.8
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 0.3,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.5,
+        "strength": 1.5,
+        "threshold": 0.65
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.012,
+        "distortionScale": 4,
+        "distortionSpeed": 0.8,
+        "enabled": true,
+        "fogDensity": 0.015
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.45,
+        "smoothness": 0.8
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.003,
+        "mieDirectionalG": 0.8,
+        "rayleighCoefficient": 1.3,
+        "skyBrightness": 0.07,
+        "skyColor": "#141820",
+        "turbidity": 1
+      },
+      "clouds": {
+        "color": "#485058",
+        "coverage": 0.5,
+        "enabled": true,
+        "height": 0.02,
+        "intensity": 0.6,
+        "lacunarity": 2,
+        "octaves": 4,
+        "opacityFalloff": 0.25,
+        "persistence": 0.5,
+        "scale": 0.001,
+        "shadowColor": "#2a3038",
+        "speed": 0.005,
+        "thickness": 0.5
+      },
+      "sun": {
+        "azimuth": 148,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 24,
+        "intensity": 0.3
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.2,
+      "power": 3
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.2,
+        "animationSpeed": 4.1,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.28,
+            "scale": 105
+          },
+          "waves": {
+            "amplitudeScale": 0.47,
+            "scale": 643
+          }
+        },
+        "choppiness": 2,
+        "directionalSpreading": 5.5,
+        "frequency": 1.35,
+        "standingWaveRatio": 0.86,
+        "windDirection": 0.9075712110370514,
+        "windSpeed": 10.8
+      },
+      "gerstner": {
+        "amplitude": 0,
+        "directionalSpread": 0.7,
+        "wavelength": 450,
+        "wavelengthSpread": 2
+      }
+    }
+  },
+  "seaOfThieves": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.025,
+        "speed": 0.22,
+        "strength": 0.6
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 64
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#0d2f3b",
+      "depthFalloff": 65,
+      "shallowWaterColor": "#063828",
+      "transmissionColor": "#50a890"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.69,
+        "enabled": true,
+        "opacity": 0.45,
+        "range": 87,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#ffffff",
+        "coverage": 0.22,
+        "enabled": true,
+        "opacity": 0.07,
+        "size": 130,
+        "texture": "foam1.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#ffffff",
+        "coverage": 0.16,
+        "crestCoverage": 0.25,
+        "enabled": true,
+        "opacity": 0.45,
+        "peakIntensity": 0.4,
+        "rippleWeight": 0.7,
+        "size": 180,
+        "texture": "foam3.jpg",
+        "waveWeight": 1,
+        "windBias": 0.7,
+        "windStretch": 0.3
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 500
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.5,
+        "fadeStart": 250,
+        "normalStrength": 0.85,
+        "power": 5.5
+      },
+      "underwater": {
+        "normalStrength": 1.2,
+        "reflectionStrength": 0.5,
+        "refractionIOR": 1.1,
+        "refractionStrength": 0.4,
+        "waterAbsorption": 0.55
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 1.5,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.45,
+        "strength": 1.6,
+        "threshold": 0.72
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.06
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.015,
+        "distortionScale": 4,
+        "distortionSpeed": 1.2,
+        "enabled": true,
+        "fogDensity": 0.007
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.25,
+        "smoothness": 0.85
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.002,
+        "mieDirectionalG": 0.7,
+        "rayleighCoefficient": 1.2,
+        "skyBrightness": 0.3,
+        "skyColor": "#4a70b0",
+        "turbidity": 7
+      },
+      "clouds": {
+        "color": "#ffffff",
+        "coverage": 0.55,
+        "enabled": true,
+        "height": 0.03,
+        "intensity": 1.6,
+        "lacunarity": 2,
+        "octaves": 4,
+        "opacityFalloff": 0.28,
+        "persistence": 0.5,
+        "scale": 0.0006,
+        "shadowColor": "#e0e0e0",
+        "speed": 0.015,
+        "thickness": 0.8
+      },
+      "sun": {
+        "azimuth": 164,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 12,
+        "intensity": 0.5
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.5,
+      "power": 0.92
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 1,
+        "animationSpeed": 4,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.19,
+            "scale": 1000.0
+          },
+          "waves": {
+            "amplitudeScale": 0.48,
+            "scale": 10000.0
+          }
+        },
+        "choppiness": 3,
+        "directionalSpreading": 1,
+        "frequency": 2,
+        "standingWaveRatio": 0.86,
+        "windDirection": 0.9948376736367679,
+        "windSpeed": 17.2
+      },
+      "gerstner": {
+        "amplitude": 5,
+        "directionalSpread": 1.2,
+        "wavelength": 900,
+        "wavelengthSpread": 2.5
+      }
+    }
+  },
+  "storm": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.02,
+        "speed": 0.35,
+        "strength": 0.25
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 128
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#021112",
+      "depthFalloff": 1,
+      "shallowWaterColor": "#1a3035",
+      "transmissionColor": "#4a7068"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.69,
+        "enabled": true,
+        "opacity": 0.45,
+        "range": 87,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#ffffff",
+        "coverage": 0.2,
+        "enabled": true,
+        "opacity": 0.07,
+        "size": 110,
+        "texture": "foam2.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#ffffff",
+        "coverage": 0.32,
+        "crestCoverage": 0.35,
+        "enabled": true,
+        "opacity": 0.2,
+        "peakIntensity": 0.2,
+        "rippleWeight": 0.8,
+        "size": 94,
+        "texture": "foam3.jpg",
+        "waveWeight": 1,
+        "windBias": 0.75,
+        "windStretch": 0.43
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 3,
+      "fadeStart": 1050
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.8,
+        "fadeStart": 0,
+        "normalStrength": 0.51,
+        "power": 6.2
+      },
+      "underwater": {
+        "normalStrength": 1.4,
+        "reflectionStrength": 0.55,
+        "refractionIOR": 1.13,
+        "refractionStrength": 0.35,
+        "waterAbsorption": 0.8
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 0.3,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.4,
+        "strength": 0.3,
+        "threshold": 0.85
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.14
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.025,
+        "distortionScale": 4.5,
+        "distortionSpeed": 1.8,
+        "enabled": true,
+        "fogDensity": 0.016
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.45,
+        "smoothness": 0.75
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.008,
+        "mieDirectionalG": 0.6,
+        "rayleighCoefficient": 0.4,
+        "skyBrightness": 0.15,
+        "skyColor": "#5b828f",
+        "turbidity": 6
+      },
+      "clouds": {
+        "color": "#505050",
+        "coverage": 0.72,
+        "enabled": true,
+        "height": 0.01,
+        "intensity": 1.8,
+        "lacunarity": 2.2,
+        "octaves": 5,
+        "opacityFalloff": 0.45,
+        "persistence": 0.55,
+        "scale": 0.0007,
+        "shadowColor": "#303030",
+        "speed": 0.03,
+        "thickness": 2
+      },
+      "sun": {
+        "azimuth": 121,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 40,
+        "intensity": 0.5
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.78
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.6,
+      "power": 2.5
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.7,
+        "animationSpeed": 4.2,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.54,
+            "scale": 334
+          },
+          "waves": {
+            "amplitudeScale": 0.55,
+            "scale": 10000.0
+          }
+        },
+        "choppiness": 1.38,
+        "directionalSpreading": 5,
+        "frequency": 0.94,
+        "standingWaveRatio": 0.29,
+        "windDirection": 0.7,
+        "windSpeed": 34.5
+      },
+      "gerstner": {
+        "amplitude": 2.06,
+        "directionalSpread": 1.4,
+        "wavelength": 952,
+        "wavelengthSpread": 2.5
+      }
+    }
+  },
+  "sunset": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.022,
+        "speed": 0.22,
+        "strength": 0.5
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 64
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#0c2a28",
+      "depthFalloff": 55,
+      "shallowWaterColor": "#1a4038",
+      "transmissionColor": "#e8a060"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.69,
+        "enabled": true,
+        "opacity": 0.45,
+        "range": 87,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#fff8e8",
+        "coverage": 0.26,
+        "enabled": true,
+        "opacity": 0.05,
+        "size": 130,
+        "texture": "foam1.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#fff8e8",
+        "coverage": 0.35,
+        "crestCoverage": 0.35,
+        "enabled": true,
+        "opacity": 0.3,
+        "peakIntensity": 0.3,
+        "rippleWeight": 0.6,
+        "size": 160,
+        "texture": "foam3.jpg",
+        "waveWeight": 1,
+        "windBias": 0.65,
+        "windStretch": 0.25
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 400
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.5,
+        "fadeStart": 200,
+        "normalStrength": 0.9,
+        "power": 3.5
+      },
+      "underwater": {
+        "normalStrength": 1.3,
+        "reflectionStrength": 0.55,
+        "refractionIOR": 1.1,
+        "refractionStrength": 0.4,
+        "waterAbsorption": 0.6
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 1.2,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.5,
+        "strength": 1.8,
+        "threshold": 0.7
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.06
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.015,
+        "distortionScale": 4,
+        "distortionSpeed": 1.2,
+        "enabled": true,
+        "fogDensity": 0.008
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.3,
+        "smoothness": 0.8
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.004,
+        "mieDirectionalG": 0.7,
+        "rayleighCoefficient": 0.15,
+        "skyBrightness": 0.42,
+        "skyColor": "#ffaca3",
+        "turbidity": 1.5
+      },
+      "clouds": {
+        "color": "#ffe0c0",
+        "coverage": 0.5,
+        "enabled": true,
+        "height": 0.03,
+        "intensity": 0.4,
+        "lacunarity": 2,
+        "octaves": 4,
+        "opacityFalloff": 0.4,
+        "persistence": 0.5,
+        "scale": 0.0007,
+        "shadowColor": "#5a2010",
+        "speed": 0.012,
+        "thickness": 2.5
+      },
+      "sun": {
+        "azimuth": 137,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 3,
+        "intensity": 3
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.3,
+      "power": 2.5
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.45,
+        "animationSpeed": 3.5,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.25,
+            "scale": 210
+          },
+          "waves": {
+            "amplitudeScale": 0.45,
+            "scale": 1500
+          }
+        },
+        "choppiness": 0.9,
+        "directionalSpreading": 6,
+        "frequency": 2.2,
+        "standingWaveRatio": 0.1,
+        "windDirection": 0.4,
+        "windSpeed": 12
+      },
+      "gerstner": {
+        "amplitude": 2,
+        "directionalSpread": 0.9,
+        "wavelength": 600,
+        "wavelengthSpread": 2
+      }
+    }
+  },
+  "tranquil": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.022,
+        "speed": 0.18,
+        "strength": 0.6
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 64
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#062e30",
+      "depthFalloff": 80,
+      "shallowWaterColor": "#0a4a45",
+      "transmissionColor": "#5abda8"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#edf9fd",
+        "coverage": 0.69,
+        "enabled": true,
+        "opacity": 0.45,
+        "range": 87,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#ffffff",
+        "coverage": 0.3,
+        "enabled": true,
+        "opacity": 0.03,
+        "size": 140,
+        "texture": "foam1.jpg"
+      },
+      "wake": {
+        "color": "#edf9fd",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#ffffff",
+        "coverage": 0.4,
+        "crestCoverage": 0.15,
+        "enabled": true,
+        "opacity": 0.15,
+        "peakIntensity": 0.2,
+        "rippleWeight": 0.4,
+        "size": 150,
+        "texture": "foam3.jpg",
+        "waveWeight": 0.8,
+        "windBias": 0.5,
+        "windStretch": 0.15
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 500
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.5,
+        "fadeStart": 300,
+        "normalStrength": 0.9,
+        "power": 6.5
+      },
+      "underwater": {
+        "normalStrength": 1.2,
+        "reflectionStrength": 0.5,
+        "refractionIOR": 1.1,
+        "refractionStrength": 0.45,
+        "waterAbsorption": 0.5
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.5,
+        "enabled": true,
+        "intensity": 1.6,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.2
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.4,
+        "strength": 0.8,
+        "threshold": 0.8
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.04
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.012,
+        "distortionScale": 4,
+        "distortionSpeed": 1,
+        "enabled": true,
+        "fogDensity": 0.005
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.2,
+        "smoothness": 0.85
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.001,
+        "mieDirectionalG": 0.65,
+        "rayleighCoefficient": 0.9,
+        "skyBrightness": 0.62,
+        "skyColor": "#5e9ee0",
+        "turbidity": 2
+      },
+      "clouds": {
+        "color": "#ffffff",
+        "coverage": 0.45,
+        "enabled": true,
+        "height": 0.03,
+        "intensity": 1.4,
+        "lacunarity": 2,
+        "octaves": 4,
+        "opacityFalloff": 0.3,
+        "persistence": 0.5,
+        "scale": 0.0008,
+        "shadowColor": "#c0c8d0",
+        "speed": 0.008,
+        "thickness": 0.5
+      },
+      "sun": {
+        "azimuth": 220,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2,
+        "diskRadius": 0.015,
+        "elevation": 32,
+        "intensity": 0.6
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.9
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 0.4,
+      "power": 3
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.25,
+        "animationSpeed": 2.5,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.2,
+            "scale": 220
+          },
+          "waves": {
+            "amplitudeScale": 0.35,
+            "scale": 1400
+          }
+        },
+        "choppiness": 0.5,
+        "directionalSpreading": 8,
+        "frequency": 1.8,
+        "standingWaveRatio": 0.5,
+        "windDirection": 0.5,
+        "windSpeed": 5
+      },
+      "gerstner": {
+        "amplitude": 0.8,
+        "directionalSpread": 0.6,
+        "wavelength": 400,
+        "wavelengthSpread": 2
+      }
+    }
+  },
+  "tropical": {
+    "caustics": {
+      "enabled": true,
+      "surface": {
+        "scale": 0.025,
+        "speed": 0.2,
+        "strength": 1
+      }
+    },
+    "clipmap": {
+      "baseSize": 400,
+      "levels": 4,
+      "segments": 128
+    },
+    "color": {
+      "alpha": 1,
+      "deepWaterColor": "#0a5e6b",
+      "depthFalloff": 250,
+      "shallowWaterColor": "#227272",
+      "transmissionColor": "#30c4a8"
+    },
+    "foam": {
+      "shoreline": {
+        "color": "#e8fcff",
+        "coverage": 0.72,
+        "enabled": true,
+        "opacity": 0.35,
+        "range": 30,
+        "size": 178,
+        "texture": "foam1.jpg"
+      },
+      "surface": {
+        "color": "#ffffff",
+        "coverage": 0.2,
+        "enabled": true,
+        "opacity": 0.06,
+        "size": 150,
+        "texture": "foam1.jpg"
+      },
+      "wake": {
+        "color": "#e8fcff",
+        "coverage": 1,
+        "decayRate": 0.15,
+        "enabled": true,
+        "opacity": 0.5,
+        "size": 67,
+        "stampScale": 2,
+        "texture": "foam3.jpg"
+      },
+      "waves": {
+        "color": "#ffffff",
+        "coverage": 0.2,
+        "crestCoverage": 0.2,
+        "enabled": true,
+        "opacity": 0.15,
+        "peakIntensity": 0.2,
+        "rippleWeight": 0.4,
+        "size": 160,
+        "texture": "foam3.jpg",
+        "waveWeight": 0.8,
+        "windBias": 0.5,
+        "windStretch": 0.15
+      }
+    },
+    "fog": {
+      "enabled": true,
+      "fadePower": 1,
+      "fadeStart": 1150
+    },
+    "fresnel": {
+      "surface": {
+        "fadePower": 0.5,
+        "fadeStart": 350,
+        "normalStrength": 0.97,
+        "power": 4.7
+      },
+      "underwater": {
+        "normalStrength": 1,
+        "reflectionStrength": 0.4,
+        "refractionIOR": 1.1,
+        "refractionStrength": 0.5,
+        "waterAbsorption": 0.35
+      }
+    },
+    "oceanFloor": {
+      "blendSoftness": 0.3,
+      "blendThreshold": 0.5,
+      "caustics": {
+        "depthAttenuation": 0.4,
+        "enabled": true,
+        "intensity": 2.5,
+        "sampleEpsilon": 2
+      },
+      "depth": 100,
+      "displacementScale": 140,
+      "displacementStrength": 8,
+      "enabled": true,
+      "lacunarity": 1.8,
+      "meshResolution": 64,
+      "normalScale": 0.2,
+      "persistence": 0.75,
+      "sunShafts": {
+        "enabled": true,
+        "intensity": 0.25
+      },
+      "surfaceGlow": {
+        "color": "#fff8e0",
+        "enabled": true,
+        "focusPower": 75.7,
+        "intensity": 5.81
+      },
+      "textureDisplacementStrength": 0.5,
+      "tileSize": 400
+    },
+    "postProcessing": {
+      "bloom": {
+        "enabled": true,
+        "radius": 0.5,
+        "strength": 1.1,
+        "threshold": 0.75
+      },
+      "enabled": true,
+      "filmGrain": {
+        "enabled": true,
+        "intensity": 0.03
+      },
+      "underwater": {
+        "distortionEnabled": true,
+        "distortionIntensity": 0.012,
+        "distortionScale": 4,
+        "distortionSpeed": 1,
+        "enabled": true,
+        "fogDensity": 0.003
+      },
+      "underwaterParticles": {
+        "color": "#ffffff",
+        "count": 1000.0,
+        "enabled": true,
+        "farDistance": 209,
+        "maxSize": 0.5,
+        "minSize": 0.1,
+        "nearDistance": 9,
+        "opacity": 0.5
+      },
+      "vignette": {
+        "enabled": true,
+        "intensity": 0.12,
+        "smoothness": 0.9
+      }
+    },
+    "sky": {
+      "atmosphere": {
+        "mieCoefficient": 0.003,
+        "mieDirectionalG": 0.72,
+        "rayleighCoefficient": 1,
+        "skyBrightness": 0.3,
+        "skyColor": "#4e94e8",
+        "turbidity": 2
+      },
+      "clouds": {
+        "color": "#ffffff",
+        "coverage": 0.5,
+        "enabled": true,
+        "height": 0.03,
+        "intensity": 1.6,
+        "lacunarity": 2,
+        "octaves": 4,
+        "opacityFalloff": 0.25,
+        "persistence": 0.5,
+        "scale": 0.0007,
+        "shadowColor": "#d0d8e0",
+        "speed": 0.008,
+        "thickness": 0.5
+      },
+      "sun": {
+        "azimuth": 180,
+        "diskColor": "#fffef5",
+        "diskEmissiveColor": "#fff8e0",
+        "diskEmissiveIntensity": 2.5,
+        "diskRadius": 0.015,
+        "elevation": 50,
+        "intensity": 1.8
+      }
+    },
+    "sparkle": {
+      "enabled": true,
+      "fadeDistance": 1650,
+      "intensity": 1,
+      "minDistance": 0,
+      "power": 960
+    },
+    "ssr": {
+      "enabled": true,
+      "strength": 0.85
+    },
+    "sss": {
+      "enabled": true,
+      "intensity": 1.6,
+      "power": 2.2
+    },
+    "waves": {
+      "fft": {
+        "amplitude": 0.43,
+        "animationSpeed": 2.8,
+        "cascades": {
+          "ripples": {
+            "amplitudeScale": 0.25,
+            "scale": 600
+          },
+          "waves": {
+            "amplitudeScale": 0.5,
+            "scale": 4554
+          }
+        },
+        "choppiness": 0.77,
+        "directionalSpreading": 11.5,
+        "frequency": 1.25,
+        "standingWaveRatio": 0.25,
+        "windDirection": 0.3,
+        "windSpeed": 8.3
+      },
+      "gerstner": {
+        "amplitude": 2.12,
+        "directionalSpread": 0.9,
+        "wavelength": 156,
+        "wavelengthSpread": 1.61
+      }
+    }
+  }
+}

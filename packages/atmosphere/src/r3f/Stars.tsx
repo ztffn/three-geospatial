@@ -13,7 +13,7 @@ import type { Points } from 'three'
 import { ArrayBufferLoader } from '@takram/three-geospatial'
 
 import type { AtmosphereMaterialProps } from '../AtmosphereMaterialBase'
-import { DEFAULT_STARS_DATA_URL, SKY_RENDER_ORDER } from '../constants'
+import { DEFAULT_STARS_DATA_URL } from '../constants'
 import { StarsGeometry } from '../StarsGeometry'
 import {
   StarsMaterial,
@@ -25,12 +25,9 @@ import { separateProps } from './separateProps'
 export type StarsImpl = Points<StarsGeometry, StarsMaterial>
 
 export interface StarsProps
-  extends ElementProps<typeof Points>,
-    AtmosphereMaterialProps {
+  extends ElementProps<typeof Points>, AtmosphereMaterialProps {
   data?: ArrayBuffer | string
   pointSize?: number
-  /** @deprecated Use intensity instead. */
-  radianceScale?: number
   intensity?: number
   background?: boolean
 }
@@ -45,7 +42,7 @@ export const Stars: FC<StarsProps> = ({
 
   const [
     atmosphereParameters,
-    { pointSize, radianceScale, intensity, background, ...others }
+    { pointSize, intensity, background, ...others }
   ] = separateProps({
     ...starsMaterialParametersDefaults,
     ...contextProps,
@@ -103,7 +100,6 @@ export const Stars: FC<StarsProps> = ({
     <points
       ref={mergeRefs([ref, forwardedRef])}
       frustumCulled={false}
-      renderOrder={SKY_RENDER_ORDER + 1}
       {...others}
     >
       <primitive object={geometry} />
@@ -111,11 +107,8 @@ export const Stars: FC<StarsProps> = ({
         object={material}
         {...atmosphereParameters}
         pointSize={pointSize}
-        radianceScale={radianceScale}
         intensity={intensity}
         background={background}
-        depthTest={true}
-        depthWrite={false}
       />
     </points>
   )

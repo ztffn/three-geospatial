@@ -1,0 +1,32 @@
+[build]
+  command = "pnpm install --frozen-lockfile && npx vite build --config examples/ocean-globe-waterpro-demo/vite.config.ts"
+  publish = "examples/ocean-globe-waterpro-demo/dist"
+
+# Serverless MET Norway forecast proxy (digital-twin HUD). Bundled with esbuild
+# so the .mts handler can import the shared _met-core.ts helper. Served at
+# /.netlify/functions/met?lat=&lon= in both preview and production.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[build.environment]
+  NODE_VERSION = "20"
+  PNPM_VERSION = "9"
+  # Tells the demo's Vite config: this is a Netlify-driven build, ignore
+  # repo-root .env, source secrets from process.env only (Netlify UI env vars).
+  NETLIFY = "true"
+  # Tells the secret-guard plugin: a baked browser token IS expected here
+  # (Cesium Ion / Google Maps style — token MUST live in the bundle, safety
+  # comes from provider-side domain+asset restriction). Without this the
+  # guard would abort every Netlify build.
+  ALLOW_BAKED_BROWSER_TOKENS = "1"
+
+# IMPORTANT: STORYBOOK_ION_API_TOKEN must be set in the Netlify UI (Site
+# settings → Environment variables) — NOT committed to .env. Use a token
+# that is:
+#   - DIFFERENT from your local dev token
+#   - Domain-restricted at https://ion.cesium.com/tokens to:
+#       allowed referrer = https://globe-waterpro-ocean.netlify.app/*
+#   - Scoped to only the asset IDs the demo loads (2275207, 2767062)
+# Vite inlines this value into the public JS bundle at build time — the
+# only safety mechanism is provider-side restriction.

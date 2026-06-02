@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU IFFT Ocean (local assets)</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+      #canvas-container {
+        width: 100vw;
+        height: 100vh;
+      }
+      #status {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.6);
+        color: #fff;
+        font-family: sans-serif;
+        font-size: 12px;
+        border-radius: 4px;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "../node_modules/three/build/three.module.js",
+          "three/webgpu": "../node_modules/three/build/three.webgpu.js",
+          "three/tsl": "../node_modules/three/build/three.tsl.js",
+          "three/addons/": "../node_modules/three/examples/jsm/",
+          "@takram/three-atmosphere": "../packages/atmosphere/src",
+          "@takram/three-atmosphere/webgpu": "../packages/atmosphere/src/webgpu",
+          "@takram/three-geospatial": "../packages/core/src",
+          "@takram/three-geospatial/webgpu": "../packages/core/src/webgpu",
+          "@takram/three-geospatial-effects": "../packages/effects/src",
+          "@three-geospatial/ocean-ifft/components": "../packages/ocean-ifft/components",
+          "@three-geospatial/ocean-ifft/resources/": "../packages/ocean-ifft/resources/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="canvas-container"></div>
+    <div id="status">Initializing WebGPU ocean...</div>
+    <script type="module">
+      import * as THREE from 'three/webgpu'
+      import WebGPU from 'three/examples/jsm/capabilities/WebGPU.js'
+      import { Canvas } from '@react-three/fiber'
+
+      // Mount React Three Fiber into a DOM node
+      import React from 'https://esm.sh/react@19.0.0'
+      import { createRoot } from 'https://esm.sh/react-dom@19.0.0/client'
+      import TakramAtmosphereOcean from '@three-geospatial/ocean-ifft/components/TakramAtmosphereOcean'
+
+      const container = document.getElementById('canvas-container')
+      const status = document.getElementById('status')
+
+      if (!WebGPU.isAvailable()) {
+        status.textContent = 'WebGPU is not available in this browser.'
+      } else {
+        status.textContent = 'WebGPU OK — loading ocean demo...'
+        const root = createRoot(container)
+        root.render(
+          React.createElement(
+            React.StrictMode,
+            null,
+            React.createElement(TakramAtmosphereOcean)
+          )
+        )
+        status.style.display = 'none'
+      }
+    </script>
+  </body>
+</html>

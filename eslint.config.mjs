@@ -19,6 +19,17 @@ export default defineConfig(
     })
   ),
   {
+    languageOptions: {
+      parserOptions: {
+        projectService: {
+          allowDefaultProject: ['**/*.js', '**/*.cjs', '**/*.mjs'],
+          defaultProject: true
+        },
+        tsconfigRootDir: import.meta.dirname
+      }
+    }
+  },
+  {
     ignores: [
       '**/.nx',
       '**/dist',
@@ -27,7 +38,7 @@ export default defineConfig(
     ]
   },
   {
-    files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],
+    files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.mjs'],
     rules: {
       '@nx/enforce-module-boundaries': [
         'error',
@@ -78,15 +89,24 @@ export default defineConfig(
       'no-negated-condition': 'off',
       'no-plusplus': 'off',
       'no-multi-assign': 'off',
+      'max-nested-callbacks': 'off',
+      'prefer-named-capture-group': 'off',
+      'no-await-in-loop': 'off',
+      'require-unicode-regexp': 'off',
       '@typescript-eslint/init-declarations': 'off',
       '@typescript-eslint/max-lines': 'off',
       '@typescript-eslint/max-params': 'off',
       '@typescript-eslint/no-magic-numbers': 'off',
       '@typescript-eslint/prefer-destructuring': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
+
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
 
       // Only if the rulesets are error prone.
       'eslint-comments/require-description': 'off',
       'eslint-comments/no-unlimited-disable': 'off',
+      '@eslint-community/eslint-comments/require-description': 'off',
+      '@eslint-community/eslint-comments/no-unlimited-disable': 'off',
 
       // Mostly agree but it makes hook cleanup functions hard to distinguish.
       'arrow-body-style': 'off',
@@ -127,6 +147,7 @@ export default defineConfig(
       'no-param-reassign': 'off',
       'no-lonely-if': 'off',
       '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/no-unnecessary-type-arguments': 'off',
       '@typescript-eslint/no-unnecessary-type-parameters': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
@@ -137,6 +158,8 @@ export default defineConfig(
       '@typescript-eslint/unified-signatures': 'off',
       '@typescript-eslint/prefer-for-of': 'off',
       '@typescript-eslint/class-literal-property-style': 'off',
+      '@typescript-eslint/strict-void-return': 'off',
+      '@typescript-eslint/no-unused-private-class-members': 'off',
 
       // Method signature has a purpose.
       '@typescript-eslint/method-signature-style': 'off',
@@ -157,5 +180,22 @@ export default defineConfig(
   {
     files: ['**/eslint.config.mjs', '**/vite.config.ts', 'types/**/*.d.ts'],
     extends: [tseslint.configs.disableTypeChecked]
+  },
+  {
+    files: ['packages/ocean-ifft/src/r3f/**/*.{js,jsx,ts,tsx}'],
+    rules: {
+      '@typescript-eslint/strict-boolean-expressions': 'off',
+      '@typescript-eslint/prefer-nullish-coalescing': 'off',
+      '@typescript-eslint/no-unnecessary-boolean-literal-compare': 'off'
+    }
+  },
+  {
+    // Legacy ocean-ifft components rely on loose null/boolean handling.
+    files: ['packages/ocean-ifft/components/**/*.{js,jsx,ts,tsx}'],
+    rules: {
+      '@typescript-eslint/strict-boolean-expressions': 'off',
+      '@typescript-eslint/prefer-nullish-coalescing': 'off',
+      '@typescript-eslint/no-unnecessary-boolean-literal-compare': 'off'
+    }
   }
 )

@@ -1,0 +1,21 @@
+{
+  "name": "ocean-ifft",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/ocean-ifft/src",
+  "projectType": "library",
+  "tags": ["type:lib"],
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm exec eslint packages/ocean-ifft/components --ext .ts,.tsx"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "echo \"ocean-ifft: no production bundle defined; build placeholder succeeded\""
+      }
+    }
+  }
+}

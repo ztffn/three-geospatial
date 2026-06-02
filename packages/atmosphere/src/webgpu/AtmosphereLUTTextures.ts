@@ -1,20 +1,20 @@
-import { Matrix3, Vector3, type Texture } from 'three'
+import { Vector3, type Texture } from 'three'
 import { uniform } from 'three/tsl'
 import type { Renderer } from 'three/webgpu'
 
 import type { AnyFloatType } from '@takram/three-geospatial'
 
-import { AtmosphereContextBaseNode } from './AtmosphereContextBaseNode'
+import { AtmosphereContextBase } from './AtmosphereContextBase'
 import type {
   AtmosphereLUTTexture3DName,
   AtmosphereLUTTextureName
 } from './AtmosphereLUTNode'
 import type { AtmosphereParameters } from './AtmosphereParameters'
 
-export abstract class AtmosphereLUTTexturesContext extends AtmosphereContextBaseNode {
+export abstract class AtmosphereLUTTexturesContext extends AtmosphereContextBase {
   textureType: AnyFloatType
   lambdas = uniform(new Vector3(680, 550, 440))
-  luminanceFromRadiance = uniform(new Matrix3())
+  luminanceFromRadiance = uniform('mat3')
 
   constructor(parameters: AtmosphereParameters, textureType: AnyFloatType) {
     super(parameters)
