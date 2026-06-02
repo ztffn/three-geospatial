@@ -8,12 +8,15 @@
     "dev": "npx vite examples/ocean-ifft-demo --host --config examples/ocean-ifft-demo/vite.config.ts",
     "dev:ocean-ifft": "npm run dev",
     "dev:globe-waterpro": "npx vite examples/ocean-globe-waterpro-demo --host --config examples/ocean-globe-waterpro-demo/vite.config.ts",
-    "build:globe-waterpro": "npx vite build --config examples/ocean-globe-waterpro-demo/vite.config.ts"
+    "build:globe-waterpro": "npx vite build --config examples/ocean-globe-waterpro-demo/vite.config.ts",
+    "build:twin-server": "esbuild examples/ocean-globe-waterpro-demo/server/index.ts --bundle --platform=node --format=cjs --target=node22 --outfile=examples/ocean-globe-waterpro-demo/server/dist/server.cjs",
+    "deploy:twin": "bash ops/deploy-twin.sh"
   },
   "dependencies": {
     "@petamoriken/float16": "^3.9.3",
     "astronomy-engine": "^2.1.19",
     "react-merge-refs": "^3.0.2",
+    "sirv": "^2.0.4",
     "tiny-invariant": "^1.3.3",
     "type-fest": "^5.5.0",
     "url-join": "^5.0.0"

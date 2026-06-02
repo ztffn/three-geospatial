@@ -1,0 +1,25 @@
+# Self-hosted "Humatopia World Twin" deployment (twin.humatopia.ai).
+# Single container on the mediaserver host; image pulled from GHCR; ingress via
+# Cloudflare Tunnel (cloudflared on host) routing twin.humatopia.ai -> :13002.
+# No runtime secrets: the MET proxy needs only a User-Agent, and the browser
+# tokens are baked into the SPA at build time (provider-restricted). See DEPLOY-TWIN.md.
+
+services:
+  twin:
+    image: ${TWIN_IMAGE:-ghcr.io/huma-energy/humatopia-twin:latest}
+    container_name: huma-twin
+    restart: unless-stopped
+    # 13000 = prod frontend, 13001 = dev frontend (humatopia-frontend), 13002 = twin.
+    # Cloudflare Tunnel routes twin.humatopia.ai -> 127.0.0.1:13002.
+    ports:
+      - "127.0.0.1:13002:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    healthcheck:
+      # Node-based (no wget/curl in the slim runtime image); global fetch on Node 22.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
