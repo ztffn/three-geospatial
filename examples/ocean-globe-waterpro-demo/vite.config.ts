@@ -10,6 +10,8 @@ import path from 'node:path'
 import sirv from 'sirv'
 import { defineConfig, type Plugin } from 'vite'
 
+import { fetchMergedForecast } from '../../netlify/functions/_met-core'
+
 const repoRoot = path.resolve(__dirname, '../../')
 const storybookAssets = path.resolve(repoRoot, 'storybook-webgpu/assets')
 const oceanIfftResources = path.resolve(repoRoot, 'packages/ocean-ifft/resources')
@@ -21,6 +23,20 @@ const staticAssets: Array<{ from: string; to: string }> = [
   {
     from: path.join(storybookAssets, 'turbine-demo.glb'),
     to: 'public/turbine-demo.glb'
+  },
+  // Huma brand mark (top-left overlay in main.tsx): favicon + HumaDisplay
+  // wordmark font. Served at /public/brand/* (dev via sirv, build via copy).
+  {
+    from: path.join(storybookAssets, 'brand/huma-favicon.png'),
+    to: 'public/brand/huma-favicon.png'
+  },
+  {
+    from: path.join(storybookAssets, 'brand/HumaDisplay-Light.otf'),
+    to: 'public/brand/HumaDisplay-Light.otf'
+  },
+  {
+    from: path.join(storybookAssets, 'brand/HumaDisplay-Regular.otf'),
+    to: 'public/brand/HumaDisplay-Regular.otf'
   },
   {
     from: path.join(oceanIfftResources, 'textures/simplex-noise.png'),
@@ -55,6 +71,46 @@ function staticDirsPlugin(): Plugin {
         await fs.promises.mkdir(path.dirname(dest), { recursive: true })
         await fs.promises.copyFile(from, dest)
       }
+    }
+  }
+}
+
+// Dev-server mirror of the Netlify MET proxy function. In production the
+// serverless function at netlify/functions/met.mts answers this path; under
+// plain `vite` there are no functions, so emulate it with middleware that runs
+// the same fetchMergedForecast (server-side, so the MET User-Agent is set and
+// there's no CORS). Keeps the browser hitting one identical URL in dev + prod.
+function metDevProxyPlugin(): Plugin {
+  return {
+    name: 'met-dev-proxy',
+    configureServer(server) {
+      server.middlewares.use(
+        '/.netlify/functions/met',
+        (req, res, next) => {
+          const url = new URL(req.url ?? '', 'http://localhost')
+          const lat = Number(url.searchParams.get('lat'))
+          const lon = Number(url.searchParams.get('lon'))
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+            res.statusCode = 400
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify({ error: 'lat and lon required' }))
+            return
+          }
+          fetchMergedForecast(lat, lon)
+            .then(forecast => {
+              res.statusCode = 200
+              res.setHeader('content-type', 'application/json')
+              res.setHeader('cache-control', 'no-store') // dev: always fresh
+              res.end(JSON.stringify(forecast))
+            })
+            .catch((err: Error) => {
+              res.statusCode = 502
+              res.setHeader('content-type', 'application/json')
+              res.end(JSON.stringify({ error: err.message }))
+            })
+          void next
+        }
+      )
     }
   }
 }
@@ -231,6 +287,7 @@ export default defineConfig({
     react(),
     ifftWorkerHardeningPlugin(),
     staticDirsPlugin(),
+    metDevProxyPlugin(),
     secretGuardPlugin()
   ],
   // Bundled workers ship as ES modules — required by ocean-builder-threaded.js's

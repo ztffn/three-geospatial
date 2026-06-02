@@ -2,6 +2,13 @@
   command = "pnpm install --frozen-lockfile && npx vite build --config examples/ocean-globe-waterpro-demo/vite.config.ts"
   publish = "examples/ocean-globe-waterpro-demo/dist"
 
+# Serverless MET Norway forecast proxy (digital-twin HUD). Bundled with esbuild
+# so the .mts handler can import the shared _met-core.ts helper. Served at
+# /.netlify/functions/met?lat=&lon= in both preview and production.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
 [build.environment]
   NODE_VERSION = "20"
   PNPM_VERSION = "9"

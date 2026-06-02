@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Globe WaterPro Ocean</title>
     <style>
+      /* Huma brand font for the top-left wordmark (see main.tsx BrandMark).
+         Served at /public/brand/* — sirv in dev, copied at build. */
+      @font-face {
+        font-family: 'HumaDisplay';
+        src: url('/public/brand/HumaDisplay-Light.otf') format('opentype');
+        font-weight: 300;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'HumaDisplay';
+        src: url('/public/brand/HumaDisplay-Regular.otf') format('opentype');
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
       html,
       body,
       #root {

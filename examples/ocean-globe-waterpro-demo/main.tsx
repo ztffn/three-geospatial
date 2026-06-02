@@ -3,7 +3,11 @@
 // react-three-fiber Canvas backed by WebGPURenderer — no Storybook chrome,
 // no 85vw side panel. Holds a loading splash over the canvas until the
 // atmosphere LUT compute and ocean chunk-builder pool both report ready;
-// no fixed timer, no hope-based reveal.
+// no fixed timer, no hope-based reveal. Also renders the digital-twin DOM
+// overlay siblings: the top-left Huma brand mark (BrandMark, ported from the
+// humatopia-frontend sidebar), the live MET conditions HUD + forecast scrubber
+// (DigitalTwinUI, fed by the active scene location), and a collapsed Leva debug
+// panel.
 
 // requestIdleCallback shim — set BEFORE any package import.
 // packages/atmosphere/src/webgpu/AtmosphereLUTNode.ts's `timeSlice` helper
@@ -32,10 +36,13 @@ if (typeof window !== 'undefined') {
 }
 
 import { Canvas } from '@react-three/fiber'
+import { Leva } from 'leva'
 import { useCallback, useEffect, useRef, useState, type FC } from 'react'
 import { createRoot } from 'react-dom/client'
 import { NoToneMapping, SRGBColorSpace } from 'three'
 import { WebGPURenderer, type Renderer } from 'three/webgpu'
+
+import { DigitalTwinUI } from './ui/DigitalTwinUI'
 
 import {
   AtmosphereLight,
@@ -152,9 +159,23 @@ const ReadinessProbe: FC<{
 const App: FC = () => {
   const [refs, setRefs] = useState<ContentReadinessRefs | null>(null)
   const [phase, setPhase] = useState<Phase>('atmosphere')
+  // Active scene location, surfaced from Content's leva 'Location' control so
+  // the conditions HUD fetches MET data for the point currently in view.
+  // Defaults to Karmøy (the offshore-wind site) until Content reports.
+  const [location, setLocation] = useState({
+    longitude: 5.206866,
+    latitude: 59.427348,
+    name: 'Karmøy'
+  })
 
   const handleReadinessRefs = useCallback(
     (r: ContentReadinessRefs) => setRefs(r),
+    []
+  )
+
+  const handleLocationChange = useCallback(
+    (longitude: number, latitude: number, name: string) =>
+      setLocation({ longitude, latitude, name }),
     []
   )
 
@@ -192,6 +213,7 @@ const App: FC = () => {
         <Content
           onReadinessRefs={handleReadinessRefs}
           disableOcean={phase === 'atmosphere'}
+          onLocationChange={handleLocationChange}
         />
         <ReadinessProbe
           refs={refs}
@@ -200,10 +222,90 @@ const App: FC = () => {
           onOceanReady={handleOceanReady}
         />
       </Canvas>
+      <BrandMark />
+      <DigitalTwinUI
+        latitude={location.latitude}
+        longitude={location.longitude}
+        locationName={location.name}
+      />
+      {/* Debug controls: kept, but collapsed by default and out of the way
+          (top-right; the conditions HUD stacks below it). */}
+      <Leva collapsed />
       <Splash visible={phase !== 'ready'} />
     </>
   )
 }
+
+// Top-left Huma brand mark — a faithful port of the humatopia-frontend sidebar
+// menu button (logo box + HumaDisplay "humatopia" wordmark). Plain DOM sibling
+// of the canvas; Tailwind/shadcn classes there are reproduced here as inline
+// styles since this demo has no Tailwind. Wordmark uses the dark-theme
+// --sidebar-foreground (warm near-white) so it reads on the dark globe scene.
+// Sits below the Splash (z 5 < 10) so it reveals with the scene, not the cover.
+const BrandMark: FC = () => (
+  <div style={{ position: 'fixed', top: 8, left: 8, zIndex: 5 }}>
+    <a
+      href="/"
+      className="huma-brand"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem', // gap-2
+        height: '3rem', // h-12
+        padding: '0.5rem', // p-2
+        borderRadius: 0, // --radius: 0 (sharp corners)
+        textAlign: 'left',
+        textDecoration: 'none',
+        outline: 'none',
+        color: '#13294b',
+        transition: 'background-color 150ms cubic-bezier(0.4, 0, 0.2, 1)'
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          aspectRatio: '1 / 1',
+          width: '2rem', // size-8
+          height: '2rem',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}
+      >
+        <img
+          src="/public/brand/huma-favicon.png"
+          alt="Huma"
+          style={{ width: '1.25rem', height: '1.25rem' }} // size-5
+        />
+      </div>
+      <div style={{ display: 'grid', flex: 1, textAlign: 'left', lineHeight: 1.25 }}>
+        <span
+          style={{
+            fontFamily: "'HumaDisplay', sans-serif",
+            fontWeight: 300,
+            textTransform: 'lowercase',
+            fontSize: '1.3rem',
+            letterSpacing: '0.01em'
+          }}
+        >
+          Humatopia
+        </span>
+        <span
+          style={{
+            fontFamily:
+              "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+            fontSize: '0.55rem',
+            fontWeight: 500,
+            letterSpacing: '0.18em',
+            textTransform: 'uppercase'
+          }}
+        >
+          Digital Twin World
+        </span>
+      </div>
+    </a>
+    <style>{`.huma-brand:hover { background-color: oklch(0.2686 0 0); }`}</style>
+  </div>
+)
 
 // Minimal cover: full-bleed dark backdrop matching the canvas clear color, a
 // small spinner, and a single line of status. Fades out (500 ms) once the

@@ -464,7 +464,12 @@ export const Content: FC<{
   // false to bring the ocean in. Defaults to false so Storybook mounts the
   // full scene as it always has.
   disableOcean?: boolean
-}> = ({ onReadinessRefs, disableOcean = false }) => {
+  // Surfaces the active location (preset or custom) to a host page so a DOM
+  // overlay outside the R3F tree — e.g. the deploy's live conditions HUD — can
+  // fetch real weather/ocean data for the point currently in view. Additive;
+  // Storybook ignores it.
+  onLocationChange?: (longitude: number, latitude: number, name: string) => void
+}> = ({ onReadinessRefs, disableOcean = false, onLocationChange }) => {
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
@@ -543,6 +548,19 @@ export const Content: FC<{
     activeLocation.latitude,
     activeLocation.height
   )
+
+  useEffect(() => {
+    onLocationChange?.(
+      activeLocation.longitude,
+      activeLocation.latitude,
+      String(locationControls.preset)
+    )
+  }, [
+    onLocationChange,
+    activeLocation.longitude,
+    activeLocation.latitude,
+    locationControls.preset
+  ])
 
   const atmosphereControls = useControls('Atmosphere', {
     exposure: { value: 10, min: 0, max: 30, step: 0.25 },
