@@ -1587,34 +1587,6 @@ export const Content: FC<{
     defaultsSnapshotRef.current = snap
   }, [presetBag])
 
-  // Preset selector — writes water-only fields. Atmosphere / postProcessing
-  // / oceanFloor / ssr fields are intentionally skipped (handled elsewhere).
-  useEffect(() => {
-    if (presetBag == null) return
-    const snap = defaultsSnapshotRef.current
-    if (snap != null) {
-      // Restore factory defaults to every preset-bag field first. This
-      // guarantees switching preset → custom (or preset A → preset B) starts
-      // from a known baseline; without it, fields only the leaving preset
-      // wrote would persist into the next state.
-      for (const [key, uni] of Object.entries(presetBag)) {
-        const saved = snap[key]
-        const target = (uni as any).value
-        if (saved == null) continue
-        if (target && typeof target === 'object' && 'copy' in target) {
-          target.copy(saved)
-        } else {
-          ;(uni as any).value = saved
-        }
-      }
-    }
-    if (presetControls.preset === 'custom') return
-    applyWaterproPreset(
-      presetControls.preset as WaterproPresetName,
-      presetBag
-    )
-  }, [presetBag, presetControls.preset])
-
   // Per-slider writes — same wiring as WaterproAtmosphere-Story.tsx:436-483
   // but expressed as useEffects over leva values instead of the storybook
   // useTransientControl pattern.
@@ -1738,6 +1710,42 @@ export const Content: FC<{
     const cd = new Color().setStyle(waterColorControls.deepColor)
     oceanUniforms.deepColor.value.set(cd.r, cd.g, cd.b)
   }, [oceanUniforms, waterColorControls])
+
+  // Preset selector — writes water-only fields. Atmosphere / postProcessing /
+  // oceanFloor / ssr fields are intentionally skipped (handled elsewhere).
+  // MUST be defined AFTER the per-slider effects above: on mount all these
+  // effects fire in definition order, and the slider effects write many of the
+  // same uniforms (water colour, fft/sss, foam, fresnel…). Defined earlier, the
+  // preset would be applied first and then clobbered by the slider defaults, so
+  // the starting water looked brighter than any preset selection. Running last,
+  // the active preset wins on mount — matching what picking a preset yields.
+  // (Slider edits still win afterwards: they fire their own effect; this one
+  // only re-runs when the preset or the material rebuilds.)
+  useEffect(() => {
+    if (presetBag == null) return
+    const snap = defaultsSnapshotRef.current
+    if (snap != null) {
+      // Restore factory defaults to every preset-bag field first. This
+      // guarantees switching preset → custom (or preset A → preset B) starts
+      // from a known baseline; without it, fields only the leaving preset
+      // wrote would persist into the next state.
+      for (const [key, uni] of Object.entries(presetBag)) {
+        const saved = snap[key]
+        const target = (uni as any).value
+        if (saved == null) continue
+        if (target && typeof target === 'object' && 'copy' in target) {
+          target.copy(saved)
+        } else {
+          ;(uni as any).value = saved
+        }
+      }
+    }
+    if (presetControls.preset === 'custom') return
+    applyWaterproPreset(
+      presetControls.preset as WaterproPresetName,
+      presetBag
+    )
+  }, [presetBag, presetControls.preset])
 
   useEffect(() => {
     context.showGround = atmosphereControls.showGround
