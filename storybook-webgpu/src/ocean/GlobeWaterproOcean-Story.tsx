@@ -22,6 +22,7 @@ import {
 } from '3d-tiles-renderer/r3f'
 import { button, levaStore, useControls } from 'leva'
 import {
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -742,7 +743,6 @@ const TurbineFarm: FC<{
 
     const cols = Math.ceil(Math.sqrt(count))
     const rows = Math.ceil(count / cols)
-    const heroIndex = centreSlotIndex(count, stagger)
     const out: Array<{
       position: [number, number, number]
       quaternion: [number, number, number, number]
@@ -750,12 +750,15 @@ const TurbineFarm: FC<{
     for (let i = 0; i < count; i++) {
       const r = Math.floor(i / cols)
       const c = i % cols
-      // Hero is pinned to the target (camera focus); the rest tile around it.
+      // Every turbine (incl. the hero) sits on the regular, optionally staggered
+      // lattice. The hero used to be force-pinned to the exact centre (0,0),
+      // which punched a hole in the grid and crowded the centre cells whenever
+      // no cell naturally fell on (0,0) (e.g. an even 4×4 grid for count=15).
+      // The camera still lands on the hero via `heroFocus`, computed from its
+      // real placement below — so no pin is needed.
       const ex =
-        i === heroIndex
-          ? 0
-          : (c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2) * spacing
-      const nz = i === heroIndex ? 0 : (r - (rows - 1) / 2) * spacing
+        (c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2) * spacing
+      const nz = (r - (rows - 1) / 2) * spacing
       const pos = target
         .clone()
         .addScaledVector(east, ex)
@@ -835,6 +838,52 @@ const TurbineFarm: FC<{
         </group>
       ))}
     </>
+  )
+}
+
+// Single ship GLB anchored at a fixed geodetic point (Karmøy), placed on the
+// local East-North-Up tangent plane with local +Y aligned to the surface
+// normal — the same ENU placement math as TurbineFarm. A GLB's modelling
+// origin rarely sits at the waterline or faces a useful heading, so scale,
+// waterline height, east/north position and yaw are leva-tunable to seat the
+// hull on the ocean. The caller gates this behind the ocean stage + Suspense
+// (the model is ~7.7 MB, so it must not compete with stage-1 LUT compute).
+const ShipModel: FC<{
+  anchor: Vector3
+  scale: number
+  heightOffset: number
+  eastOffset: number
+  northOffset: number
+  yawDeg: number
+}> = ({ anchor, scale, heightOffset, eastOffset, northOffset, yawDeg }) => {
+  const gltf = useGLTF('public/ship-demo-compressed.glb')
+  const scene = useMemo(() => gltf.scene.clone(true), [gltf.scene])
+  const { position, quaternion } = useMemo(() => {
+    const east = new Vector3()
+    const north = new Vector3()
+    const up = new Vector3()
+    Ellipsoid.WGS84.getEastNorthUpVectors(anchor, east, north, up)
+    const yawQ = new Quaternion().setFromAxisAngle(
+      new Vector3(0, 1, 0),
+      MathUtils.degToRad(yawDeg)
+    )
+    const alignQ = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), up)
+    const q = alignQ
+      .multiply(yawQ)
+      .toArray() as [number, number, number, number]
+    const pos = anchor
+      .clone()
+      .addScaledVector(east, eastOffset)
+      .addScaledVector(north, northOffset)
+      .addScaledVector(up, heightOffset)
+      .toArray() as [number, number, number]
+    return { position: pos, quaternion: q }
+  }, [anchor, heightOffset, eastOffset, northOffset, yawDeg])
+
+  return (
+    <group position={position} quaternion={quaternion} scale={scale}>
+      <primitive object={scene} />
+    </group>
   )
 }
 
@@ -1154,6 +1203,64 @@ export const Content: FC<{
   useEffect(() => {
     onTurbineCountChange?.(turbineControls.count)
   }, [onTurbineCountChange, turbineControls.count])
+
+  // Ship pinned to the Karmøy site (independent of the active fly-to target, so
+  // it stays put while the camera roams). Tune scale/waterline/position/heading
+  // with these until the hull seats on the ocean. See ShipModel.
+  const shipControls = useControls('Ship', {
+    visible: { value: true },
+    scale: { value: 2, min: 0.01, max: 200, step: 0.01 },
+    heightOffset: { value: 26, min: -100, max: 100, step: 0.1, label: 'Waterline (m)' },
+    eastOffset: { value: 0, min: -5000, max: 5000, step: 5, label: 'East (m)' },
+    northOffset: { value: 0, min: -5000, max: 5000, step: 5, label: 'North (m)' },
+    yawDeg: { value: 0, min: -180, max: 180, step: 1, label: 'Yaw (°)' },
+  })
+  const shipAnchor = useTargetECEF(
+    locationPresets.Karmøy.longitude,
+    locationPresets.Karmøy.latitude,
+    locationPresets.Karmøy.height
+  )
+  // Ship world position (ENU offsets applied), refreshed each render into a ref
+  // so the leva "Fly to ship" button reads the live offsets — leva captures a
+  // button's handler once, so it must read through a ref, not a closure.
+  const shipWorldRef = useRef(new Vector3())
+  useMemo(() => {
+    const e = new Vector3()
+    const n = new Vector3()
+    const u = new Vector3()
+    Ellipsoid.WGS84.getEastNorthUpVectors(shipAnchor, e, n, u)
+    shipWorldRef.current
+      .copy(shipAnchor)
+      .addScaledVector(e, shipControls.eastOffset)
+      .addScaledVector(n, shipControls.northOffset)
+      .addScaledVector(u, shipControls.heightOffset)
+  }, [
+    shipAnchor,
+    shipControls.eastOffset,
+    shipControls.northOffset,
+    shipControls.heightOffset,
+  ])
+  // Snaps the orbit camera to frame the ship anchor (merges into the 'Ship'
+  // folder). Locating/tuning aid — the camera then auto-orbits the hull.
+  useControls('Ship', {
+    'Fly to ship': button(() => {
+      const controls = orbitControlsRef.current
+      if (controls?.target == null) return
+      const cam = controls.object
+      const p = shipWorldRef.current
+      const e = new Vector3()
+      const n = new Vector3()
+      const u = new Vector3()
+      Ellipsoid.WGS84.getEastNorthUpVectors(p, e, n, u)
+      cam.position
+        .copy(p)
+        .addScaledVector(u, 250)
+        .addScaledVector(e, 350)
+        .addScaledVector(n, -350)
+      controls.target.copy(p)
+      controls.update?.()
+    }),
+  })
 
   const cameraControls = useControls('Camera', {
     minDistance: { value: 1, min: 0.1, max: 5000, step: 0.1 },
@@ -1827,6 +1934,22 @@ export const Content: FC<{
         heroCover={heroCover ?? turbineControls.cover}
         onHeroFocus={setHeroFocus}
       />
+      {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
+          download/parse doesn't compete with the stage-1 atmosphere-LUT
+          compute) and isolated in its own Suspense so loading can't blank the
+          rest of the scene. */}
+      {shipControls.visible && !disableOcean && (
+        <Suspense fallback={null}>
+          <ShipModel
+            anchor={shipAnchor}
+            scale={shipControls.scale}
+            heightOffset={shipControls.heightOffset}
+            eastOffset={shipControls.eastOffset}
+            northOffset={shipControls.northOffset}
+            yawDeg={shipControls.yawDeg}
+          />
+        </Suspense>
+      )}
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}
