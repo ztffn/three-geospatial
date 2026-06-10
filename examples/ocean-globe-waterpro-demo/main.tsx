@@ -311,6 +311,8 @@ const App: FC = () => {
           disableOcean={phase === 'atmosphere'}
           onLocationChange={handleLocationChange}
           turbineRpm={telemetry.rpm}
+          windHeading={telemetry.yawHeading}
+          windSpeed={sample?.windSpeed ?? null}
           clockMs={selected}
           flyTo={flyTo}
           farmCount={turbineCount}

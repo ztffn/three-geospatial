@@ -34,6 +34,7 @@ import {
 } from 'react'
 import {
   AgXToneMapping,
+  ArrowHelper,
   MathUtils,
   Matrix4,
   Mesh,
@@ -288,6 +289,9 @@ const OceanSurface: FC<{
   onUniformsReady: (uniforms: WaterproOceanUniforms) => void
   onVertexUniformsReady: (vu: VertexUniformsBag) => void
   onOceanManagerReady: (oceanManager: any) => void
+  // The live WaveSimulation, so the wind→waves coupling can rotate the IFFT
+  // spectrum (spectrum.windDirection + reinitializeSpectrum()).
+  onWaveSimReady: (waveSim: any) => void
   seaLevelOffset: number
   oceanScale: number
   numLayers: number
@@ -306,6 +310,7 @@ const OceanSurface: FC<{
   onUniformsReady,
   onVertexUniformsReady,
   onOceanManagerReady,
+  onWaveSimReady,
   seaLevelOffset,
   oceanScale,
   numLayers,
@@ -356,10 +361,11 @@ const OceanSurface: FC<{
           depthPrepassStage={depthPrepassStage}
           cloudReflect={cloudReflect}
           cloudShadow={cloudShadow}
-          onReady={({ uniforms, vertexUniforms, oceanManager }) => {
+          onReady={({ uniforms, vertexUniforms, oceanManager, waveSim }) => {
             onUniformsReady(uniforms)
             onVertexUniformsReady(vertexUniforms)
             onOceanManagerReady(oceanManager)
+            onWaveSimReady(waveSim)
           }}
         />
       ) : null}
@@ -636,6 +642,11 @@ function centreSlotIndex(count: number, stagger: boolean): number {
   return idx
 }
 
+// Reference rotor diameter (V164-class 8 MW offshore turbine, matching the
+// deploy's turbineModel.ts). Wake-aware array spacing is expressed in multiples
+// of this so the layout reads as physically plausible offshore engineering.
+const ROTOR_DIAMETER_M = 164
+
 // Wind-turbine farm at the fly-to target — a staggered grid of `count` clones.
 // The centre slot uses the detailed "hero" GLB (turbine-demo3, with its base,
 // rig, axle and toggleable wall/cover); the rest use the lightweight
@@ -650,12 +661,22 @@ const TurbineFarm: FC<{
   target: Vector3
   scale: number
   heightOffset: number
-  yawDeg: number
+  // Compass bearing (deg, from North, clockwise) the wind blows FROM. The
+  // array's along-wind axis and every rotor's facing both derive from this, so
+  // the farm stays coherently oriented. Deploy feeds live MET wind; a leva
+  // slider stands in for Storybook.
+  windHeadingDeg: number
+  // Per-model rotor-facing calibration added to windHeadingDeg — the GLB's rotor
+  // axis isn't guaranteed to sit at bearing 0. 0 vs 180 flips upwind/downwind.
+  yawOffsetDeg: number
   spin: boolean
   spinSpeed: number
   count: number
-  spacing: number // metres between turbines on the tangent plane
-  stagger: boolean // offset alternate rows by half a cell
+  // Wake-aware anisotropic spacing (metres on the tangent plane): turbines sit
+  // farther apart along the wind (downwind wake recovery) than across it.
+  crosswindSpacing: number
+  downwindSpacing: number
+  stagger: boolean // offset alternate downwind rows by half the crosswind pitch
   // When provided (deploy's wind model), every rotor turns at this rate instead
   // of the leva spinSpeed — converting rpm to rad/s. 0 rpm = parked/cut-out, so
   // the blades visibly stop. null falls back to spinSpeed (Storybook default).
@@ -675,11 +696,13 @@ const TurbineFarm: FC<{
   target,
   scale,
   heightOffset,
-  yawDeg,
+  windHeadingDeg,
+  yawOffsetDeg,
   spin,
   spinSpeed,
   count,
-  spacing,
+  crosswindSpacing,
+  downwindSpacing,
   stagger,
   rotorRpm,
   wingsEnabled,
@@ -732,42 +755,68 @@ const TurbineFarm: FC<{
     const north = new Vector3()
     const up = new Vector3()
     Ellipsoid.WGS84.getEastNorthUpVectors(target, east, north, up)
-    const yawQ = new Quaternion().setFromAxisAngle(
-      new Vector3(0, 1, 0),
-      MathUtils.degToRad(yawDeg)
-    )
-    const alignQ = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), up)
-    const quaternion = alignQ
-      .multiply(yawQ)
+
+    // Horizontal ENU unit vector for a compass bearing (0 = North, 90 = East).
+    const bearing = (deg: number): Vector3 =>
+      north
+        .clone()
+        .multiplyScalar(Math.cos(MathUtils.degToRad(deg)))
+        .addScaledVector(east, Math.sin(MathUtils.degToRad(deg)))
+
+    // Array axes locked to the wind: the along-wind line carries the wide
+    // downwind spacing; the perpendicular crosswind axis carries the tighter
+    // pitch. (Sign of each axis is irrelevant — they're spacing directions.)
+    const alongWind = bearing(windHeadingDeg)
+    const crossWind = bearing(windHeadingDeg + 90)
+
+    // Shared turbine orientation, built from an explicit ENU basis so the rotor
+    // heading is compass-accurate (unlike a minimal +Y→up align, whose azimuth
+    // is arbitrary): tower (local +Y) → surface up; rotor axis (local −Z) → the
+    // wind-from bearing, so every rotor faces into the wind. yawOffsetDeg
+    // calibrates the model's intrinsic rotor heading.
+    const faceDir = bearing(windHeadingDeg + yawOffsetDeg)
+    const zImg = faceDir.clone().negate() // local +Z image (rotor faces local −Z)
+    const xImg = new Vector3().crossVectors(up, zImg).normalize()
+    const zOrtho = new Vector3().crossVectors(xImg, up) // re-orthonormalise
+    const quaternion = new Quaternion()
+      .setFromRotationMatrix(new Matrix4().makeBasis(xImg, up, zOrtho))
       .toArray() as [number, number, number, number]
 
-    const cols = Math.ceil(Math.sqrt(count))
-    const rows = Math.ceil(count / cols)
+    const cols = Math.ceil(Math.sqrt(count)) // crosswind columns
+    const rows = Math.ceil(count / cols) // downwind rows
     const out: Array<{
       position: [number, number, number]
       quaternion: [number, number, number, number]
     }> = []
     for (let i = 0; i < count; i++) {
-      const r = Math.floor(i / cols)
-      const c = i % cols
-      // Every turbine (incl. the hero) sits on the regular, optionally staggered
-      // lattice. The hero used to be force-pinned to the exact centre (0,0),
-      // which punched a hole in the grid and crowded the centre cells whenever
-      // no cell naturally fell on (0,0) (e.g. an even 4×4 grid for count=15).
-      // The camera still lands on the hero via `heroFocus`, computed from its
-      // real placement below — so no pin is needed.
-      const ex =
-        (c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2) * spacing
-      const nz = (r - (rows - 1) / 2) * spacing
+      const r = Math.floor(i / cols) // downwind row index
+      const c = i % cols // crosswind column index
+      // Every turbine (incl. the hero) sits on the regular wind-aligned lattice;
+      // alternate downwind rows offset half a crosswind cell to keep turbines
+      // out of the row-ahead's direct wake. The hero is NOT pinned to centre
+      // (that punched a hole / crowded the middle); the camera lands on it via
+      // `heroFocus`, computed from its real placement below.
+      const cross =
+        (c + (stagger ? (r % 2) * 0.5 : 0) - (cols - 1) / 2) * crosswindSpacing
+      const along = (r - (rows - 1) / 2) * downwindSpacing
       const pos = target
         .clone()
-        .addScaledVector(east, ex)
-        .addScaledVector(north, nz)
+        .addScaledVector(crossWind, cross)
+        .addScaledVector(alongWind, along)
         .addScaledVector(up, heightOffset)
       out.push({ position: pos.toArray(), quaternion })
     }
     return out
-  }, [target, heightOffset, yawDeg, count, spacing, stagger])
+  }, [
+    target,
+    heightOffset,
+    windHeadingDeg,
+    yawOffsetDeg,
+    count,
+    crosswindSpacing,
+    downwindSpacing,
+    stagger,
+  ])
 
   // Hero engine (axle origin) offset within the model, in the model's own frame.
   const heroHubLocal = useMemo(() => {
@@ -887,6 +936,35 @@ const ShipModel: FC<{
   )
 }
 
+// Debug-only wind arrow: a large ArrowHelper on the tangent plane at `target`,
+// pointing in the direction the wind BLOWS TOWARD (downwind = windHeadingDeg +
+// 180°). Use it to sanity-check that the turbine array's long axis runs along
+// the arrow and every rotor faces INTO the wind (opposite the arrow tip).
+const WindArrow: FC<{
+  target: Vector3
+  windHeadingDeg: number
+  lengthM: number
+}> = ({ target, windHeadingDeg, lengthM }) => {
+  const arrow = useMemo(() => new ArrowHelper(), [])
+  useMemo(() => {
+    const east = new Vector3()
+    const north = new Vector3()
+    const up = new Vector3()
+    Ellipsoid.WGS84.getEastNorthUpVectors(target, east, north, up)
+    const rad = MathUtils.degToRad(windHeadingDeg + 180) // blows toward
+    const dir = north
+      .clone()
+      .multiplyScalar(Math.cos(rad))
+      .addScaledVector(east, Math.sin(rad))
+      .normalize()
+    arrow.position.copy(target).addScaledVector(up, lengthM * 0.05)
+    arrow.setDirection(dir)
+    arrow.setLength(lengthM, lengthM * 0.18, lengthM * 0.09)
+    arrow.setColor(0x33ccff)
+  }, [arrow, target, windHeadingDeg, lengthM])
+  return <primitive object={arrow} />
+}
+
 // SCENE_RADIANCE_SCALE — matches WaterproAtmosphere-Story.tsx:145. The
 // WaterPro composition peaks ~2× higher than the legacy WGSL fragment, so
 // 0.28 is the calibrated value for AgX exposure 10 (PORT-STATUS §13). Using
@@ -921,6 +999,13 @@ export const Content: FC<{
   // blade spin so the visible rotor turns at the real, forecast-derived rate.
   // Undefined in Storybook, where the leva spinSpeed governs instead.
   turbineRpm?: number | null
+  // Wind bearing (deg the wind blows FROM) from the deploy's live MET feed.
+  // Orients the turbine array's wake-aware spacing and yaws every rotor into
+  // the wind. null/undefined → the leva 'Wind from' slider governs (Storybook).
+  windHeading?: number | null
+  // Wind speed (m/s) from the deploy's live MET feed. Drives the calm↔storm
+  // wave-strength blend. null/undefined → the leva 'Wind speed' slider governs.
+  windSpeed?: number | null
   // Absolute UTC instant (ms) the scene's sun/moon should depict — the deploy's
   // forecast scrubber time. When set, it overrides the leva day/time sliders so
   // the lighting tracks the scrubbed forecast hour. Undefined in Storybook.
@@ -951,6 +1036,8 @@ export const Content: FC<{
   disableOcean = false,
   onLocationChange,
   turbineRpm,
+  windHeading,
+  windSpeed,
   clockMs,
   onTurbineCountChange,
   flyTo,
@@ -968,6 +1055,9 @@ export const Content: FC<{
   const orbitControlsRef = useRef<any>(null)
   orbitControlsRef.current = useThree(({ controls }) => controls)
   const [oceanManager, setOceanManager] = useState<any>(null)
+  // Live WaveSimulation — captured so the wind→waves coupling can rotate the
+  // IFFT spectrum and recompute it.
+  const [waveSim, setWaveSim] = useState<any>(null)
   // Hero turbine engine position, reported by the farm; the camera orbits it.
   const [heroFocus, setHeroFocus] = useState<Vector3 | null>(null)
   const [oceanUniforms, setOceanUniforms] =
@@ -1191,13 +1281,36 @@ export const Content: FC<{
   const turbineControls = useControls('Turbine', {
     scale: { value: 0.5, min: 0.1, max: 50, step: 0.1 },
     heightOffset: { value: 2.5, min: -200, max: 200, step: 0.5 },
-    yawDeg: { value: 180, min: -180, max: 180, step: 1, label: 'Yaw (°)' },
     spin: { value: true },
     spinSpeed: { value: 2.0, min: 0, max: 20, step: 0.1 },
     count: { value: 15, min: 1, max: 60, step: 1, label: 'Farm count' },
-    spacing: { value: 320, min: 10, max: 4000, step: 5, label: 'Spacing (m)' },
+    // Wake-aware spacing in rotor diameters (D = 164 m). Offshore arrays sit
+    // ~7–10 D apart along the wind, ~4–5 D across it.
+    downwindD: { value: 8, min: 3, max: 15, step: 0.5, label: 'Downwind (D)' },
+    crosswindD: { value: 5, min: 2, max: 12, step: 0.5, label: 'Crosswind (D)' },
     stagger: { value: true, label: 'Offset rows' },
+    // Manual wind bearing for Storybook (no MET feed); the deploy overrides this
+    // with live MET wind via the windHeading prop.
+    windDir: { value: 225, min: 0, max: 359, step: 1, label: 'Wind from (°)' },
+    yawOffset: {
+      value: 0,
+      min: -180,
+      max: 180,
+      step: 1,
+      label: 'Rotor offset (°)',
+    },
     cover: { value: true, label: 'Hero: cover' },
+  })
+
+  const debugControls = useControls('Debug', {
+    windArrow: { value: true, label: 'Wind arrow' },
+    windArrowKm: {
+      value: 3,
+      min: 0.5,
+      max: 20,
+      step: 0.5,
+      label: 'Arrow length (km)',
+    },
   })
 
   useEffect(() => {
@@ -1451,6 +1564,44 @@ export const Content: FC<{
       label: 'Variance scale (m)',
     },
   })
+
+  // Couple the sea state to the wind: rotate the IFFT wind-sea spectrum to the
+  // wind bearing and blend wave strength from calm → storm by wind speed. When
+  // off, the manual Waves/Swell controls govern (unchanged behaviour). Storm
+  // endpoints are the operator-tuned values for heavy conditions; calm endpoints
+  // are the panel defaults.
+  const windWaveControls = useControls('Wind → Waves', {
+    enabled: { value: true, label: 'Couple to wind' },
+    windSpeed: { value: 10, min: 0, max: 30, step: 0.5, label: 'Wind speed (m/s)' },
+    calmWind: { value: 4, min: 0, max: 15, step: 0.5, label: 'Calm at (m/s)' },
+    stormWind: { value: 22, min: 5, max: 30, step: 0.5, label: 'Storm at (m/s)' },
+    dirOffset: {
+      value: 0,
+      min: -180,
+      max: 180,
+      step: 1,
+      label: 'Wave dir offset (°)',
+    },
+  })
+  // Effective wind: live MET in the deploy, else the leva sliders (Storybook).
+  // Direction reuses the same source as the turbines/arrow so all three agree.
+  const effWindDeg = windHeading ?? turbineControls.windDir
+  const effWindSpeed = windSpeed ?? windWaveControls.windSpeed
+  // 0 = calm, 1 = storm.
+  const stormT = windWaveControls.enabled
+    ? MathUtils.clamp(
+        (effWindSpeed - windWaveControls.calmWind) /
+          Math.max(1e-3, windWaveControls.stormWind - windWaveControls.calmWind),
+        0,
+        1
+      )
+    : 0
+  // Spectrum bearing, quantised to whole degrees so scrubbing the forecast
+  // doesn't thrash the GPU spectrum recompute. When the coupling is off, fall
+  // back to the spectrum's default 0° (secondary keeps its +240° spread).
+  const waveDirDeg = windWaveControls.enabled
+    ? Math.round(effWindDeg + windWaveControls.dirOffset)
+    : 0
 
   const tipFoamControls = useControls('Tip Foam', {
     enabled: { value: true },
@@ -1711,9 +1862,15 @@ export const Content: FC<{
 
   useEffect(() => {
     if (oceanUniforms == null) return
-    oceanUniforms.fftAmplitude.value = waveControls.fftAmplitude
-    oceanUniforms.gerstnerAmplitude.value = waveControls.gerstnerAmplitude
-  }, [oceanUniforms, waveControls])
+    // Wind-coupled: blend calm → storm wave amplitude by wind speed. Else the
+    // manual Waves panel governs.
+    oceanUniforms.fftAmplitude.value = windWaveControls.enabled
+      ? MathUtils.lerp(1.0, 1.51, stormT)
+      : waveControls.fftAmplitude
+    oceanUniforms.gerstnerAmplitude.value = windWaveControls.enabled
+      ? MathUtils.lerp(1.0, 1.8, stormT)
+      : waveControls.gerstnerAmplitude
+  }, [oceanUniforms, waveControls, windWaveControls.enabled, stormT])
 
   useEffect(() => {
     if (oceanUniforms == null) return
@@ -1772,9 +1929,26 @@ export const Content: FC<{
 
   useEffect(() => {
     if (vertexUniforms == null) return
-    vertexUniforms.swellStrength.value = swellControls.swellStrength
-    vertexUniforms.swellScale.value = swellControls.swellScale
-  }, [vertexUniforms, swellControls])
+    vertexUniforms.swellStrength.value = windWaveControls.enabled
+      ? MathUtils.lerp(0.5, 0.57, stormT)
+      : swellControls.swellStrength
+    vertexUniforms.swellScale.value = windWaveControls.enabled
+      ? MathUtils.lerp(800, 3460, stormT)
+      : swellControls.swellScale
+  }, [vertexUniforms, swellControls, windWaveControls.enabled, stormT])
+
+  // Rotate the IFFT wind-sea spectrum to the wind bearing, preserving the
+  // primary↔secondary crossing-sea spread (240°), then recompute the one-shot
+  // initial spectrum. Pure rotation — no windSpeed/fetch change — so it can't
+  // alter wave height, only heading. Gated to whole-degree changes by waveDirDeg.
+  useEffect(() => {
+    if (waveSim == null) return
+    const rad = MathUtils.degToRad(waveDirDeg)
+    const spread = (240 / 360) * 2 * Math.PI
+    waveSim.spectrum.primary.windDirection.value = rad
+    waveSim.spectrum.secondary.windDirection.value = rad + spread
+    waveSim.reinitializeSpectrum()
+  }, [waveSim, waveDirDeg])
 
   useEffect(() => {
     if (oceanUniforms?.tipFoamEnabled == null) return
@@ -1923,17 +2097,26 @@ export const Content: FC<{
         target={target}
         scale={turbineControls.scale}
         heightOffset={turbineControls.heightOffset}
-        yawDeg={turbineControls.yawDeg}
+        windHeadingDeg={windHeading ?? turbineControls.windDir}
+        yawOffsetDeg={turbineControls.yawOffset}
         spin={turbineControls.spin}
         spinSpeed={turbineControls.spinSpeed}
         count={farmCount ?? turbineControls.count}
-        spacing={turbineControls.spacing}
+        crosswindSpacing={turbineControls.crosswindD * ROTOR_DIAMETER_M}
+        downwindSpacing={turbineControls.downwindD * ROTOR_DIAMETER_M}
         stagger={turbineControls.stagger}
         rotorRpm={turbineRpm}
         wingsEnabled={wingsEnabled}
         heroCover={heroCover ?? turbineControls.cover}
         onHeroFocus={setHeroFocus}
       />
+      {debugControls.windArrow && (
+        <WindArrow
+          target={target}
+          windHeadingDeg={windHeading ?? turbineControls.windDir}
+          lengthM={debugControls.windArrowKm * 1000}
+        />
+      )}
       {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
           download/parse doesn't compete with the stage-1 atmosphere-LUT
           compute) and isolated in its own Suspense so loading can't blank the
@@ -1978,6 +2161,7 @@ export const Content: FC<{
           onUniformsReady={setOceanUniforms}
           onVertexUniformsReady={setVertexUniforms}
           onOceanManagerReady={setOceanManager}
+          onWaveSimReady={setWaveSim}
         />
       )}
     </>
