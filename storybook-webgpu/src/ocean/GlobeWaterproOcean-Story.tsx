@@ -35,6 +35,8 @@ import {
 import {
   AgXToneMapping,
   ArrowHelper,
+  Box3,
+  BoxGeometry,
   MathUtils,
   Matrix4,
   Mesh,
@@ -49,9 +51,10 @@ import {
   type Group,
   type Object3D,
 } from 'three'
-import { pass, toneMapping, uniform } from 'three/tsl'
+import { pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
 import * as THREE from 'three/webgpu'
 import {
+  MeshBasicNodeMaterial,
   MeshLambertNodeMaterial,
   PostProcessing,
   type Renderer,
@@ -76,7 +79,16 @@ import {
   PointOfView,
   radians,
 } from '@takram/three-geospatial'
-import { dithering, lensFlare } from '@takram/three-geospatial/webgpu'
+import {
+  cameraFar,
+  cameraNear,
+  depthToViewZ,
+  dithering,
+  inverseProjectionMatrix,
+  lensFlare,
+  projectionMatrix,
+  screenToPositionView,
+} from '@takram/three-geospatial/webgpu'
 
 import {
   applyWaterproPreset,
@@ -84,9 +96,15 @@ import {
   type WaterproPresetName,
   type WaterproPresetUniformBag,
 } from '../../../packages/ocean-ifft/src/waterpro/index.js'
+import {
+  createUnderwaterUniforms,
+  underwaterPostNode,
+} from '../../../packages/ocean-ifft/src/waterpro/index.js'
+import { gerstnerSumCPU } from '../../../packages/ocean-ifft/src/ocean/gerstner-cpu'
 import { Color } from 'three'
 
 import OceanChunksWaterpro from './OceanChunksWaterpro'
+import { TurbineCables } from './TurbineCables'
 import { CloudLayer } from './CloudLayer'
 import {
   CLOUD_PRESETS,
@@ -109,6 +127,9 @@ type VertexUniformsBag = {
   gerstnerWave1: UniformNode<THREE.Vector4>
   gerstnerWave2: UniformNode<THREE.Vector4>
   gerstnerSteepness: UniformNode<number>
+  /** Live wave-animation clock — CPU buoyancy sampling reads this so its
+   * Gerstner phases match the rendered surface. */
+  time: UniformNode<number>
 }
 
 import type { StoryFC } from '../components/createStory'
@@ -282,15 +303,36 @@ const foamTexture = oceanTextureLoader.load(
 foamTexture.wrapS = RepeatWrapping
 foamTexture.wrapT = RepeatWrapping
 
+// Ocean-local frame: X = east·oceanScale, Y = up (unit), Z = north·oceanScale,
+// origin at target + up·seaLevelOffset. Computed at the story level (not
+// inside OceanSurface) because ship buoyancy probes map world positions into
+// this frame via its inverse to sample the wave field phase-exactly.
+function computeOceanMatrix(
+  target: Vector3,
+  seaLevelOffset: number,
+  oceanScale: number
+): Matrix4 {
+  const east = new Vector3()
+  const north = new Vector3()
+  const up = new Vector3()
+  Ellipsoid.WGS84.getEastNorthUpVectors(target, east, north, up)
+
+  const result = new Matrix4().makeBasis(
+    east.multiplyScalar(oceanScale),
+    up,
+    north.multiplyScalar(oceanScale)
+  )
+  result.setPosition(target.clone().addScaledVector(up, seaLevelOffset))
+  return result
+}
+
 const OceanSurface: FC<{
-  target: Vector3
+  matrix: Matrix4
   atmosphereContext: AtmosphereContext
   envCubeTexture: THREE.CubeTexture
   onUniformsReady: (uniforms: WaterproOceanUniforms) => void
   onVertexUniformsReady: (vu: VertexUniformsBag) => void
   onOceanManagerReady: (oceanManager: any) => void
-  seaLevelOffset: number
-  oceanScale: number
   numLayers: number
   useDiagnosticMaterial: boolean
   skipDepthPrepass: boolean
@@ -301,14 +343,12 @@ const OceanSurface: FC<{
   }
   cloudShadow?: (originWorld: Node) => Node
 }> = ({
-  target,
+  matrix,
   atmosphereContext,
   envCubeTexture,
   onUniformsReady,
   onVertexUniformsReady,
   onOceanManagerReady,
-  seaLevelOffset,
-  oceanScale,
   numLayers,
   useDiagnosticMaterial,
   skipDepthPrepass,
@@ -320,20 +360,6 @@ const OceanSurface: FC<{
   const handleOceanParent = useCallback((group: THREE.Group | null) => {
     setOceanParent(group)
   }, [])
-  const matrix = useMemo(() => {
-    const east = new Vector3()
-    const north = new Vector3()
-    const up = new Vector3()
-    Ellipsoid.WGS84.getEastNorthUpVectors(target, east, north, up)
-
-    const result = new Matrix4().makeBasis(
-      east.multiplyScalar(oceanScale),
-      up,
-      north.multiplyScalar(oceanScale)
-    )
-    result.setPosition(target.clone().addScaledVector(up, seaLevelOffset))
-    return result
-  }, [oceanScale, seaLevelOffset, target])
 
   useLayoutEffect(() => {
     if (oceanParent == null) return
@@ -712,6 +738,14 @@ const TurbineFarm: FC<{
   // Undefined = visible (the model's natural state). The "base-wall" node is
   // always hidden on the hero (no control) so the engine reads clean.
   heroCover?: boolean
+  // Subsea inter-array cables fanning from the turbine bases to a hub. null
+  // hides them. Baked once by TurbineCables from the fixed layout positions.
+  cables?: {
+    connectionPoint: Vector3
+    seabedDepth: number
+    slack: number
+    radius: number
+  } | null
 }> = ({
   target,
   scale,
@@ -728,7 +762,8 @@ const TurbineFarm: FC<{
   rotorRpm,
   wingsEnabled,
   onHeroFocus,
-  heroCover
+  heroCover,
+  cables
 }) => {
   const gltfFarm = useGLTF('public/turbine-demo_compressed.glb')
   const gltfHero = useGLTF('public/turbine-demo3_compressed.glb')
@@ -817,6 +852,13 @@ const TurbineFarm: FC<{
     stagger,
   ])
 
+  // Base positions as Vector3[] for the cable router — memoised so the (one-off)
+  // Verlet cable bake only re-runs when the layout actually changes.
+  const baseVectors = useMemo(
+    () => layout.positions.map(p => new Vector3().fromArray(p)),
+    [layout]
+  )
+
   // Shared model orientation — tracks the LIVE wind so the whole turbine yaws to
   // face it (stand-in until the nacelle is a separate node). Explicit ENU basis
   // so the heading is compass-accurate: tower (local +Y) → surface up; rotor
@@ -902,8 +944,32 @@ const TurbineFarm: FC<{
           <primitive object={inst.scene} />
         </group>
       ))}
+      {cables != null && (
+        <TurbineCables
+          bases={baseVectors}
+          connectionPoint={cables.connectionPoint}
+          target={target}
+          seabedDepth={cables.seabedDepth}
+          slack={cables.slack}
+          radius={cables.radius}
+        />
+      )}
     </>
   )
+}
+
+// Shared 'Ship motion' leva values driving every ShipModel's buoyancy rig +
+// hull water occluder. Lives at the scene level (one folder, both ships).
+interface ShipMotionControls {
+  enabled: boolean
+  heaveGain: number
+  tiltGain: number
+  response: number
+  hullOcclusion: boolean
+  showOccluders: boolean
+  occLengthFrac: number
+  occWidthFrac: number
+  occTopFrac: number
 }
 
 // Single ship GLB anchored at a fixed geodetic point (Karmøy), placed on the
@@ -913,6 +979,13 @@ const TurbineFarm: FC<{
 // waterline height, east/north position and yaw are leva-tunable to seat the
 // hull on the ocean. The caller gates this behind the ocean stage + Suspense
 // (the model is ~7.7 MB, so it must not compete with stage-1 LUT compute).
+//
+// Buoyancy: four probes (bow/stern/port/starboard, spans from the GLB bbox)
+// sample the CPU mirror of the vertex-stage Gerstner sum at the ship's
+// ocean-local position. Mean height drives heave; the slope plane drives a
+// roll/pitch tilt. Both are low-pass filtered (exp smoothing, `response`
+// seconds) as cheap hull inertia. Tracks the Gerstner component only — the
+// IFFT cascade displacement is GPU-only and intentionally ignored (perf).
 const ShipModel: FC<{
   url: string
   anchor: Vector3
@@ -921,31 +994,192 @@ const ShipModel: FC<{
   eastOffset: number
   northOffset: number
   yawDeg: number
-}> = ({ url, anchor, scale, heightOffset, eastOffset, northOffset, yawDeg }) => {
+  /** Ocean-local frame (see computeOceanMatrix); inverse maps world→wave XZ. */
+  oceanMatrix: Matrix4
+  /** WGSL vertex-stage uniform bag — null until the ocean is mounted. */
+  vu: VertexUniformsBag | null
+  /** Live Gerstner amplitude (shared bag) — null until the ocean is mounted. */
+  gerstnerAmplitude: UniformNode<number> | null
+  motion: ShipMotionControls
+}> = ({
+  url,
+  anchor,
+  scale,
+  heightOffset,
+  eastOffset,
+  northOffset,
+  yawDeg,
+  oceanMatrix,
+  vu,
+  gerstnerAmplitude,
+  motion,
+}) => {
   const gltf = useGLTF(url)
   const scene = useMemo(() => gltf.scene.clone(true), [gltf.scene])
-  const { position, quaternion } = useMemo(() => {
+  const groupRef = useRef<Group>(null)
+
+  // Rest pose + world-frame probe axes. forward/starboard are the yawed ENU
+  // directions of ship-local +Z/+X.
+  const frame = useMemo(() => {
     const { east, north, up } = enuBasis(anchor)
     const yawQ = new Quaternion().setFromAxisAngle(
       new Vector3(0, 1, 0),
       MathUtils.degToRad(yawDeg)
     )
     const alignQ = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), up)
-    const q = alignQ
-      .multiply(yawQ)
-      .toArray() as [number, number, number, number]
-    const pos = anchor
+    const baseQ = alignQ.clone().multiply(yawQ)
+    const basePos = anchor
       .clone()
       .addScaledVector(east, eastOffset)
       .addScaledVector(north, northOffset)
       .addScaledVector(up, heightOffset)
-      .toArray() as [number, number, number]
-    return { position: pos, quaternion: q }
+    const forward = new Vector3(0, 0, 1).applyQuaternion(baseQ)
+    const starboard = new Vector3(1, 0, 0).applyQuaternion(baseQ)
+    return { up, baseQ, basePos, forward, starboard }
   }, [anchor, heightOffset, eastOffset, northOffset, yawDeg])
+  const position = useMemo(
+    () => frame.basePos.toArray() as [number, number, number],
+    [frame]
+  )
+  const quaternion = useMemo(
+    () => frame.baseQ.toArray() as [number, number, number, number],
+    [frame]
+  )
+
+  // Hull bounding box in GLB-local units (the group applies `scale`).
+  const hull = useMemo(() => {
+    const box = new Box3().setFromObject(scene)
+    const size = box.getSize(new Vector3())
+    const center = box.getCenter(new Vector3())
+    return { size, center, minY: box.min.y, longIsZ: size.z >= size.x }
+  }, [scene])
+
+  // World-frame probe rig: longest bbox axis = hull length.
+  const probes = useMemo(() => {
+    const axisLong = hull.longIsZ ? frame.forward : frame.starboard
+    const axisShort = hull.longIsZ ? frame.starboard : frame.forward
+    const halfL = 0.5 * scale * (hull.longIsZ ? hull.size.z : hull.size.x)
+    const halfW = 0.5 * scale * (hull.longIsZ ? hull.size.x : hull.size.z)
+    return { axisLong, axisShort, halfL: Math.max(halfL, 1), halfW: Math.max(halfW, 1) }
+  }, [hull, frame, scale])
+
+  // Invisible hull water-occluder volume. The depth pre-pass renders it with
+  // the G=1 flag material; the water shader discards its surface behind it.
+  // MUST stay inside the hull silhouette — a box poking outside the hull
+  // punches a visible hole in the ocean — hence the inset fractions. The
+  // wireframe material only shows when 'Show occluder boxes' is on.
+  //
+  // FUTURE: a rectangular box can't follow hull taper at the bow — it either
+  // pokes outside the silhouette or leaves the bow tip uncovered. If the box
+  // fit proves inadequate, the planned upgrade is a named mask mesh authored
+  // in Blender inside the ship GLB (closed low-poly interior volume named
+  // 'WaterOccluder'): detect it here by name, set userData.waterOccluder +
+  // visible=false on it, and skip the box. Fall back to this box when the GLB
+  // has no such mesh. No other code changes needed — the pre-pass flags any
+  // mesh with userData.waterOccluder (see OceanChunksWaterpro.tsx).
+  const occluder = useMemo(() => {
+    const sx = hull.size.x * (hull.longIsZ ? motion.occWidthFrac : motion.occLengthFrac)
+    const sz = hull.size.z * (hull.longIsZ ? motion.occLengthFrac : motion.occWidthFrac)
+    const sy = Math.max(hull.size.y * motion.occTopFrac, 1e-3)
+    const mesh = new Mesh(
+      new BoxGeometry(Math.max(sx, 1e-3), sy, Math.max(sz, 1e-3)),
+      new MeshBasicNodeMaterial({ wireframe: true, color: 0xff3366 })
+    )
+    mesh.position.set(hull.center.x, hull.minY + sy / 2, hull.center.z)
+    mesh.userData.waterOccluder = true
+    return mesh
+  }, [hull, motion.occLengthFrac, motion.occWidthFrac, motion.occTopFrac])
+  occluder.visible = motion.showOccluders
+  useEffect(() => {
+    return () => {
+      occluder.geometry.dispose()
+      ;(occluder.material as THREE.Material).dispose()
+    }
+  }, [occluder])
+
+  // Per-frame buoyancy. Scratch objects + smoothing state persist per ship.
+  const scratch = useMemo(
+    () => ({
+      inv: new Matrix4(),
+      p: new Vector3(),
+      disp: new Vector3(),
+      n: new Vector3(),
+      tiltQ: new Quaternion(),
+    }),
+    []
+  )
+  const smoothRef = useRef<{ heave: number; normal: Vector3; init: boolean }>({
+    heave: 0,
+    normal: new Vector3(0, 1, 0),
+    init: false,
+  })
+
+  useFrame((_, delta) => {
+    const group = groupRef.current
+    if (group == null) return
+    const { basePos, baseQ, up } = frame
+    if (vu == null || gerstnerAmplitude == null || !motion.enabled) {
+      group.position.copy(basePos)
+      group.quaternion.copy(baseQ)
+      return
+    }
+    const t = vu.time.value
+    const steep = vu.gerstnerSteepness.value
+    const strength = gerstnerAmplitude.value
+    scratch.inv.copy(oceanMatrix).invert()
+    const sampleHeight = (dir: Vector3, dist: number): number => {
+      scratch.p
+        .copy(basePos)
+        .addScaledVector(dir, dist)
+        .applyMatrix4(scratch.inv)
+      return gerstnerSumCPU(
+        scratch.p.x,
+        scratch.p.z,
+        t,
+        vu.gerstnerWave0.value,
+        vu.gerstnerWave1.value,
+        vu.gerstnerWave2.value,
+        steep,
+        strength,
+        scratch.disp
+      ).y
+    }
+    const { axisLong, axisShort, halfL, halfW } = probes
+    const hBow = sampleHeight(axisLong, halfL)
+    const hStern = sampleHeight(axisLong, -halfL)
+    const hStbd = sampleHeight(axisShort, halfW)
+    const hPort = sampleHeight(axisShort, -halfW)
+    const heave = (hBow + hStern + hStbd + hPort) / 4
+    const slopeL = (hBow - hStern) / (2 * halfL)
+    const slopeS = (hStbd - hPort) / (2 * halfW)
+    // Surface normal tilted by the probe-plane slopes, exaggerated by tiltGain.
+    scratch.n
+      .copy(up)
+      .addScaledVector(axisLong, -slopeL * motion.tiltGain)
+      .addScaledVector(axisShort, -slopeS * motion.tiltGain)
+      .normalize()
+
+    // Exponential low-pass — cheap hull inertia.
+    const sm = smoothRef.current
+    if (!sm.init) {
+      sm.normal.copy(up)
+      sm.init = true
+    }
+    const alpha = 1 - Math.exp(-delta / Math.max(motion.response, 1e-3))
+    sm.heave += (heave - sm.heave) * alpha
+    sm.normal.lerp(scratch.n, alpha).normalize()
+
+    group.position
+      .copy(basePos)
+      .addScaledVector(up, sm.heave * motion.heaveGain)
+    scratch.tiltQ.setFromUnitVectors(up, sm.normal)
+    group.quaternion.copy(scratch.tiltQ).multiply(baseQ)
+  })
 
   return (
-    <group position={position} quaternion={quaternion} scale={scale}>
+    <group ref={groupRef} position={position} quaternion={quaternion} scale={scale}>
       <primitive object={scene} />
+      {motion.hullOcclusion && <primitive object={occluder} />}
     </group>
   )
 }
@@ -991,12 +1225,17 @@ function useShip(
   anchor: Vector3,
   orbitControlsRef: { current: any }
 ): {
-  visible: boolean
-  scale: number
-  heightOffset: number
-  eastOffset: number
-  northOffset: number
-  yawDeg: number
+  controls: {
+    visible: boolean
+    scale: number
+    heightOffset: number
+    eastOffset: number
+    northOffset: number
+    yawDeg: number
+  }
+  // Reactive ECEF hull position (changes identity on offset edits) — for the
+  // cable hub. The fly-to button instead reads a live ref (leva captures once).
+  worldPos: Vector3
 } {
   const controls = useControls(def.folder, {
     visible: { value: true },
@@ -1024,15 +1263,18 @@ function useShip(
     },
     yawDeg: { value: 0, min: -180, max: 180, step: 1, label: 'Yaw (°)' },
   })
-  const worldRef = useRef(new Vector3())
-  useEffect(() => {
+  const worldPos = useMemo(() => {
     const { east, north, up } = enuBasis(anchor)
-    worldRef.current
-      .copy(anchor)
+    return anchor
+      .clone()
       .addScaledVector(east, controls.eastOffset)
       .addScaledVector(north, controls.northOffset)
       .addScaledVector(up, controls.heightOffset)
   }, [anchor, controls.eastOffset, controls.northOffset, controls.heightOffset])
+  // Mirror the latest position into a ref so the once-captured button reads it
+  // live (the standard "latest value" ref pattern; not read during render).
+  const worldRef = useRef(worldPos)
+  worldRef.current = worldPos
   useControls(def.folder, {
     'Fly to ship': button(() => {
       const oc = orbitControlsRef.current
@@ -1048,7 +1290,7 @@ function useShip(
       oc.update?.()
     }),
   })
-  return controls
+  return { controls, worldPos }
 }
 
 const SHIP_DEFS: ShipDef[] = [
@@ -1356,6 +1598,114 @@ export const Content: FC<{
     },
   })
 
+  // Ocean-local frame, shared by OceanSurface (chunk parent transform) and the
+  // ship buoyancy probes (world → wave-field XZ via its inverse). Re-anchors
+  // with the fly-to target, exactly like the rendered ocean does.
+  const oceanMatrix = useMemo(
+    () =>
+      computeOceanMatrix(
+        target,
+        oceanFrameControls.seaLevelOffset,
+        oceanFrameControls.oceanScale
+      ),
+    [target, oceanFrameControls.seaLevelOffset, oceanFrameControls.oceanScale]
+  )
+
+  // ── Underwater post effect state ─────────────────────────────────────────
+  // Camera submersion is detected on the CPU each frame (ocean-local camera Y
+  // vs the Gerstner surface height — same sampler the ships use). The post
+  // node reconstructs each pixel's position CAMERA-RELATIVE (view space) and
+  // maps it to the ocean frame via viewToOcean, composed on the CPU in double
+  // precision — going through float32 world space at ECEF magnitude would
+  // jitter the caustics UVs by ~1 m.
+  const underwaterUniforms = useMemo(() => createUnderwaterUniforms(), [])
+  const viewToOceanUniform = useMemo(() => uniform(new Matrix4()), [])
+  const underwaterTimeUniform = useMemo(() => uniform(0), [])
+  const uwScratch = useMemo(
+    () => ({
+      inv: new Matrix4(),
+      p: new Vector3(),
+      disp: new Vector3(),
+      // Hysteresis + smoothing state. The Gerstner estimate misses the IFFT
+      // cascade component (±~1 m), so a raw zero-crossing strobes the fog
+      // on/off near the surface. Enter submerged 0.35 m below the estimate,
+      // leave at 0.05 m, and ease underwaterT over ~0.2 s.
+      submerged: false,
+      t: 0,
+    }),
+    []
+  )
+  useFrame((_, delta) => {
+    underwaterTimeUniform.value += delta
+    uwScratch.inv.copy(oceanMatrix).invert()
+    camera.updateMatrixWorld()
+    viewToOceanUniform.value.multiplyMatrices(uwScratch.inv, camera.matrixWorld)
+
+    camera.getWorldPosition(uwScratch.p)
+    uwScratch.p.applyMatrix4(uwScratch.inv)
+    let surfaceY = 0
+    if (vertexUniforms != null && oceanUniforms != null) {
+      surfaceY = gerstnerSumCPU(
+        uwScratch.p.x,
+        uwScratch.p.z,
+        vertexUniforms.time.value,
+        vertexUniforms.gerstnerWave0.value,
+        vertexUniforms.gerstnerWave1.value,
+        vertexUniforms.gerstnerWave2.value,
+        vertexUniforms.gerstnerSteepness.value,
+        oceanUniforms.gerstnerAmplitude.value,
+        uwScratch.disp
+      ).y
+    }
+    const depthBelow = surfaceY - uwScratch.p.y
+    if (uwScratch.submerged) {
+      if (depthBelow < 0.05) uwScratch.submerged = false
+    } else if (depthBelow > 0.35) {
+      uwScratch.submerged = true
+    }
+    const alpha = 1 - Math.exp(-delta / 0.2)
+    uwScratch.t += ((uwScratch.submerged ? 1 : 0) - uwScratch.t) * alpha
+    underwaterUniforms.underwaterT.value = uwScratch.t
+    underwaterUniforms.cameraDepthBelow.value = Math.max(depthBelow, 0)
+  })
+
+  const underwaterControls = useControls('Underwater', {
+    enabled: { value: true },
+    murkiness: {
+      value: 0.1,
+      min: 0.05,
+      max: 5,
+      step: 0.05,
+      label: 'Murkiness',
+    },
+    waterTint: { value: '#1f4755', label: 'Water tint' },
+    fogIntensity: { value: 0.3, min: 0, max: 10, step: 0.1, label: 'Fog intensity' },
+    ambientFalloff: {
+      value: 0.04,
+      min: 0,
+      max: 0.2,
+      step: 0.005,
+      label: 'Depth darkening',
+    },
+    causticsIntensity: { value: 0.1, min: 0, max: 5, step: 0.05 },
+    causticsScale: { value: 70, min: 1, max: 300, step: 1 },
+    causticsSpeed: { value: 0.8, min: 0, max: 3, step: 0.05 },
+    causticsSharpness: { value: 4.5, min: 1, max: 16, step: 0.5 },
+  })
+  useEffect(() => {
+    const u = underwaterUniforms
+    u.enabled.value = underwaterControls.enabled ? 1 : 0
+    u.absorptionScale.value = underwaterControls.murkiness
+    const tint = new Color().setStyle(underwaterControls.waterTint)
+    u.waterTint.value.set(tint.r, tint.g, tint.b)
+    u.fogIntensity.value = underwaterControls.fogIntensity
+    u.ambientFalloff.value = underwaterControls.ambientFalloff
+    u.causticsIntensity.value = underwaterControls.causticsIntensity
+    u.causticsScale.value = underwaterControls.causticsScale
+    u.causticsSpeed.value = underwaterControls.causticsSpeed
+    u.causticsSharpness.value = underwaterControls.causticsSharpness
+  }, [underwaterControls, underwaterUniforms])
+
   const oceanMaterialParams = useControls('Ocean Material', {
     wireframe: { value: false },
   })
@@ -1427,12 +1777,78 @@ export const Content: FC<{
     locationPresets.Karmøy.latitude,
     locationPresets.Karmøy.height
   )
-  const ship0Controls = useShip(SHIP_DEFS[0], shipAnchor, orbitControlsRef)
-  const ship1Controls = useShip(SHIP_DEFS[1], shipAnchor, orbitControlsRef)
+  const ship0 = useShip(SHIP_DEFS[0], shipAnchor, orbitControlsRef)
+  const ship1 = useShip(SHIP_DEFS[1], shipAnchor, orbitControlsRef)
   const ships = [
-    { url: SHIP_DEFS[0].url, controls: ship0Controls },
-    { url: SHIP_DEFS[1].url, controls: ship1Controls },
+    { url: SHIP_DEFS[0].url, controls: ship0.controls },
+    { url: SHIP_DEFS[1].url, controls: ship1.controls },
   ]
+
+  // Shared buoyancy + hull-occlusion rig for both ships. Motion amplitude
+  // follows the Wind→Waves storm blending automatically because ShipModel
+  // reads the live gerstnerAmplitude uniform every frame.
+  const shipMotionControls: ShipMotionControls = useControls('Ship motion', {
+    enabled: { value: true },
+    heaveGain: { value: 1, min: 0, max: 3, step: 0.05, label: 'Heave gain' },
+    tiltGain: { value: 2, min: 0, max: 8, step: 0.1, label: 'Tilt gain' },
+    response: {
+      value: 1.5,
+      min: 0.1,
+      max: 5,
+      step: 0.05,
+      label: 'Response (s)',
+    },
+    hullOcclusion: { value: true, label: 'Hull occlusion' },
+    showOccluders: { value: false, label: 'Show occluder boxes' },
+    occLengthFrac: {
+      value: 0.75,
+      min: 0.1,
+      max: 1,
+      step: 0.01,
+      label: 'Occluder length',
+    },
+    occWidthFrac: {
+      value: 0.8,
+      min: 0.1,
+      max: 1,
+      step: 0.01,
+      label: 'Occluder width',
+    },
+    occTopFrac: {
+      value: 0.3,
+      min: 0.02,
+      max: 1,
+      step: 0.01,
+      label: 'Occluder height',
+    },
+  })
+
+  // Auto-routed subsea inter-array cables — every turbine string runs to a hub
+  // (Ship 1, the substation vessel). Baked once; see TurbineCables.
+  const cableControls = useControls('Cables', {
+    enabled: { value: true },
+    seabedDepth: { value: 35, min: 0, max: 200, step: 1, label: 'Seabed depth (m)' },
+    slack: { value: 0.05, min: 0, max: 0.5, step: 0.01 },
+    radius: { value: 1.2, min: 0.1, max: 10, step: 0.1, label: 'Radius (m)' },
+  })
+  const cables = useMemo(
+    () =>
+      cableControls.enabled
+        ? {
+            connectionPoint: ship0.worldPos,
+            seabedDepth: cableControls.seabedDepth,
+            slack: cableControls.slack,
+            radius: cableControls.radius,
+          }
+        : null,
+    [
+      cableControls.enabled,
+      cableControls.seabedDepth,
+      cableControls.slack,
+      cableControls.radius,
+      ship0.worldPos,
+    ]
+  )
 
   const cameraControls = useControls('Camera', {
     minDistance: { value: 1, min: 0.1, max: 5000, step: 0.1 },
@@ -1774,7 +2190,33 @@ export const Content: FC<{
         skyNode.starsNode = starsNode
       }
     }
-    const lensFlareNode = lensFlare(aerialNode)
+    // Underwater fog + caustics between aerial perspective and lens flare —
+    // the flare reads the fogged scene, so the sun flare dims naturally when
+    // submerged. Depth → view-space position uses the SAME log-depth path as
+    // AerialPerspectiveNode (renderer runs logarithmicDepthBuffer at globe
+    // scale); ocean-frame mapping stays camera-relative for f32 precision.
+    const uwViewZ = depthToViewZ(
+      depthNode.r,
+      cameraNear(camera),
+      cameraFar(camera),
+      { perspective: true, logarithmic: true }
+    )
+    const uwPosView = screenToPositionView(
+      uv(),
+      depthNode.r,
+      uwViewZ,
+      projectionMatrix(camera),
+      inverseProjectionMatrix(camera)
+    )
+    const underwaterNode = underwaterPostNode({
+      inputNode: aerialNode,
+      oceanPos: viewToOceanUniform.mul(vec4(uwPosView, 1)).xyz,
+      dist: uwPosView.length(),
+      time: underwaterTimeUniform,
+      u: underwaterUniforms,
+    })
+
+    const lensFlareNode = lensFlare(underwaterNode)
     const toneMappingNode = toneMapping(
       AgXToneMapping,
       uniform(atmosphereControls.exposure),
@@ -1803,6 +2245,9 @@ export const Content: FC<{
     overlayScene,
     renderer,
     scene,
+    underwaterUniforms,
+    viewToOceanUniform,
+    underwaterTimeUniform,
   ])
 
   const atmosphereDate = useMemo(() => {
@@ -2142,6 +2587,7 @@ export const Content: FC<{
         wingsEnabled={wingsEnabled}
         heroCover={heroCover ?? turbineControls.cover}
         onHeroFocus={setHeroFocus}
+        cables={cables}
       />
       {debugControls.windArrow && (
         <WindArrow
@@ -2167,6 +2613,10 @@ export const Content: FC<{
                 eastOffset={controls.eastOffset}
                 northOffset={controls.northOffset}
                 yawDeg={controls.yawDeg}
+                oceanMatrix={oceanMatrix}
+                vu={vertexUniforms}
+                gerstnerAmplitude={oceanUniforms?.gerstnerAmplitude ?? null}
+                motion={shipMotionControls}
               />
             </Suspense>
           )
@@ -2185,11 +2635,9 @@ export const Content: FC<{
       </TilesRenderer>
       {oceanDebugParams.enableOcean && !disableOcean && (
         <OceanSurface
-          target={target}
+          matrix={oceanMatrix}
           atmosphereContext={context}
           envCubeTexture={(envNode as any).renderTarget.texture}
-          seaLevelOffset={oceanFrameControls.seaLevelOffset}
-          oceanScale={oceanFrameControls.oceanScale}
           numLayers={oceanDebugParams.numLayers}
           useDiagnosticMaterial={oceanDebugParams.useDiagnosticMaterial}
           skipDepthPrepass={oceanDebugParams.skipDepthPrepass}

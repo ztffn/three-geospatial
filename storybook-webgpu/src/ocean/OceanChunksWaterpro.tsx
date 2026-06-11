@@ -41,7 +41,10 @@ import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
 // @ts-expect-error JS module
 import OceanChunkManager from '../../../packages/ocean-ifft/src/ocean/ocean.js'
 // @ts-expect-error JS module
-import { createLinearDepthMaterial } from '../../../packages/ocean-ifft/src/ocean/depth-material.js'
+import {
+  createLinearDepthMaterial,
+  createLinearDepthOccluderMaterial,
+} from '../../../packages/ocean-ifft/src/ocean/depth-material.js'
 import { chunkVertexStageWGSL as vertexStageWGSL } from './chunkVertexStageWGSL'
 import {
   DEFAULT_GERSTNER_WAVES,
@@ -105,7 +108,9 @@ interface OceanChunksWaterproProps {
     waveSim: WaveSimulation
     gerstner: GerstnerOverlay
     uniforms: WaterproOceanUniforms
-    /** WGSL-vertex-stage uniforms (lodScale, swell, gerstner waves). */
+    /** WGSL-vertex-stage uniforms (lodScale, swell, gerstner waves). `time`
+     * is the live wave-animation clock — CPU wave sampling (ship buoyancy)
+     * must read it so its Gerstner phases match the rendered surface. */
     vertexUniforms: {
       lodScale: UniformNode<number>
       swellScale: UniformNode<number>
@@ -114,6 +119,7 @@ interface OceanChunksWaterproProps {
       gerstnerWave1: UniformNode<Vector4>
       gerstnerWave2: UniformNode<Vector4>
       gerstnerSteepness: UniformNode<number>
+      time: UniformNode<number>
     }
     oceanManager: OceanManager
   }) => void
@@ -204,6 +210,12 @@ export default function OceanChunksWaterpro({
   // cameraFar=1e8 — HalfFloat precision collapses near-geometry depth ratios
   // to ~0 and shoreline foam blows out across the whole ocean.
   const depthMaterial = useMemo(() => createLinearDepthMaterial(), [])
+  // G=1 variant for meshes flagged userData.waterOccluder (ship hull
+  // interiors). The water shader discards its surface behind these.
+  const occluderDepthMaterial = useMemo(
+    () => createLinearDepthOccluderMaterial(),
+    []
+  )
   const depthTargetRef = useRef<RenderTarget | null>(null)
   if (depthTargetRef.current == null) {
     const w = Math.max(1, size.width)
@@ -429,6 +441,7 @@ export default function OceanChunksWaterpro({
             gerstnerWave1: vertexUniforms.gerstnerWave1,
             gerstnerWave2: vertexUniforms.gerstnerWave2,
             gerstnerSteepness: vertexUniforms.gerstnerSteepness,
+            time: vertexUniforms.time,
           },
           oceanManager,
         })
@@ -534,9 +547,16 @@ export default function OceanChunksWaterpro({
 
     const overridden: Array<{ mesh: Mesh; mat: Material }> = []
     const hiddenTransparent: Mesh[] = []
+    const shownOccluders: Mesh[] = []
     defaultScene.traverse(obj => {
       if (!(obj as any).isMesh) return
-      if (!obj.visible) return
+      // Water-occluder volumes are kept INVISIBLE in the main pass (they'd
+      // otherwise punch holes in the main depth buffer / cost a draw) and are
+      // shown only for the duration of this pre-pass, with the G=1 flag
+      // material. They still respect the ancestor-visibility walk below, so
+      // hiding a ship hides its occluder too.
+      const isWaterOccluder = obj.userData?.waterOccluder === true
+      if (!obj.visible && !isWaterOccluder) return
       // scene.traverse() ignores visibility for iteration — children of a
       // hidden group still show up. Walk the parent chain so we don't
       // material-swap meshes inside an ancestor that's been hidden (e.g.
@@ -551,6 +571,15 @@ export default function OceanChunksWaterpro({
       const mesh = obj as Mesh
       const mat = (mesh as any).material
       if (mat == null) return
+      if (isWaterOccluder) {
+        if (!mesh.visible) {
+          mesh.visible = true
+          shownOccluders.push(mesh)
+        }
+        overridden.push({ mesh, mat: mat as Material })
+        mesh.material = occluderDepthMaterial as unknown as Material
+        return
+      }
       // Multi-material assignment via array breaks when we replace with a
       // single material — the geometry groups still expect N materials.
       if (Array.isArray(mat)) return
@@ -599,6 +628,9 @@ export default function OceanChunksWaterpro({
       })
       hiddenTransparent.forEach(mesh => {
         mesh.visible = true
+      })
+      shownOccluders.forEach(mesh => {
+        mesh.visible = false
       })
       if (oceanGroup != null && wasVisible !== undefined)
         oceanGroup.visible = wasVisible

@@ -52,6 +52,7 @@ export interface WaterColorOutputs {
   waterColumnDepth: any
   isObjectInFront: any  // 1 when terrain is closer than ocean (occludes from camera)
   isDynamic: any        // 1 when underwater geometry is dynamic; 0 from our static pre-pass
+  occluderInFront: any  // 1 when a flagged water-occluder volume (G=1) is closer than ocean
 }
 
 export function buildWaterColumnDepth(params: WaterColumnDepthParams): any {
@@ -88,14 +89,29 @@ export function buildIsObjectInFront(params: WaterColumnDepthParams): any {
   return closer.mul(params.depthTextureEnabled)
 }
 
+// 1 when a water-occluder volume is in front of the ocean fragment. Occluder
+// depth-material writes G=1 (normal geometry G=0); the white CLEAR also leaves
+// G=1 but with R=1 → terrainDepth≈cameraFar, which never passes the in-front
+// comparison. The water shader discards where this is 1 — hides the surface
+// inside ship hulls etc.
+export function buildOccluderInFront(params: WaterColumnDepthParams): any {
+  const texel = tslTexture(params.depthTexture, screenUV)
+  const terrainDepth = texel.r.mul(cameraFar.sub(cameraNear)).add(cameraNear)
+  const oceanDepth = params.oceanDepth ?? positionView.z.negate()
+  const flagged = texel.g.greaterThan(float(0.5)).toFloat()
+  const closer = terrainDepth.lessThan(oceanDepth).toFloat()
+  return flagged.mul(closer).mul(params.depthTextureEnabled)
+}
+
 export function waterColorNode(params: WaterColorParams): WaterColorOutputs {
   const waterColumnDepth = buildWaterColumnDepth(params)
   const isObjectInFront = buildIsObjectInFront(params)
+  const occluderInFront = buildOccluderInFront(params)
   // No dynamic-object channel in our static pre-pass — always 0.
   const isDynamic = float(0)
 
   const colorT = smoothstep(float(0), params.depthFalloff, waterColumnDepth)
   const waterColor = mix(params.shallowColor, params.deepColor, colorT)
 
-  return { waterColor, waterColumnDepth, isObjectInFront, isDynamic }
+  return { waterColor, waterColumnDepth, isObjectInFront, isDynamic, occluderInFront }
 }
