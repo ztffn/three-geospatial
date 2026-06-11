@@ -109,7 +109,8 @@ import {
   useShip,
   type ShipMotionControls,
 } from './ShipModel'
-import { TurbineCables } from './TurbineCables'
+import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
+import { CABLE_BAKE } from './cable-bake'
 import { CloudLayer } from './CloudLayer'
 import {
   CLOUD_PRESETS,
@@ -593,6 +594,27 @@ const CameraRig: FC<{
 // over open ocean the tile sits at sea level, so the camera is free to descend
 // into the water. The IFFT ocean is a separate object and never raycast here.
 const _clampRay = new THREE.Raycaster()
+// Bridges the TilesRenderer context out to scene code that lives OUTSIDE the
+// <TilesRenderer> subtree (cable floor raycasts need the tiles group, and a
+// re-sample signal whenever streaming changes the raycastable surface — the
+// cables' coverage lock decides whether that actually re-bakes anything).
+const TilesTerrainBridge: FC<{
+  onTerrain: (group: Object3D | null) => void
+  onLoadEnd: () => void
+}> = ({ onTerrain, onLoadEnd }) => {
+  const tiles = useContext(TilesRendererContext) as any
+  useEffect(() => {
+    if (tiles == null) return
+    onTerrain(tiles.group ?? null)
+    tiles.addEventListener('tiles-load-end', onLoadEnd)
+    return () => {
+      tiles.removeEventListener('tiles-load-end', onLoadEnd)
+      onTerrain(null)
+    }
+  }, [tiles, onTerrain, onLoadEnd])
+  return null
+}
+
 const TerrainClamp: FC<{ seaLevelRadius: number }> = ({ seaLevelRadius }) => {
   const camera = useThree(({ camera }) => camera)
   const controls = useThree(({ controls }) => controls as any)
@@ -707,12 +729,19 @@ const TurbineFarm: FC<{
   // always hidden on the hero (no control) so the engine reads clean.
   heroCover?: boolean
   // Subsea inter-array cables fanning from the turbine bases to a hub. null
-  // hides them. Baked once by TurbineCables from the fixed layout positions.
+  // hides them. Baked by TurbineCables onto raycast-sampled terrain floors
+  // (coverage-locked — see TurbineCables header), flat fallback elsewhere.
   cables?: {
     connectionPoint: Vector3
     seabedDepth: number
     slack: number
     radius: number
+    terrain: Object3D | null
+    terrainVersion: number
+    maxFloorY: number
+    baked: CableBakeSnapshot | null
+    rebakeNonce: number
+    onBake: (snapshot: CableBakeSnapshot) => void
   } | null
 }> = ({
   target,
@@ -920,6 +949,12 @@ const TurbineFarm: FC<{
           seabedDepth={cables.seabedDepth}
           slack={cables.slack}
           radius={cables.radius}
+          terrain={cables.terrain}
+          terrainVersion={cables.terrainVersion}
+          maxFloorY={cables.maxFloorY}
+          baked={cables.baked}
+          rebakeNonce={cables.rebakeNonce}
+          onBake={cables.onBake}
         />
       )}
     </>
@@ -1498,18 +1533,70 @@ export const Content: FC<{
   // (Ship 1, the substation vessel). Baked once; see TurbineCables.
   const cableControls = useControls('Cables', {
     enabled: { value: true },
-    seabedDepth: { value: 35, min: 0, max: 200, step: 1, label: 'Seabed depth (m)' },
-    slack: { value: 0.05, min: 0, max: 0.5, step: 0.01 },
-    radius: { value: 1.2, min: 0.1, max: 10, step: 0.1, label: 'Radius (m)' },
+    // Fallback floor only — where terrain raycasts have coverage, the
+    // cables drape onto the sampled tile surface instead.
+    seabedDepth: { value: 35, min: -100, max: 200, step: 1, label: 'Seabed depth (m)' },
+    slack: { value: 0.3, min: 0, max: 0.5, step: 0.01 },
+    radius: { value: 0.7, min: 0.1, max: 10, step: 0.1, label: 'Radius (m)' },
   })
+  // Latest LIVE bake snapshot (ref — onBake fires during render). The button
+  // emits a ready-to-paste cable-bake.ts so production loads skip the solve.
+  const latestCableBakeRef = useRef<CableBakeSnapshot | null>(null)
+  const handleCableBake = useCallback((snapshot: CableBakeSnapshot) => {
+    latestCableBakeRef.current = snapshot
+  }, [])
+  const [cableRebakeNonce, setCableRebakeNonce] = useState(0)
+  useControls('Cables', {
+    // Clears the converged bake and solves fresh against the CURRENT tiles —
+    // use after the terrain has visibly finished loading.
+    Rebake: button(() => {
+      setCableRebakeNonce(v => v + 1)
+    }),
+    'Copy bake': button(() => {
+      const snapshot = latestCableBakeRef.current
+      if (snapshot == null) {
+        console.warn('[TurbineCables] no live bake to copy yet (snapshot in use or still solving)')
+        return
+      }
+      const file =
+        "// Committed cable-bake snapshot for TurbineCables. When the snapshot's sig\n" +
+        '// matches the live scene inputs, cables load instantly from these node paths\n' +
+        '// (no terrain raycasts, no Verlet solve, no tile-streaming wait). Regenerate:\n' +
+        '// let the scene bake (console shows coverage converging), click the Cables\n' +
+        "// leva folder's 'Copy bake' button, and paste the clipboard over this file.\n" +
+        '\n' +
+        "import type { CableBakeSnapshot } from './TurbineCables'\n" +
+        '\n' +
+        'export const CABLE_BAKE: CableBakeSnapshot | null =\n  ' +
+        JSON.stringify(snapshot) +
+        '\n'
+      console.log(file)
+      void navigator.clipboard?.writeText(file)
+    }),
+  })
+  // Terrain handle + re-sample counter from the TilesTerrainBridge. The
+  // cables' coverage lock turns most of these signals into no-ops.
+  const [cableTerrain, setCableTerrain] = useState<Object3D | null>(null)
+  const [cableTerrainVersion, setCableTerrainVersion] = useState(0)
+  const handleCableTerrainLoadEnd = useCallback(() => {
+    setCableTerrainVersion(v => v + 1)
+  }, [])
   const cables = useMemo(
     () =>
-      cableControls.enabled
+      cableControls.enabled && !disableOcean
         ? {
             connectionPoint: ship0.worldPos,
             seabedDepth: cableControls.seabedDepth,
             slack: cableControls.slack,
             radius: cableControls.radius,
+            terrain: cableTerrain,
+            terrainVersion: cableTerrainVersion,
+            baked: CABLE_BAKE,
+            rebakeNonce: cableRebakeNonce,
+            onBake: handleCableBake,
+            // Sampled floors are clamped under the rendered ocean surface —
+            // offshore photogrammetry bakes the sea itself as geometry.
+            maxFloorY: oceanFrameControls.seaLevelOffset - 3,
           }
         : null,
     [
@@ -1518,6 +1605,12 @@ export const Content: FC<{
       cableControls.slack,
       cableControls.radius,
       ship0.worldPos,
+      cableTerrain,
+      cableTerrainVersion,
+      oceanFrameControls.seaLevelOffset,
+      handleCableBake,
+      cableRebakeNonce,
+      disableOcean,
     ]
   )
 
@@ -2303,6 +2396,10 @@ export const Content: FC<{
         />
         <TilesPlugin plugin={TileMaterialReplacementPlugin} />
         <TerrainClamp seaLevelRadius={target.length()} />
+        <TilesTerrainBridge
+          onTerrain={setCableTerrain}
+          onLoadEnd={handleCableTerrainLoadEnd}
+        />
       </TilesRenderer>
       {oceanDebugParams.enableOcean && !disableOcean && (
         <OceanSurface
@@ -2390,6 +2487,12 @@ export const Story: StoryFC<{}, StoryArgs> = () => {
         onInit: r => {
           r.outputColorSpace = SRGBColorSpace
           r.toneMapping = THREE.NoToneMapping
+          // Compose modelViewMatrix on the CPU (f64) instead of in-shader. The
+          // node default multiplies cameraViewMatrix × modelWorldMatrix on the
+          // GPU in f32 — at ECEF magnitude (~6.4e6 m translations in BOTH)
+          // that cancels catastrophically and static geometry visibly jitters
+          // (~0.4 m) as the camera moves; thin meshes like cables show it worst.
+          r.highPrecision = true
           r.library.addLight(AtmosphereLightNode, AtmosphereLight)
         },
       }}
