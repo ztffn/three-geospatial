@@ -11,13 +11,14 @@ import {
   exp,
   float,
   floor,
+  Fn,
   fract,
+  If,
   max,
   min,
   mix,
   pow,
   saturate,
-  select,
   sin,
   smoothstep,
   sqrt,
@@ -26,17 +27,37 @@ import {
   vec3,
   vec4,
 } from 'three/tsl'
-import { Vector3 } from 'three'
+import { Color, Vector3 } from 'three'
 import type { UniformNode } from 'three/webgpu'
 
 // Clear-ocean absorption per metre (red dies first). Scaled by
 // `absorptionScale` so one slider sets visibility.
 const ABSORPTION = [0.3, 0.08, 0.04] as const
 
+// Single source of truth for the tunable defaults (user-tuned on the Karmøy
+// twin scene). Consumers building UI controls (leva) should read their
+// default values from here so package and scene cannot drift; the tint is
+// kept as an sRGB hex string and converted once below.
+export const UNDERWATER_DEFAULTS = {
+  absorptionScale: 0.1,
+  waterTint: '#1f4755',
+  fogIntensity: 0.3,
+  ambientFalloff: 0.04,
+  causticsIntensity: 0.1,
+  causticsScale: 70,
+  causticsSpeed: 0.8,
+  causticsSharpness: 4.5,
+  /** Caustics fade in between these two depths below the surface (metres) —
+   * the band starts BELOW the wave envelope so the displaced water surface
+   * itself never catches caustics when seen from below. */
+  causticsMinDepth: 4,
+  causticsFullDepth: 8,
+} as const
+
 export interface UnderwaterUniforms {
   /** Master switch (leva). 0 disables the whole effect. */
   enabled: UniformNode<number>
-  /** 1 when the camera is below the wave surface (driven per frame). */
+  /** Smoothed 0..1 camera submersion (driven per frame with hysteresis). */
   underwaterT: UniformNode<number>
   /** Camera depth below the surface in metres (driven per frame). */
   cameraDepthBelow: UniformNode<number>
@@ -53,23 +74,29 @@ export interface UnderwaterUniforms {
   causticsScale: UniformNode<number>
   causticsSpeed: UniformNode<number>
   causticsSharpness: UniformNode<number>
+  /** Depth below the surface where caustics start fading in (metres). */
+  causticsMinDepth: UniformNode<number>
+  /** Depth below the surface where caustics are fully visible (metres). */
+  causticsFullDepth: UniformNode<number>
 }
 
 export function createUnderwaterUniforms(): UnderwaterUniforms {
+  const d = UNDERWATER_DEFAULTS
+  const tint = new Color(d.waterTint) // sRGB hex → linear
   return {
     enabled: uniform(1),
     underwaterT: uniform(0),
     cameraDepthBelow: uniform(0),
-    // Defaults are the user-tuned values from the Karmøy twin scene.
-    absorptionScale: uniform(0.1),
-    // Linear RGB of #1f4755.
-    waterTint: uniform(new Vector3(0.0137, 0.0633, 0.0908)),
-    fogIntensity: uniform(0.3),
-    ambientFalloff: uniform(0.04),
-    causticsIntensity: uniform(0.1),
-    causticsScale: uniform(70),
-    causticsSpeed: uniform(0.8),
-    causticsSharpness: uniform(4.5),
+    absorptionScale: uniform(d.absorptionScale),
+    waterTint: uniform(new Vector3(tint.r, tint.g, tint.b)),
+    fogIntensity: uniform(d.fogIntensity),
+    ambientFalloff: uniform(d.ambientFalloff),
+    causticsIntensity: uniform(d.causticsIntensity),
+    causticsScale: uniform(d.causticsScale),
+    causticsSpeed: uniform(d.causticsSpeed),
+    causticsSharpness: uniform(d.causticsSharpness),
+    causticsMinDepth: uniform(d.causticsMinDepth),
+    causticsFullDepth: uniform(d.causticsFullDepth),
   }
 }
 
@@ -107,7 +134,7 @@ const voronoiEdge = (p: any, t: any): any => {
 // Bright caustic webbing: 1 at cell borders, sharpened toward 0 inside cells.
 // max() floor avoids pow(0, y) — undefined on some GPU drivers (NaN on Metal).
 const caustic = (p: any, t: any, sharpness: any): any =>
-  pow(max(saturate(float(1).sub(voronoiEdge(p, t))), float(1e-4)), sharpness)
+  pow(max(voronoiEdge(p, t).oneMinus(), float(1e-4)), sharpness)
 
 export interface UnderwaterPostParams {
   /** Scene colour (vec4) — typically the aerial-perspective output. */
@@ -129,58 +156,70 @@ export interface UnderwaterPostParams {
 export function underwaterPostNode(params: UnderwaterPostParams): any {
   const { inputNode, oceanPos, dist, time, u } = params
 
-  // Per-channel transmittance over the camera→pixel water path.
-  const absorption = vec3(...ABSORPTION).mul(u.absorptionScale)
-  const transmittance = exp(dist.mul(absorption).negate())
+  return Fn(() => {
+    const result = vec4(inputNode).toVar()
 
-  // Ambient light decays with how deep the CAMERA sits; the fog converges to
-  // the tint at that ambient level so deep dives read dark, not glowing.
-  const ambient = exp(u.cameraDepthBelow.mul(u.ambientFalloff).negate())
-  const fogColor = u.waterTint.mul(ambient).mul(u.fogIntensity)
+    // Real branch (If, not select/mix): the condition is uniform-derived, so
+    // the whole dispatch takes the same path and the fog + 4 Voronoi
+    // evaluations cost nothing while the camera is above water (>99% of the
+    // time). WGSL select() would evaluate both operands every pixel — and a
+    // NaN in the fogged branch would bleed into the above-water image.
+    const amount = saturate(u.underwaterT).mul(u.enabled)
+    If(amount.greaterThan(float(1e-3)), () => {
+      // Per-channel transmittance over the camera→pixel water path.
+      const absorption = vec3(...ABSORPTION).mul(u.absorptionScale)
+      const transmittance = exp(dist.mul(absorption).negate())
 
-  // Caustics on submerged geometry only (fade in over the first metres below
-  // the surface), dimming with the pixel's own depth and fogging with
-  // distance like everything else.
-  //
-  // pixelDepth MUST be clamped to >= 0 before the exp(): pixels whose
-  // reconstructed position is ABOVE the sea plane (sky/horizon at depth≈1
-  // reconstructs ~1e8 m away → oceanPos.y hugely positive) give a hugely
-  // negative pixelDepth, exp() overflows to Inf, and Inf · submerged(=0) is
-  // NaN → black regions sweeping the screen as the camera turns.
-  // Fade-in starts BELOW the wave envelope (~±4 m at storm amplitudes) so the
-  // water surface itself — whose troughs dip below the y=0 plane — never
-  // catches caustics when seen from below; only genuinely submerged geometry
-  // (hull bottoms, cables, seabed) does.
-  const pixelDepth = oceanPos.y.negate()
-  const submerged = smoothstep(float(4), float(8), pixelDepth)
-  const causticFade = exp(max(pixelDepth, float(0)).mul(u.ambientFalloff).negate())
-  const cuv = oceanPos.xz.div(u.causticsScale)
-  const ct = time.mul(u.causticsSpeed)
-  const aberration = vec2(0.012, 0.007)
-  const layer2 = caustic(cuv.mul(1.83).add(vec2(5.2, 1.3)), ct.mul(1.23), u.causticsSharpness)
-  const causticsRGB = vec3(
-    caustic(cuv.add(aberration), ct, u.causticsSharpness),
-    caustic(cuv, ct, u.causticsSharpness),
-    caustic(cuv.sub(aberration), ct, u.causticsSharpness)
-  )
-    .mul(layer2)
-    .mul(submerged)
-    .mul(causticFade)
-    .mul(u.causticsIntensity)
+      // Ambient light decays with how deep the CAMERA sits; the fog converges
+      // to the tint at that ambient level so deep dives read dark, not glowing.
+      const ambient = exp(u.cameraDepthBelow.mul(u.ambientFalloff).negate())
+      const fogColor = u.waterTint.mul(ambient).mul(u.fogIntensity)
 
-  const lit = inputNode.rgb.add(causticsRGB)
-  const fogged = lit
-    .mul(transmittance)
-    .add(fogColor.mul(vec3(1, 1, 1).sub(transmittance)))
+      // Caustics on submerged geometry only, dimming with the pixel's own
+      // depth and fogging with distance like everything else.
+      //
+      // pixelDepth MUST be clamped to >= 0 before the exp(): pixels whose
+      // reconstructed position is ABOVE the sea plane (sky/horizon at depth≈1
+      // reconstructs ~1e8 m away → oceanPos.y hugely positive) give a hugely
+      // negative pixelDepth, exp() overflows to Inf, and Inf · submerged(=0)
+      // is NaN → black regions sweeping the screen as the camera turns.
+      const pixelDepth = oceanPos.y.negate()
+      const submerged = smoothstep(
+        u.causticsMinDepth,
+        u.causticsFullDepth,
+        pixelDepth
+      )
+      const causticFade = exp(
+        max(pixelDepth, float(0)).mul(u.ambientFalloff).negate()
+      )
+      const cuv = oceanPos.xz.div(u.causticsScale)
+      const ct = time.mul(u.causticsSpeed)
+      const aberration = vec2(0.012, 0.007)
+      const layer2 = caustic(
+        cuv.mul(1.83).add(vec2(5.2, 1.3)),
+        ct.mul(1.23),
+        u.causticsSharpness
+      )
+      const causticsRGB = vec3(
+        caustic(cuv.add(aberration), ct, u.causticsSharpness),
+        caustic(cuv, ct, u.causticsSharpness),
+        caustic(cuv.sub(aberration), ct, u.causticsSharpness)
+      )
+        .mul(layer2)
+        .mul(submerged)
+        .mul(causticFade)
+        .mul(u.causticsIntensity)
 
-  // underwaterT is a SMOOTHED 0..1 (driven with hysteresis on the CPU) so the
-  // fog eases in instead of strobing at the surface crossing. The outer
-  // select fully isolates the above-water image: with plain mix, a NaN in the
-  // fogged branch would bleed through (NaN·0 = NaN).
-  const amount = saturate(u.underwaterT).mul(u.enabled)
-  const blended = mix(inputNode.rgb, fogged, amount)
-  return vec4(
-    select(amount.greaterThan(float(1e-3)), blended, inputNode.rgb),
-    inputNode.a
-  )
+      const lit = inputNode.rgb.add(causticsRGB)
+      const fogged = lit
+        .mul(transmittance)
+        .add(fogColor.mul(transmittance.oneMinus()))
+
+      // underwaterT is smoothed on the CPU (hysteresis + easing) so the fog
+      // fades in rather than cutting at the surface crossing.
+      result.assign(vec4(mix(inputNode.rgb, fogged, amount), inputNode.a))
+    })
+
+    return result
+  })()
 }

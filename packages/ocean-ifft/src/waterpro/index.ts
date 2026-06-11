@@ -111,6 +111,7 @@ export type {
 export {
   underwaterPostNode,
   createUnderwaterUniforms,
+  UNDERWATER_DEFAULTS,
 } from './nodes/underwater.js'
 export type {
   UnderwaterUniforms,

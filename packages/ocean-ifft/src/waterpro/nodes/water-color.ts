@@ -55,16 +55,32 @@ export interface WaterColorOutputs {
   occluderInFront: any  // 1 when a flagged water-occluder volume (G=1) is closer than ocean
 }
 
-export function buildWaterColumnDepth(params: WaterColumnDepthParams): any {
+// Single decode of the depth pre-pass texel shared by every builder below —
+// waterColorNode emits ONE texture sample / depth reconstruction instead of
+// one per output (TSL creates a distinct TextureNode per tslTexture() call
+// and will not dedupe them).
+interface DecodedDepth {
+  texel: any
+  terrainDepth: any
+  oceanDepth: any
+}
+
+function decodeDepth(params: WaterColumnDepthParams): DecodedDepth {
+  const texel = tslTexture(params.depthTexture, screenUV)
+  const terrainDepth = texel.r.mul(cameraFar.sub(cameraNear)).add(cameraNear)
+  const oceanDepth = params.oceanDepth ?? positionView.z.negate()
+  return { texel, terrainDepth, oceanDepth }
+}
+
+function columnDepthFrom(
+  params: WaterColumnDepthParams,
+  { terrainDepth, oceanDepth }: DecodedDepth
+): any {
   const posWorld = params.oceanPositionWorld ?? positionWorld
   const viewDir = normalize(cameraPosition.sub(posWorld))
   const viewDirY = viewDir.y
   const openWaterDepth = params.waterDepth.div(min(abs(viewDirY), float(0.1)))
 
-  const depthR = tslTexture(params.depthTexture, screenUV).r
-  const terrainDepth = depthR.mul(cameraFar.sub(cameraNear)).add(cameraNear)
-
-  const oceanDepth = params.oceanDepth ?? positionView.z.negate()
   const wcdRaw = terrainDepth.sub(oceanDepth)
 
   const noGeometry = terrainDepth
@@ -79,10 +95,10 @@ export function buildWaterColumnDepth(params: WaterColumnDepthParams): any {
   return mix(openWaterDepth, wcdFromTex, params.depthTextureEnabled)
 }
 
-export function buildIsObjectInFront(params: WaterColumnDepthParams): any {
-  const depthR = tslTexture(params.depthTexture, screenUV).r
-  const terrainDepth = depthR.mul(cameraFar.sub(cameraNear)).add(cameraNear)
-  const oceanDepth = params.oceanDepth ?? positionView.z.negate()
+function isObjectInFrontFrom(
+  params: WaterColumnDepthParams,
+  { terrainDepth, oceanDepth }: DecodedDepth
+): any {
   // 1 when terrain is strictly closer than the ocean fragment and the depth
   // texture is enabled.
   const closer = terrainDepth.lessThan(oceanDepth).toFloat()
@@ -94,19 +110,32 @@ export function buildIsObjectInFront(params: WaterColumnDepthParams): any {
 // G=1 but with R=1 → terrainDepth≈cameraFar, which never passes the in-front
 // comparison. The water shader discards where this is 1 — hides the surface
 // inside ship hulls etc.
-export function buildOccluderInFront(params: WaterColumnDepthParams): any {
-  const texel = tslTexture(params.depthTexture, screenUV)
-  const terrainDepth = texel.r.mul(cameraFar.sub(cameraNear)).add(cameraNear)
-  const oceanDepth = params.oceanDepth ?? positionView.z.negate()
+function occluderInFrontFrom(
+  params: WaterColumnDepthParams,
+  { texel, terrainDepth, oceanDepth }: DecodedDepth
+): any {
   const flagged = texel.g.greaterThan(float(0.5)).toFloat()
   const closer = terrainDepth.lessThan(oceanDepth).toFloat()
   return flagged.mul(closer).mul(params.depthTextureEnabled)
 }
 
+export function buildWaterColumnDepth(params: WaterColumnDepthParams): any {
+  return columnDepthFrom(params, decodeDepth(params))
+}
+
+export function buildIsObjectInFront(params: WaterColumnDepthParams): any {
+  return isObjectInFrontFrom(params, decodeDepth(params))
+}
+
+export function buildOccluderInFront(params: WaterColumnDepthParams): any {
+  return occluderInFrontFrom(params, decodeDepth(params))
+}
+
 export function waterColorNode(params: WaterColorParams): WaterColorOutputs {
-  const waterColumnDepth = buildWaterColumnDepth(params)
-  const isObjectInFront = buildIsObjectInFront(params)
-  const occluderInFront = buildOccluderInFront(params)
+  const decoded = decodeDepth(params)
+  const waterColumnDepth = columnDepthFrom(params, decoded)
+  const isObjectInFront = isObjectInFrontFrom(params, decoded)
+  const occluderInFront = occluderInFrontFrom(params, decoded)
   // No dynamic-object channel in our static pre-pass — always 0.
   const isDynamic = float(0)
 
