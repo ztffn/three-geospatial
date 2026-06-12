@@ -55,7 +55,11 @@ EOF
 echo "→ waiting for health on :${HEALTH_PORT}"
 for i in $(seq 1 20); do
   if ssh "${SSH_USER}@${SSH_HOST}" curl -sf "http://127.0.0.1:${HEALTH_PORT}/health" >/dev/null; then
-    echo "✓ deployed ${IMAGE_BASE}:sha-${SHORT_SHA} — healthy"
+    # Pin the deployed image so VPS reboots / bare compose-up runs keep it
+    # (shell env beats .env, so the next deploy's TWIN_IMAGE still wins).
+    ssh "${SSH_USER}@${SSH_HOST}" \
+      "echo TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA} | sudo tee ${COMPOSE_DIR}/.env >/dev/null"
+    echo "✓ deployed ${IMAGE_BASE}:sha-${SHORT_SHA} — healthy + pinned in ${COMPOSE_DIR}/.env"
     exit 0
   fi
   sleep 3
