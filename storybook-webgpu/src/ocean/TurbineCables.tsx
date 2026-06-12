@@ -197,11 +197,19 @@ function bakeCable(
   const g = -9.81 * dt * dt // gravity contribution per Verlet step
   const STEPS = 240
   const ITER = 20
-  // Hard ceiling: a laid cable can never rise above its highest attachment.
-  // This makes sky arches GEOMETRICALLY impossible whatever the solver does —
-  // any surplus that tries to escape vertically is forced sideways instead,
-  // which is exactly the lateral meander we want.
-  const ceilY = Math.max(a.y, b.y) + 2
+  // PER-NODE ceiling — the invariant is "never free-floating", not "below
+  // the attachments". A node may rest ON the floor (even a floor above the
+  // attachments: a cable climbing a seabed ridge is physically correct), and
+  // it may hang along the straight line between attachments (the descents),
+  // but it may never be far above BOTH. A scalar ceiling can't express this:
+  // clamping to the attachments tunnels cables UNDER high seabed; letting
+  // the floor win builds sky arches on junk floor humps. The max of the two
+  // references per node forbids exactly the pathology and nothing else.
+  const ceil: number[] = []
+  for (let i = 0; i <= N; i++) {
+    const chordY = a.y + (b.y - a.y) * (i / N)
+    ceil.push(Math.max(floors[i], chordY) + 2)
+  }
   for (let s = 0; s < STEPS; s++) {
     // Integrate interior nodes (endpoints pinned).
     for (let i = 1; i < N; i++) {
@@ -230,8 +238,10 @@ function bakeCable(
         p1.set(p1.x - dx * diff * w1, p1.y - dy * diff * w1, p1.z - dz * diff * w1)
       }
       for (let i = 1; i < N; i++) {
+        // Independent clamps; floor ≤ ceil[i] by construction, so order is
+        // safe and a node always has a valid band to live in.
         if (pos[i].y < floors[i]) pos[i].y = floors[i]
-        else if (pos[i].y > ceilY) pos[i].y = ceilY
+        if (pos[i].y > ceil[i]) pos[i].y = ceil[i]
       }
     }
   }
@@ -282,6 +292,9 @@ export const TurbineCables: FC<TurbineCablesProps> = ({
   // immediate solve on the next evaluation.
   const nonceRef = useRef(rebakeNonce)
   const forcedRef = useRef(false)
+  // True after any manual rebake — live results outrank the committed
+  // snapshot until the page reloads.
+  const liveOverrideRef = useRef(false)
 
   const { enuToEcef, geometries } = useMemo(() => {
     // Manual rebake: wipe converged state, solve fresh this evaluation.
@@ -291,6 +304,7 @@ export const TurbineCables: FC<TurbineCablesProps> = ({
       deferRef.current = null
       cacheRef.current = null
       forcedRef.current = true
+      liveOverrideRef.current = true
     }
     // Local ENU basis at the farm target. Columns: x=east, y=up, z=north — so
     // gravity is simply -y.
@@ -327,11 +341,14 @@ export const TurbineCables: FC<TurbineCablesProps> = ({
 
     // Pre-baked snapshot short-circuit: matching sig → geometry straight from
     // the stored node paths. No raycasts, no Verlet, instant and identical on
-    // every load. A manual Rebake (forcedRef) MUST bypass this — otherwise
-    // the button just rebuilds the committed snapshot and a stale/bad bake
-    // can never be replaced from the UI.
+    // every load. A manual Rebake (forcedRef) MUST bypass this — and once a
+    // rebake has happened, the live result stays in charge for the rest of
+    // the session (liveOverrideRef): without that, the very next
+    // tiles-load-end re-evaluates, the sig still matches, and the stale
+    // snapshot silently replaces the geometry the user just baked.
     if (
       !forcedRef.current &&
+      !liveOverrideRef.current &&
       baked != null &&
       baked.sig === inputSig &&
       baked.cables.length === edges.length
@@ -450,18 +467,19 @@ export const TurbineCables: FC<TurbineCablesProps> = ({
           if (raw[i] != null) last = raw[i] as number
           else if (Number.isNaN(filled[i])) filled[i] = last as number
         }
+        // UPPER ENVELOPE (windowed max), not an average: averaging rides the
+        // middle of the photogrammetry noise, leaving the cable under every
+        // local high — "below the seabed" wherever the visible LOD sits
+        // above the mean. Riding the envelope means the worst case is a
+        // cable slightly proud over a dip, which reads fine.
         const smoothed = new Array<number>(n)
         for (let i = 0; i < n; i++) {
-          let sum = 0
-          let count = 0
+          let hi = -Infinity
           for (let w = -2; w <= 2; w++) {
             const k = i + w
-            if (k >= 0 && k < n) {
-              sum += filled[k]
-              count++
-            }
+            if (k >= 0 && k < n && filled[k] > hi) hi = filled[k]
           }
-          smoothed[i] = Math.round((sum / count) * 4) / 4
+          smoothed[i] = Math.round(hi * 4) / 4
         }
         return smoothed
       })
@@ -504,9 +522,31 @@ export const TurbineCables: FC<TurbineCablesProps> = ({
     )
 
     forcedRef.current = false
-    const nodesPerCable = cables.map(({ a, b, floors }) =>
-      bakeCable(a, b, floors, slack, segments)
-    )
+    if (baked != null && baked.sig !== inputSig) {
+      console.log(
+        '[TurbineCables] snapshot sig mismatch — live bake (layout/wind, ' +
+          'target, or cable params changed since the snapshot was captured)'
+      )
+    }
+    const nodesPerCable = cables.map(({ a, b, floors }, e) => {
+      const nodes = bakeCable(a, b, floors, slack, segments)
+      // Bound validation — if this ever fires, a clamp has a hole again.
+      // Mirror of bakeCable's per-node ceiling: floor or chord line + margin.
+      let worst = 0
+      for (let i = 0; i < nodes.length; i++) {
+        const chordY = a.y + (b.y - a.y) * (i / (nodes.length - 1))
+        const over = nodes[i].y - (Math.max(floors[i], chordY) + 2.5)
+        if (over > worst) worst = over
+      }
+      if (worst > 0) {
+        console.warn(
+          `[TurbineCables] cable ${e} free-floats ${worst.toFixed(1)} m ` +
+            `above its floor/chord ceiling (endpoints ${a.y.toFixed(1)}/` +
+            `${b.y.toFixed(1)})`
+        )
+      }
+      return nodes
+    })
     const geometries = nodesPerCable.map(nodes => {
       // Smooth tube through the frozen node path, kept in the LOCAL frame —
       // the group matrix below carries the ECEF offset (vertex-level f32
