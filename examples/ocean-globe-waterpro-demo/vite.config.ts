@@ -30,6 +30,15 @@ const staticAssets: Array<{ from: string; to: string }> = [
     from: path.join(storybookAssets, 'turbine-demo3_compressed.glb'),
     to: 'public/turbine-demo3_compressed.glb'
   },
+  // Service vessels (ShipModel.tsx SHIP_DEFS) — buoyancy + hull occluders.
+  {
+    from: path.join(storybookAssets, 'ship-demo-compressed.glb'),
+    to: 'public/ship-demo-compressed.glb'
+  },
+  {
+    from: path.join(storybookAssets, 'ship-demo-small-compressed.glb'),
+    to: 'public/ship-demo-small-compressed.glb'
+  },
   // Huma brand mark (top-left overlay in main.tsx): favicon + HumaDisplay
   // wordmark font. Served at /public/brand/* (dev via sirv, build via copy).
   {
