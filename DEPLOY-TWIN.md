@@ -8,6 +8,15 @@ Read the "Start here" section first; the rest is reference.
 
 # Deploying the Digital Twin → `twin.humatopia.ai`
 
+> **HOST CHANGE (2026-06):** the mediaserver died (`nvme0` failure); everything
+> now runs on the OVH VPS — `ssh -i ~/.ssh/huma-ovh-vps ubuntu@51.255.201.253`,
+> twin at `/opt/huma-twin` (`127.0.0.1:13002`), same `humatopia-home` tunnel
+> (NO Cloudflare changes were needed). Authoritative host facts live in
+> `huma/huma-infra/runbooks/HOSTS.md` + `vps-recovery.md` — read those first;
+> mediaserver-era host facts below are historical. `ops/deploy-twin.sh`
+> defaults are updated for the VPS (local image build, no GHCR push — the VPS
+> has pull-only rights).
+
 ## Start here (orientation for a new session)
 
 - **Artifact**: the standalone Vite SPA at `examples/ocean-globe-waterpro-demo/`

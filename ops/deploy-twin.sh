@@ -7,10 +7,10 @@
 
 set -euo pipefail
 
-SSH_HOST="${TWIN_SSH_HOST:-100.81.225.107}"
-SSH_USER="${TWIN_SSH_USER:-steffen}"
-DEPLOY_USER="${TWIN_DEPLOY_USER:-huma-deploy}"
-IMAGE_BASE="${TWIN_IMAGE_BASE:-ghcr.io/huma-energy/humatopia-twin}"
+SSH_HOST="${TWIN_SSH_HOST:-51.255.201.253}"  # OVH VPS (mediaserver died 2026-06; see huma-infra/runbooks/HOSTS.md)
+SSH_USER="${TWIN_SSH_USER:-ubuntu}"  # key: ~/.ssh/huma-ovh-vps
+DEPLOY_USER="${TWIN_DEPLOY_USER:-ubuntu}"  # no huma-deploy user on the VPS
+IMAGE_BASE="${TWIN_IMAGE_BASE:-humatopia-twin}"  # local image; VPS has GHCR pull-only
 BUILD_DIR="${TWIN_BUILD_DIR:-/home/${SSH_USER}/twin-build}"
 COMPOSE_DIR="${TWIN_COMPOSE_DIR:-/opt/huma-twin}"
 HEALTH_PORT="${TWIN_HEALTH_PORT:-13002}"
@@ -39,17 +39,16 @@ echo "→ building + pushing amd64 image (tokens via build-arg, not committed)"
 ssh "${SSH_USER}@${SSH_HOST}" bash <<EOF
 set -euo pipefail
 cd ${BUILD_DIR}
-docker buildx build --builder huma-builder --platform linux/amd64 --push \
+docker buildx build --builder huma-builder --platform linux/amd64 --load \
   --build-arg STORYBOOK_ION_API_TOKEN='${TWIN_ION_TOKEN}' \
   --build-arg STORYBOOK_GOOGLE_MAP_API_KEY='${TWIN_GMAPS_KEY}' \
   -f Dockerfile ${TAG_FLAGS} .
 EOF
 
 echo "→ pulling + recreating huma-twin"
-ssh "${SSH_USER}@${SSH_HOST}" sudo -u "${DEPLOY_USER}" bash <<EOF
+ssh "${SSH_USER}@${SSH_HOST}" sudo bash <<EOF
 set -euo pipefail
 cd ${COMPOSE_DIR}
-TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA} docker compose -f docker-compose.twin.yml pull
 TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA} docker compose -f docker-compose.twin.yml up -d --force-recreate
 EOF
 
