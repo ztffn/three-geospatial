@@ -68,6 +68,25 @@ export const SHIP_DEFS: ShipDef[] = [
     eastOffset: -10,
     northOffset: -20,
   },
+  // Patrol ship outside Bodø (own scenario; anchored at the Bodø preset).
+  {
+    folder: 'Patrol ship',
+    url: 'public/patrolship-compressed.glb',
+    scale: 1,
+    heightOffset: 26,
+    eastOffset: 0,
+    northOffset: 0,
+  },
+  // Offshore platform in the Norwegian Sea (own scenario; static — no
+  // buoyancy, the caller passes motion disabled).
+  {
+    folder: 'Platform',
+    url: 'public/platform-compressed.glb',
+    scale: 1,
+    heightOffset: 26,
+    eastOffset: 0,
+    northOffset: 0,
+  },
 ]
 
 // One ship's debug rig: a leva folder (visibility, scale, waterline, east/north
@@ -178,6 +197,13 @@ export const ShipModel: FC<{
   /** Live Gerstner amplitude (shared bag) — null until the ocean is mounted. */
   gerstnerAmplitude: UniformNode<number> | null
   motion: ShipMotionControls
+  /** Whether this model should punch an invisible hull volume into the water
+   * pre-pass. Ships need it; static above-water structures such as production
+   * platforms do not. */
+  waterOcclusion?: boolean
+  /** Surfaces the buoyancy-animated group (the live deck frame) to the host —
+   * the FPS rig rides it so a player standing on deck moves with the hull. */
+  onGroup?: (group: Group | null) => void
 }> = ({
   url,
   anchor,
@@ -190,10 +216,19 @@ export const ShipModel: FC<{
   vu,
   gerstnerAmplitude,
   motion,
+  waterOcclusion = true,
+  onGroup,
 }) => {
   const gltf = useGLTF(url)
   const scene = useMemo(() => gltf.scene.clone(true), [gltf.scene])
   const groupRef = useRef<Group>(null)
+
+  useEffect(() => {
+    onGroup?.(groupRef.current)
+    return () => {
+      onGroup?.(null)
+    }
+  }, [onGroup])
 
   // Rest pose + world-frame probe axes. forward/starboard are the yawed ENU
   // directions of ship-local +Z/+X. The group transform is written every frame
@@ -353,7 +388,9 @@ export const ShipModel: FC<{
   return (
     <group ref={groupRef} scale={scale}>
       <primitive object={scene} />
-      {motion.hullOcclusion && <primitive object={occluder} />}
+      {waterOcclusion && motion.hullOcclusion && (
+        <primitive object={occluder} />
+      )}
     </group>
   )
 }

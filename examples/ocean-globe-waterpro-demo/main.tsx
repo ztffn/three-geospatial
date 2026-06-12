@@ -6,8 +6,8 @@
 // no fixed timer, no hope-based reveal. Also renders the digital-twin DOM
 // overlay siblings: the top-left Huma brand mark (BrandMark, ported from the
 // humatopia-frontend sidebar), the live MET conditions HUD + forecast scrubber
-// (DigitalTwinUI, fed by the active scene location), and a collapsed Leva debug
-// panel.
+// + camera/scenario panels (DigitalTwinUI, fed by the active scene location),
+// and a collapsed Leva debug panel.
 
 // requestIdleCallback shim — set BEFORE any package import.
 // packages/atmosphere/src/webgpu/AtmosphereLUTNode.ts's `timeSlice` helper
@@ -52,8 +52,10 @@ import { WebGPURenderer, type Renderer } from 'three/webgpu'
 import {
   DigitalTwinUI,
   type CameraControlsState,
-  type Poi
+  type CameraMode,
+  type ScenarioControlsState
 } from './ui/DigitalTwinUI'
+import { SCENARIOS, type Scenario, type Viewpoint } from './ui/scenarios'
 import { modelTurbine } from './ui/turbineModel'
 import { useMetForecast } from './ui/useMetForecast'
 
@@ -71,26 +73,51 @@ import {
 const rootElement = document.getElementById('root')
 const unsupportedElement = document.getElementById('unsupported')
 
-// Curated fly-to POIs: our Karmøy setup first, the real offshore wind farms,
-// then Oslo for a turbine-free view. `name` matches the scene preset key;
-// `label` is the (shorter) button text.
-const POIS: Poi[] = (
-  [
-    ['Karmøy', 'Karmøy', 15],
-    ['Hywind Tampen', 'Hywind Tampen', 11],
-    ['Zefyros', 'Zefyros', 1],
-    ['Oslo', 'Oslo', 0],
-    ['Bergen', 'Bergen', 0]
-  ] as const
-).map(([name, label, turbines]) => ({
-  name,
-  label,
-  turbines,
-  longitude: locationPresets[name].longitude,
-  latitude: locationPresets[name].latitude
-}))
 const ZOOM_MIN = 5
 const ZOOM_MAX = 4000
+
+// First-person spawn pose for a viewpoint: its declared spawn, or — when none
+// is declared — derived from the viewpoint itself (its lon/lat at ~eye level,
+// or its camera aim offset from the scenario anchor). Platform spawns ('ship')
+// resolve against the live deck frame scene-side; lon/lat are still passed as
+// the geodetic fallback context.
+function spawnFor(
+  scenario: Scenario,
+  viewpoint: Viewpoint
+): {
+  longitude: number
+  latitude: number
+  height?: number
+  offsetENU?: [number, number, number]
+  platform?: string
+  headingDeg?: number
+  pitchDeg?: number
+} | null {
+  const anchor =
+    scenario.preset != null
+      ? locationPresets[scenario.preset as keyof typeof locationPresets]
+      : null
+  const spawn = viewpoint.spawn
+  const longitude =
+    spawn?.longitude ?? viewpoint.longitude ?? anchor?.longitude
+  const latitude = spawn?.latitude ?? viewpoint.latitude ?? anchor?.latitude
+  if (longitude == null || latitude == null) return null
+  const offsetENU =
+    spawn?.offsetENU ?? (spawn == null ? viewpoint.aimOffsetENU : undefined)
+  return {
+    longitude,
+    latitude,
+    height:
+      spawn?.height ??
+      (offsetENU != null || spawn?.platform != null
+        ? anchor?.height
+        : (viewpoint.height ?? 20) + 2),
+    offsetENU,
+    platform: spawn?.platform,
+    headingDeg: spawn?.headingDeg ?? viewpoint.headingDeg,
+    pitchDeg: spawn?.pitchDeg
+  }
+}
 
 if (rootElement == null) {
   throw new Error('Root element not found')
@@ -235,13 +262,98 @@ const App: FC = () => {
   const [wingsOn, setWingsOn] = useState(true)
   // Hero-turbine cover toggle (only the hero GLB carries this node).
   const [coverOn, setCoverOn] = useState(true)
-  const [flyTo, setFlyTo] = useState<Poi | null>(null)
+  // Fly command for the CameraRig. POIs carry just name+lon/lat; scenario
+  // viewpoints add aim height / camera-only ENU aim offset + heading/pitch
+  // (full camera presets).
+  const [flyTo, setFlyTo] = useState<{
+    name: string
+    longitude: number
+    latitude: number
+    height?: number
+    aimOffsetENU?: [number, number, number]
+    headingDeg?: number
+    pitchDeg?: number
+  } | null>(null)
 
-  // Flying to a POI also sets the farm size to that site's real unit count.
-  const handleFlyTo = useCallback((poi: Poi) => {
-    setFlyTo(poi)
-    setTurbineCount(poi.turbines)
+  // Scenario selection (ScenarioPanel, bottom-right). The scene loads at
+  // Karmøy with the farm up, so that scenario starts active.
+  const [activeScenario, setActiveScenario] = useState<string | null>('karmoy')
+  const [activeViewpoint, setActiveViewpoint] = useState<string | null>(
+    'turbine'
+  )
+
+  // Camera mode (orbit / first-person) + the FPS spawn pose. The nonce forces
+  // a respawn even when re-entering FPS at the same scenario.
+  const [cameraMode, setCameraMode] = useState<CameraMode>('orbit')
+  const [fpsSpawn, setFpsSpawn] = useState<
+    | (NonNullable<ReturnType<typeof spawnFor>> & { nonce: number })
+    | null
+  >(null)
+  const spawnNonceRef = useRef(0)
+
+  const respawnAt = useCallback((scenario: Scenario, viewpoint: Viewpoint) => {
+    const spawn = spawnFor(scenario, viewpoint)
+    if (spawn == null) return
+    setFpsSpawn({ ...spawn, nonce: ++spawnNonceRef.current })
   }, [])
+
+  const handleCameraMode = useCallback(
+    (mode: CameraMode) => {
+      setCameraMode(mode)
+      if (mode === 'fps') {
+        const scenario =
+          SCENARIOS.find(s => s.id === activeScenario) ?? SCENARIOS[0]
+        const viewpoint =
+          scenario.viewpoints.find(v => v.id === activeViewpoint) ??
+          scenario.viewpoints[0]
+        respawnAt(scenario, viewpoint)
+      }
+    },
+    [activeScenario, activeViewpoint, respawnAt]
+  )
+
+  // Flying to a scenario viewpoint: full camera preset (aim height or
+  // camera-only ENU offset, landing distance via the zoom command,
+  // heading/pitch) + the scenario's farm size. Preset-anchored scenarios
+  // (Karmøy) keep the location pinned to the preset across viewpoints, so the
+  // farm and baked cables never re-centre; only the camera aim moves.
+  // In FPS mode the orbit fly is moot (the rig is unmounted) — the location
+  // still moves, and the player respawns at the scenario's spawn point.
+  const handleScenarioSelect = useCallback(
+    (scenario: Scenario, viewpoint: Viewpoint) => {
+      const anchor =
+        scenario.preset != null
+          ? locationPresets[scenario.preset as keyof typeof locationPresets]
+          : null
+      const longitude = viewpoint.longitude ?? anchor?.longitude
+      const latitude = viewpoint.latitude ?? anchor?.latitude
+      if (longitude == null || latitude == null) {
+        throw new Error(
+          `Scenario '${scenario.id}' viewpoint '${viewpoint.id}' has neither coordinates nor a preset anchor`
+        )
+      }
+      setFlyTo({
+        // The preset name keeps Content on the preset location (stable target).
+        name: scenario.preset ?? scenario.label,
+        longitude,
+        latitude,
+        height: viewpoint.height,
+        aimOffsetENU: viewpoint.aimOffsetENU,
+        headingDeg: viewpoint.headingDeg,
+        pitchDeg: viewpoint.pitchDeg
+      })
+      if (viewpoint.distance != null) {
+        commandZoom(viewpoint.distance)
+      }
+      setTurbineCount(scenario.turbines ?? 0)
+      setActiveScenario(scenario.id)
+      setActiveViewpoint(viewpoint.id)
+      if (cameraMode === 'fps') {
+        respawnAt(scenario, viewpoint)
+      }
+    },
+    [commandZoom, cameraMode, respawnAt]
+  )
 
   // Single source of truth for forecast-driven state, shared by the DOM cards
   // and the 3D turbine. Lives here (not in DigitalTwinUI) so the modelled rotor
@@ -315,6 +427,8 @@ const App: FC = () => {
           windSpeed={sample?.windSpeed ?? null}
           clockMs={selected}
           flyTo={flyTo}
+          cameraMode={cameraMode}
+          fpsSpawn={fpsSpawn}
           farmCount={turbineCount}
           autoRotate={autoRotate}
           zoomDistance={zoom}
@@ -342,22 +456,36 @@ const App: FC = () => {
         now={clampedNow}
         selected={selected}
         onScrub={setScrubbed}
+        ais={SCENARIOS.find(s => s.id === activeScenario)?.ais ?? null}
         cameraControls={
           {
-            pois: POIS,
-            activePoi: location.name,
-            onFlyTo: handleFlyTo,
+            mode: cameraMode,
+            onMode: handleCameraMode,
             autoRotate,
             onAutoRotate: setAutoRotate,
             zoom: liveZoom,
             zoomMin: ZOOM_MIN,
             zoomMax: ZOOM_MAX,
-            onZoom: commandZoom,
-            wingsOn,
-            onWings: setWingsOn,
-            coverOn,
-            onCover: setCoverOn
+            onZoom: commandZoom
           } satisfies CameraControlsState
+        }
+        scenarioControls={
+          {
+            scenarios: SCENARIOS,
+            activeScenario,
+            activeViewpoint,
+            onSelect: handleScenarioSelect,
+            // Registry the scenarios' `settings` ids resolve against — the
+            // wind-farm toggles live here now (moved from the camera panel).
+            settings: {
+              rotorSpin: {
+                label: 'Rotor spin',
+                on: wingsOn,
+                onChange: setWingsOn
+              },
+              cover: { label: 'Cover', on: coverOn, onChange: setCoverOn }
+            }
+          } satisfies ScenarioControlsState
         }
       />
       {/* Debug controls: kept, but collapsed by default and out of the way

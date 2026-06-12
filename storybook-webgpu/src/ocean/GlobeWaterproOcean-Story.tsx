@@ -168,6 +168,10 @@ export const locationPresets = {
   // Hywind Demo / Unitech Zefyros — ~10 km SW of Karmøy. Approx: the marinelink
   // listing's own coords (63.0,7.0) contradict its "west of Karmøy" text.
   Zefyros: { longitude: 5.04, latitude: 59.16, height: 20 },
+  // At sea ~7 km NW of Bodø (patrol-ship scenario anchor).
+  'Bodø': { longitude: 14.25, latitude: 67.3, height: 20 },
+  // Open Vestfjorden / Norwegian Sea, ~50 km out from Bodø (platform scenario).
+  'Norwegian Sea': { longitude: 13.2, latitude: 67.5, height: 20 },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -421,12 +425,35 @@ const easeInOut = (t: number): number =>
 const CameraRig: FC<{
   target: Vector3
   focus?: Vector3 | null
+  // Explicit camera destination (scenario sub-viewpoints: ship, underwater).
+  // Overrides the default destination (focus/target), and a CHANGE to it
+  // triggers a fly even when the location target is unchanged — same-site
+  // viewpoint hops without moving the farm. Null → default behaviour.
+  aim?: Vector3 | null
   zoomDistance?: number
+  // Per-viewpoint camera attitude (scenario presets). Omitted → the module
+  // defaults (heading 180, pitch -20). Like the defaults, applied for the
+  // whole fly — the camera snaps to the new attitude at fly start.
+  headingDeg?: number
+  pitchDeg?: number
+  // Land exactly at zoomDistance even with no turbine focus: the fly-to
+  // carried an explicit aim height (deliberately placed on/above terrain),
+  // so the turbine-free overview clamp would be wrong.
+  landExact?: boolean
   // Reports the camera's live distance to the orbit target when at rest
   // (including after a mouse-wheel zoom), so a host slider can track it.
   // Suppressed mid-fly and mid-slider-ease to avoid fighting those commands.
   onDistance?: (distance: number) => void
-}> = ({ target, focus, zoomDistance, onDistance }) => {
+}> = ({
+  target,
+  focus,
+  aim = null,
+  zoomDistance,
+  headingDeg,
+  pitchDeg,
+  landExact = false,
+  onDistance
+}) => {
   const camera = useThree(({ camera }) => camera)
   const controls = useThree(({ controls }) => controls as any)
 
@@ -441,6 +468,7 @@ const CameraRig: FC<{
   } | null>(null)
   const appliedZoom = useRef<number | null>(null)
   const lastTarget = useRef<Vector3 | null>(null)
+  const lastAim = useRef<Vector3 | null>(null)
   const tmpAim = useRef(new Vector3())
   const lastEmitted = useRef(-1)
 
@@ -454,12 +482,11 @@ const CameraRig: FC<{
   const place = useCallback(
     (aim: Vector3, dist: number) => {
       const cam = new THREE.PerspectiveCamera()
-      new PointOfView(dist, radians(heading), radians(pitch)).decompose(
-        aim,
-        cam.position,
-        cam.quaternion,
-        cam.up
-      )
+      new PointOfView(
+        dist,
+        radians(headingDeg ?? heading),
+        radians(pitchDeg ?? pitch)
+      ).decompose(aim, cam.position, cam.quaternion, cam.up)
       camera.position.copy(cam.position)
       camera.quaternion.copy(cam.quaternion)
       camera.up.copy(cam.up)
@@ -470,7 +497,7 @@ const CameraRig: FC<{
         controls.update?.()
       }
     },
-    [camera, controls]
+    [camera, controls, headingDeg, pitchDeg]
   )
 
   // Initial placement; afterwards, a target change starts a fly-to. Depends on
@@ -480,12 +507,17 @@ const CameraRig: FC<{
   // planet (black) until something re-runs this. So wait for controls, then place.
   useLayoutEffect(() => {
     if (controls?.target == null) return
-    const aim = aimFor()
+    const startAim = aimFor()
     const dist = zoomDistance ?? distance
+    // An explicit-aim change (same-site viewpoint hop) starts a fly even when
+    // the location target is unchanged.
+    const aimChanged =
+      (lastAim.current == null) !== (aim == null) ||
+      (lastAim.current != null && aim != null && !lastAim.current.equals(aim))
     if (lastTarget.current == null) {
-      place(aim, dist)
+      place(startAim, dist)
       appliedZoom.current = dist
-    } else if (!lastTarget.current.equals(target)) {
+    } else if (!lastTarget.current.equals(target) || aimChanged) {
       const fromAim = controls?.target?.clone() ?? lastTarget.current.clone()
       const fromDist =
         controls?.target != null
@@ -494,7 +526,7 @@ const CameraRig: FC<{
       // Angular separation drives how far the camera pulls out mid-arc.
       const sep = Math.acos(
         MathUtils.clamp(
-          fromAim.clone().normalize().dot(aim.clone().normalize()),
+          fromAim.clone().normalize().dot(startAim.clone().normalize()),
           -1,
           1
         )
@@ -503,7 +535,7 @@ const CameraRig: FC<{
         t: 0,
         dur: 1.6 + (sep / Math.PI) * 1.8,
         fromAim,
-        toAim: aim,
+        toAim: startAim,
         fromDist,
         toDist: dist,
         bump: (sep / Math.PI) * 1.2e7 // up to ~globe scale for antipodal jumps
@@ -511,8 +543,9 @@ const CameraRig: FC<{
       appliedZoom.current = dist
     }
     lastTarget.current = target.clone()
+    lastAim.current = aim?.clone() ?? null
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, controls])
+  }, [target, aim, controls])
 
   useFrame((_, dt) => {
     if (controls?.target == null) return
@@ -521,24 +554,29 @@ const CameraRig: FC<{
       const f = fly.current
       f.t = Math.min(1, f.t + dt / f.dur)
       const e = easeInOut(f.t)
-      // Destination is the hero engine (`focus`, the nacelle/axle), not the sea-
-      // level location. Framing on the focus means a close zoom lands the right
-      // distance from the nacelle — not stranded ~80 m below it at the surface,
-      // which (nearly radially under the hub) drives OrbitControls into a
-      // degenerate pole and shows the planet interior. Read live so the ~1-frame
-      // `focus` lag self-corrects; fall back to the surface target if the site
-      // has no turbines (focus null).
-      const destAim = focus ?? f.toAim
-      const aim = geoSlerp(f.fromAim, destAim, e, tmpAim.current)
+      // Destination precedence: explicit aim (scenario sub-viewpoint) > hero
+      // engine (`focus`, the nacelle/axle) > the sea-level location. Framing on
+      // the focus means a close zoom lands the right distance from the nacelle —
+      // not stranded ~80 m below it at the surface, which (nearly radially under
+      // the hub) drives OrbitControls into a degenerate pole and shows the
+      // planet interior. Read live so the ~1-frame `focus` lag self-corrects;
+      // fall back to the surface target if the site has no turbines (focus null).
+      const destAim = aim ?? focus ?? f.toAim
+      const curAim = geoSlerp(f.fromAim, destAim, e, tmpAim.current)
       // Turbine-free sites (focus null) land at a city overview, never the close
       // zoom — their target is underground onshore (see overviewDistance).
+      // Unless the fly carries an explicit aim or aim height (landExact): then
+      // the aim is deliberately placed and the commanded distance is
+      // authoritative.
       const landDist =
-        focus != null ? f.toDist : Math.max(f.toDist, overviewDistance)
+        aim != null || focus != null || landExact
+          ? f.toDist
+          : Math.max(f.toDist, overviewDistance)
       const dist =
         MathUtils.lerp(f.fromDist, landDist, e) + f.bump * Math.sin(Math.PI * e)
-      // place() copies `aim` into controls.target, so at t=1 the orbit centre is
-      // the focus — no separate post-landing recentre needed.
-      place(aim, dist)
+      // place() copies the current aim into controls.target, so at t=1 the
+      // orbit centre is the destination — no separate post-landing recentre.
+      place(curAim, dist)
       if (f.t >= 1) {
         controls.update?.()
         fly.current = null
@@ -584,6 +622,276 @@ const CameraRig: FC<{
       controls.update?.()
     }
   }, [controls, focus])
+
+  return null
+}
+
+// First-person free-fly rig (deploy 'fps' camera mode). WASD moves on the
+// local ENU tangent plane relative to the view heading, Space/C move along
+// the surface normal, Shift sprints, left-drag looks around. No gravity and
+// no terrain collision by design — coupling movement to raycasts against the
+// streamed photogrammetry (±30 m noise) would judder; spawns are placed at
+// safe heights instead. The ENU basis is re-derived from the camera position
+// every frame, so long walks stay tangent to the globe.
+//
+// Platform riding: when a `platform` (the ship's buoyancy-animated group) is
+// provided and the camera is near it, the platform's frame-to-frame world
+// transform delta is applied to the camera — standing on the deck, you heave
+// and tilt with the hull instead of watching it move through you. The ride
+// weight fades with distance so walking away never pops.
+// Person scale relative to real-world metres. The scene's meshes (ship GLB at
+// its tuned scale) read ~2× larger than their nominal metre size, so a "real"
+// 1.7 m eye height felt like a giant — shrink the whole person (eye height +
+// speeds together, they're one scale cue) to match the meshes. Tune this one
+// number if the human scale still feels off.
+const FPS_PERSON_SCALE = 0.5
+const FPS_WALK_SPEED = 2.5 * FPS_PERSON_SCALE // m/s — human walking pace
+const FPS_SPRINT_MULT = 5
+const FPS_LOOK_SPEED = 0.25 // deg per px dragged
+// m above the surface the spawn raycast finds
+const FPS_EYE_HEIGHT = 1.7 * FPS_PERSON_SCALE
+const FPS_FOV = 70 // human-feeling vertical FOV; orbit fov restored on exit
+const FPS_RIDE_NEAR = 90 // full ride within this distance of the platform (m)
+const FPS_RIDE_FAR = 140 // no ride beyond this (smoothstep falloff between)
+const fpsTmpMove = new Vector3()
+const fpsTmpLook = new Vector3()
+const fpsTmpRide = new Vector3()
+const fpsTmpM1 = new Matrix4()
+const fpsTmpM2 = new Matrix4()
+const fpsSpawnRay = new THREE.Raycaster()
+
+const FpsRig: FC<{
+  active: boolean
+  // Spawn pose. Applied when the rig activates and whenever the spawn changes
+  // (scenario switch while in FPS mode); `nonce` forces a respawn on demand.
+  // `position` is an absolute ECEF spawn; `platformOffsetENU` + `platformId`
+  // instead spawn relative to that structure's LIVE anchor (e.g. on a ship
+  // deck) — placement waits for the platform to mount.
+  spawn: {
+    position: Vector3 | null
+    platformId?: string
+    platformOffsetENU?: [number, number, number]
+    headingDeg: number
+    pitchDeg: number
+    nonce: number
+  } | null
+  // Rideable platforms (ship/structure groups) keyed by id. Their transforms
+  // are rewritten every frame by the buoyancy loops; we consume position +
+  // delta here — the camera rides whichever placed platform is nearest.
+  platforms?: Record<string, Object3D | null>
+}> = ({ active, spawn, platforms }) => {
+  const camera = useThree(({ camera }) => camera)
+  const gl = useThree(({ gl }) => gl)
+  const headingRef = useRef(0)
+  const pitchRef = useRef(0)
+  const keysRef = useRef(new Set<string>())
+  const draggingRef = useRef(false)
+  const spawnedRef = useRef<string | null>(null)
+  const pendingSpawnRef = useRef<typeof spawn>(null)
+  // Ride state: which platform the camera is currently coupled to + its
+  // last-frame matrix. Reset when the nearest platform changes identity.
+  const rideRef = useRef<{ id: string; matrix: Matrix4 } | null>(null)
+
+  // Person-scale FOV while in first person; restore the orbit FOV on exit.
+  useEffect(() => {
+    if (!active) return
+    const cam = camera as THREE.PerspectiveCamera
+    const prevFov = cam.fov
+    cam.fov = FPS_FOV
+    cam.updateProjectionMatrix()
+    return () => {
+      cam.fov = prevFov
+      cam.updateProjectionMatrix()
+    }
+  }, [active, camera])
+
+  // Queue a (re)spawn on activation / spawn change. Placement happens in the
+  // frame loop, NOT here: platform spawns must wait until the buoyancy loop
+  // has written the ship's first real transform (at mount the group still
+  // sits at the scene origin).
+  useEffect(() => {
+    if (!active || spawn == null) return
+    const key = `${spawn.nonce}:${spawn.position?.toArray().join(',') ?? 'platform'}`
+    if (spawnedRef.current === key) return
+    spawnedRef.current = key
+    pendingSpawnRef.current = spawn
+  }, [active, spawn])
+
+  useEffect(() => {
+    if (active) return
+    // Leaving FPS: drop held keys and forget the spawn so re-entering respawns.
+    keysRef.current.clear()
+    spawnedRef.current = null
+    pendingSpawnRef.current = null
+    rideRef.current = null
+  }, [active])
+
+  useEffect(() => {
+    if (!active) return
+    const dom = gl.domElement
+    const keys = keysRef.current
+    const onKeyDown = (e: KeyboardEvent): void => {
+      keys.add(e.code)
+    }
+    const onKeyUp = (e: KeyboardEvent): void => {
+      keys.delete(e.code)
+    }
+    const onBlur = (): void => {
+      keys.clear()
+      draggingRef.current = false
+    }
+    const onMouseDown = (e: MouseEvent): void => {
+      if (e.button === 0) draggingRef.current = true
+    }
+    const onMouseUp = (): void => {
+      draggingRef.current = false
+    }
+    const onMouseMove = (e: MouseEvent): void => {
+      if (!draggingRef.current) return
+      headingRef.current += e.movementX * FPS_LOOK_SPEED
+      pitchRef.current = MathUtils.clamp(
+        pitchRef.current - e.movementY * FPS_LOOK_SPEED,
+        -85,
+        85
+      )
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    dom.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mousemove', onMouseMove)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+      dom.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onMouseMove)
+    }
+  }, [active, gl])
+
+  useFrame((_, dt) => {
+    if (!active) return
+
+    // Resolve a queued spawn. Platform spawns wait for the ship group to be
+    // placed in ECEF (position length ≈ earth radius; at mount it's still at
+    // the origin), then raycast straight down through the configured point to
+    // find the actual deck surface and stand FPS_EYE_HEIGHT above it — so the
+    // eye height is person-scale regardless of the GLB's deck height.
+    const pending = pendingSpawnRef.current
+    if (pending != null) {
+      let position = pending.position
+      if (pending.platformOffsetENU != null) {
+        const platform =
+          pending.platformId != null
+            ? (platforms?.[pending.platformId] ?? null)
+            : null
+        if (platform == null || platform.position.lengthSq() < 1e12) return
+        const anchor = platform.getWorldPosition(new Vector3())
+        const [e, n, u] = pending.platformOffsetENU
+        const { east, north, up } = enuBasis(anchor)
+        position = anchor
+          .clone()
+          .addScaledVector(east, e)
+          .addScaledVector(north, n)
+          .addScaledVector(up, u)
+        fpsSpawnRay.set(
+          position.clone().addScaledVector(up, 60),
+          up.clone().negate()
+        )
+        fpsSpawnRay.far = 200
+        const hit = fpsSpawnRay.intersectObject(platform, true)[0]
+        if (hit != null) {
+          position = hit.point.clone().addScaledVector(up, FPS_EYE_HEIGHT)
+        }
+      }
+      if (position == null) {
+        pendingSpawnRef.current = null
+        return
+      }
+      camera.position.copy(position)
+      headingRef.current = pending.headingDeg
+      pitchRef.current = pending.pitchDeg
+      rideRef.current = null
+      pendingSpawnRef.current = null
+    }
+
+    // Ride the nearest placed platform: apply its world-transform delta since
+    // last frame, weighted by proximity (full within FPS_RIDE_NEAR, zero past
+    // FPS_RIDE_FAR). The delta includes the tilt rotation about the hull
+    // pivot, so a player at the rail rises/falls correctly, not just at the
+    // deck centre. One frame of lag vs the buoyancy loop is sub-centimetre.
+    // Static platforms yield an identity delta — a free no-op.
+    let nearestId: string | null = null
+    let nearestObj: Object3D | null = null
+    let nearestDist = Infinity
+    if (platforms != null) {
+      for (const id in platforms) {
+        const obj = platforms[id]
+        // Skip unmounted entries and groups not yet placed in ECEF.
+        if (obj == null || obj.position.lengthSq() < 1e12) continue
+        const dist = camera.position.distanceTo(obj.position)
+        if (dist < FPS_RIDE_FAR && dist < nearestDist) {
+          nearestDist = dist
+          nearestId = id
+          nearestObj = obj
+        }
+      }
+    }
+    if (nearestObj != null && nearestId != null) {
+      nearestObj.updateMatrixWorld()
+      const m = nearestObj.matrixWorld
+      const ride = rideRef.current
+      if (ride != null && ride.id === nearestId) {
+        const w = 1 - MathUtils.smoothstep(nearestDist, FPS_RIDE_NEAR, FPS_RIDE_FAR)
+        if (w > 0) {
+          fpsTmpM1.copy(ride.matrix).invert()
+          fpsTmpM2.copy(m).multiply(fpsTmpM1)
+          const ridden = fpsTmpRide
+            .copy(camera.position)
+            .applyMatrix4(fpsTmpM2)
+          camera.position.lerp(ridden, w)
+        }
+        ride.matrix.copy(m)
+      } else {
+        rideRef.current = { id: nearestId, matrix: m.clone() }
+      }
+    } else {
+      rideRef.current = null
+    }
+
+    const { east, north, up } = enuBasis(camera.position)
+    const p = radians(pitchRef.current)
+    // Horizontal forward/right from the compass heading (0 = N, 90 = E).
+    const fwdH = bearingVector(headingRef.current, east, north)
+    const rightH = bearingVector(headingRef.current + 90, east, north)
+
+    const keys = keysRef.current
+    const sprint =
+      keys.has('ShiftLeft') || keys.has('ShiftRight') ? FPS_SPRINT_MULT : 1
+    const move = fpsTmpMove.set(0, 0, 0)
+    if (keys.has('KeyW') || keys.has('ArrowUp')) move.add(fwdH)
+    if (keys.has('KeyS') || keys.has('ArrowDown')) move.sub(fwdH)
+    if (keys.has('KeyD') || keys.has('ArrowRight')) move.add(rightH)
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) move.sub(rightH)
+    if (keys.has('Space')) move.add(up)
+    if (keys.has('KeyC')) move.sub(up)
+    if (move.lengthSq() > 0) {
+      camera.position.addScaledVector(
+        move.normalize(),
+        FPS_WALK_SPEED * sprint * dt
+      )
+    }
+
+    // View: pitch the horizontal forward toward the surface normal.
+    const look = fpsTmpLook
+      .copy(fwdH)
+      .multiplyScalar(Math.cos(p))
+      .addScaledVector(up, Math.sin(p))
+    camera.up.copy(up)
+    camera.lookAt(look.add(camera.position))
+  })
 
   return null
 }
@@ -835,9 +1143,12 @@ const TurbineFarm: FC<{
         .addScaledVector(up, heightOffset)
       positions.push(pos.toArray() as [number, number, number])
     }
-    const heroPos = new Vector3().fromArray(
-      positions[centreSlotIndex(count, stagger)]
-    )
+    // Turbine-free site (count 0): no slots, no hero — heroPos null keeps the
+    // camera focus null (surface target) instead of crashing on positions[0].
+    const heroPos =
+      count > 0
+        ? new Vector3().fromArray(positions[centreSlotIndex(count, stagger)])
+        : null
     return { positions, heroPos, up: up.clone() }
   }, [
     target,
@@ -888,7 +1199,7 @@ const TurbineFarm: FC<{
   // never drifts as the turbines re-yaw. The hub's small horizontal offset is
   // dropped — negligible for framing and the source of the would-be drift.
   const heroFocus = useMemo(() => {
-    if (heroHubLocal == null) return null
+    if (heroHubLocal == null || layout.heroPos == null) return null
     return layout.heroPos
       .clone()
       .addScaledVector(layout.up, heroHubLocal.y * scale)
@@ -1034,9 +1345,42 @@ export const Content: FC<{
   // Deploy camera controls (ControlsPanel). All optional; when omitted the leva
   // Camera panel governs (Storybook).
   //   flyTo: a POI to smoothly fly to (changing it triggers the CameraRig fly).
+  //     Scenario viewpoints additionally carry an aim height (also unlocks
+  //     close landings at turbine-free sites) and a landing heading/pitch.
+  //     aimOffsetENU is a CAMERA-ONLY aim displacement (m, [east, north, up])
+  //     from the location target: the location (and the farm/cables pinned to
+  //     it) stays put while the camera flies to e.g. the ship or underwater.
   //   autoRotate / zoomDistance: override the leva autoOrbit / orbit distance.
   //   wingsEnabled: master on/off for rotor spin (lerps to a halt).
-  flyTo?: { longitude: number; latitude: number; name: string } | null
+  flyTo?: {
+    longitude: number
+    latitude: number
+    name: string
+    height?: number
+    aimOffsetENU?: [number, number, number]
+    headingDeg?: number
+    pitchDeg?: number
+  } | null
+  // 'orbit' (default): OrbitControls + CameraRig fly-tos. 'fps': free-fly
+  // first-person rig (WASD + drag look); OrbitControls and the rig are
+  // suspended, and the camera teleports to `fpsSpawn`.
+  cameraMode?: 'orbit' | 'fps'
+  // First-person spawn pose. offsetENU displaces from the lon/lat/height
+  // point (scenario-anchor-relative spawns). `platform` (a registry id:
+  // 'ship' | 'patrolship' | 'platform') instead spawns offsetENU-relative to
+  // that structure's LIVE deck frame (and the FPS rig rides its buoyancy
+  // motion while you stand on it). Bump `nonce` to force a respawn at an
+  // unchanged pose.
+  fpsSpawn?: {
+    longitude: number
+    latitude: number
+    height?: number
+    offsetENU?: [number, number, number]
+    platform?: string
+    headingDeg?: number
+    pitchDeg?: number
+    nonce?: number
+  } | null
   autoRotate?: boolean
   zoomDistance?: number
   // Live orbit distance reported back each frame when the camera is at rest, so
@@ -1059,6 +1403,8 @@ export const Content: FC<{
   clockMs,
   onTurbineCountChange,
   flyTo,
+  cameraMode,
+  fpsSpawn,
   autoRotate,
   zoomDistance,
   onZoomChange,
@@ -1150,21 +1496,28 @@ export const Content: FC<{
     activeLocation.height
   )
 
+  // Report the human name for Custom positions commanded by a fly-to (scenario
+  // viewpoints) so the HUD shows the scenario, not 'Custom'.
   useEffect(() => {
     onLocationChange?.(
       activeLocation.longitude,
       activeLocation.latitude,
-      String(locationControls.preset)
+      locationControls.preset === 'Custom' && flyTo != null
+        ? flyTo.name
+        : String(locationControls.preset)
     )
   }, [
     onLocationChange,
     activeLocation.longitude,
     activeLocation.latitude,
-    locationControls.preset
+    locationControls.preset,
+    flyTo
   ])
 
   // Deploy POI fly-to: push the requested location into the leva Location
   // control, which moves `target` and triggers the CameraRig fly animation.
+  // Scenario viewpoints land at non-preset positions: Custom lon/lat plus the
+  // viewpoint's aim height (default 20 = sea level, matching the presets).
   useEffect(() => {
     if (flyTo == null) return
     if (Object.prototype.hasOwnProperty.call(locationPresets, flyTo.name)) {
@@ -1173,10 +1526,79 @@ export const Content: FC<{
       setLocation({
         preset: 'Custom',
         longitude: flyTo.longitude,
-        latitude: flyTo.latitude
+        latitude: flyTo.latitude,
+        height: flyTo.height ?? 20
       })
     }
   }, [flyTo, setLocation])
+
+  // Camera-only aim for same-site viewpoints (ship, underwater): the location
+  // target stays pinned; only the rig's destination moves by the ENU offset.
+  const flyAim = useMemo(() => {
+    if (flyTo?.aimOffsetENU == null) return null
+    const [e, n, u] = flyTo.aimOffsetENU
+    const { east, north, up } = enuBasis(target)
+    return target
+      .clone()
+      .addScaledVector(east, e)
+      .addScaledVector(north, n)
+      .addScaledVector(up, u)
+  }, [flyTo, target])
+
+  // First-person spawn pose in ECEF (FpsRig). Geodetic point + optional ENU
+  // displacement, mirroring the flyAim resolution. Platform spawns ('ship')
+  // resolve against the live deck frame inside FpsRig instead — the ship's
+  // position is leva-tunable and heaves, so a precomputed point would be stale.
+  const fpsSpawnPose = useMemo(() => {
+    if (fpsSpawn == null) return null
+    const headingDeg = fpsSpawn.headingDeg ?? 0
+    const pitchDeg = fpsSpawn.pitchDeg ?? 0
+    const nonce = fpsSpawn.nonce ?? 0
+    if (fpsSpawn.platform != null) {
+      return {
+        position: null,
+        platformId: fpsSpawn.platform,
+        platformOffsetENU:
+          fpsSpawn.offsetENU ?? ([0, 0, 10] as [number, number, number]),
+        headingDeg,
+        pitchDeg,
+        nonce
+      }
+    }
+    let position = new Geodetic(
+      radians(fpsSpawn.longitude),
+      radians(fpsSpawn.latitude),
+      fpsSpawn.height ?? 20
+    ).toECEF()
+    if (fpsSpawn.offsetENU != null) {
+      const [e, n, u] = fpsSpawn.offsetENU
+      const { east, north, up } = enuBasis(position)
+      position = position
+        .addScaledVector(east, e)
+        .addScaledVector(north, n)
+        .addScaledVector(up, u)
+    }
+    return { position, headingDeg, pitchDeg, nonce }
+  }, [fpsSpawn])
+
+  // Live deck frames of the rideable structures (buoyancy-animated groups)
+  // for the FPS rig, keyed by platform id. Setters memoised once — a fresh
+  // identity per render would re-fire every ShipModel's onGroup effect.
+  const [fpsPlatforms, setFpsPlatforms] = useState<
+    Record<string, Object3D | null>
+  >({})
+  const platformSetters = useMemo(() => {
+    const make =
+      (id: string) =>
+      (group: Object3D | null): void => {
+        setFpsPlatforms(platforms => ({ ...platforms, [id]: group }))
+      }
+    return {
+      ship: make('ship'),
+      patrolship: make('patrolship'),
+      platform: make('platform')
+    } as Record<string, (group: Object3D | null) => void>
+  }, [])
 
   const atmosphereControls = useControls('Atmosphere', {
     exposure: { value: 10, min: 0, max: 30, step: 0.25 },
@@ -1483,11 +1905,63 @@ export const Content: FC<{
     locationPresets.Karmøy.latitude,
     locationPresets.Karmøy.height
   )
+  // Per-scenario structures at their own sites: patrol ship off Bodø
+  // (buoyant), production platform further out (static — no buoyancy).
+  const patrolAnchor = useTargetECEF(
+    locationPresets['Bodø'].longitude,
+    locationPresets['Bodø'].latitude,
+    locationPresets['Bodø'].height
+  )
+  const platformAnchor = useTargetECEF(
+    locationPresets['Norwegian Sea'].longitude,
+    locationPresets['Norwegian Sea'].latitude,
+    locationPresets['Norwegian Sea'].height
+  )
   const ship0 = useShip(SHIP_DEFS[0], shipAnchor, orbitControlsRef)
   const ship1 = useShip(SHIP_DEFS[1], shipAnchor, orbitControlsRef)
-  const ships = [
-    { url: SHIP_DEFS[0].url, controls: ship0.controls },
-    { url: SHIP_DEFS[1].url, controls: ship1.controls },
+  const ship2 = useShip(SHIP_DEFS[2], patrolAnchor, orbitControlsRef)
+  const ship3 = useShip(SHIP_DEFS[3], platformAnchor, orbitControlsRef)
+  // platformId keys the FPS deck-spawn/ride registry; buoyant=false pins the
+  // structure to its rest pose (platforms don't heave).
+  const ships: Array<{
+    url: string
+    controls: typeof ship0.controls
+    anchor: Vector3
+    platformId?: string
+    buoyant: boolean
+    waterOcclusion: boolean
+  }> = [
+    {
+      url: SHIP_DEFS[0].url,
+      controls: ship0.controls,
+      anchor: shipAnchor,
+      platformId: 'ship',
+      buoyant: true,
+      waterOcclusion: true
+    },
+    {
+      url: SHIP_DEFS[1].url,
+      controls: ship1.controls,
+      anchor: shipAnchor,
+      buoyant: true,
+      waterOcclusion: true
+    },
+    {
+      url: SHIP_DEFS[2].url,
+      controls: ship2.controls,
+      anchor: patrolAnchor,
+      platformId: 'patrolship',
+      buoyant: true,
+      waterOcclusion: true
+    },
+    {
+      url: SHIP_DEFS[3].url,
+      controls: ship3.controls,
+      anchor: platformAnchor,
+      platformId: 'platform',
+      buoyant: false,
+      waterOcclusion: false
+    },
   ]
 
   // Shared buoyancy + hull-occlusion rig for both ships. Motion amplitude
@@ -2314,16 +2788,30 @@ export const Content: FC<{
       <OrbitControls
         makeDefault
         enableDamping
+        enabled={cameraMode !== 'fps'}
         minDistance={cameraControls.minDistance}
         maxDistance={cameraControls.maxDistance}
-        autoRotate={autoRotate ?? cameraControls.autoOrbit}
+        autoRotate={cameraMode !== 'fps' && (autoRotate ?? cameraControls.autoOrbit)}
         autoRotateSpeed={cameraControls.orbitSpeed}
       />
-      <CameraRig
-        target={target}
-        focus={heroFocus}
-        zoomDistance={zoomDistance}
-        onDistance={onZoomChange}
+      {/* Unmounted entirely in FPS mode so its placement/fly logic can't fight
+          the free-fly rig; remounting re-frames the site on return to orbit. */}
+      {cameraMode !== 'fps' && (
+        <CameraRig
+          target={target}
+          focus={heroFocus}
+          aim={flyAim}
+          zoomDistance={zoomDistance}
+          headingDeg={flyTo?.headingDeg}
+          pitchDeg={flyTo?.pitchDeg}
+          landExact={flyTo?.height != null}
+          onDistance={onZoomChange}
+        />
+      )}
+      <FpsRig
+        active={cameraMode === 'fps'}
+        spawn={fpsSpawnPose}
+        platforms={fpsPlatforms}
       />
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth
@@ -2365,13 +2853,13 @@ export const Content: FC<{
           compute) and isolated in its own Suspense so loading can't blank the
           rest of the scene. */}
       {ships.map(
-        ({ url, controls }) =>
+        ({ url, controls, anchor, platformId, buoyant, waterOcclusion }) =>
           controls.visible &&
           !disableOcean && (
             <Suspense key={url} fallback={null}>
               <ShipModel
                 url={url}
-                anchor={shipAnchor}
+                anchor={anchor}
                 scale={controls.scale}
                 heightOffset={controls.heightOffset}
                 eastOffset={controls.eastOffset}
@@ -2380,7 +2868,17 @@ export const Content: FC<{
                 oceanMatrixInverse={oceanMatrixInverse}
                 vu={vertexUniforms}
                 gerstnerAmplitude={oceanUniforms?.gerstnerAmplitude ?? null}
-                motion={shipMotionControls}
+                // Static structures (platform) keep their rest pose.
+                motion={
+                  buoyant
+                    ? shipMotionControls
+                    : { ...shipMotionControls, enabled: false }
+                }
+                waterOcclusion={waterOcclusion}
+                // Deck-capable structures register as FPS spawn/ride platforms.
+                onGroup={
+                  platformId != null ? platformSetters[platformId] : undefined
+                }
               />
             </Suspense>
           )

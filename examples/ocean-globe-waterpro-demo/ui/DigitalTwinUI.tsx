@@ -1,14 +1,15 @@
 // Digital-twin overlay layer for the deployed globe ocean scene. Presentational
 // only: the MET conditions card (top-right), the modelled turbine inspector
-// (top-left, under the brand mark), and the forecast time scrubber (bottom).
-// All data — the interpolated MET sample, the turbine telemetry, and the
-// selected time — is owned by main.tsx App and passed in, so the DOM cards and
-// the 3D turbine share one source of truth. Plain DOM sibling of the canvas.
+// (top-left, under the brand mark), the camera controls (bottom-left), the
+// scenario picker with per-scenario settings (bottom-right), and the forecast
+// time scrubber (bottom). Every panel is a collapsible Card (header click).
+// All data is owned by main.tsx App and passed in. Plain DOM canvas siblings.
 
-import { type FC } from 'react'
+import { useState, type FC } from 'react'
 
 import type { MetSample } from './useMetForecast'
 import type { TurbineTelemetry, TurbineStatus } from './turbineModel'
+import type { AisReadings, Scenario, Viewpoint } from './scenarios'
 
 // --- design tokens (Huma system, tuned for legibility over a 3D scene) -------
 const PANEL_BG = 'rgba(10, 18, 30, 0.55)'
@@ -23,8 +24,13 @@ const SANS =
   "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
 
 const cardStyle = (
-  pos: { top?: number; bottom?: number; left?: number; right?: number },
-  width: number
+  pos: {
+    top?: number
+    bottom?: number
+    left?: number | string
+    right?: number
+  },
+  width: number | string
 ): React.CSSProperties => ({
   position: 'fixed',
   ...pos,
@@ -85,32 +91,116 @@ const conditionText = (code: string | null): string => {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-const CardHeader: FC<{ title: string; right?: React.ReactNode }> = ({
-  title,
-  right
-}) => (
-  <div
+const ChevronIcon: FC<{ open: boolean }> = ({ open }) => (
+  <svg
+    width="9"
+    height="9"
+    viewBox="0 0 24 24"
+    fill="none"
+    aria-hidden
     style={{
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'baseline',
-      marginBottom: 8
+      transform: open ? 'rotate(90deg)' : 'none',
+      transition: 'transform 150ms cubic-bezier(0.4,0,0.2,1)'
     }}
   >
-    <span
+    <path
+      d="M9 5l8 7-8 7"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
+// Collapsible glass card shared by every panel. The header row is a button:
+// clicking it folds the card down to just the header. Non-interactive cards
+// (data displays) keep pointer events off their body so the globe stays
+// draggable through them — only the header takes clicks.
+const Card: FC<{
+  pos: {
+    top?: number
+    bottom?: number
+    left?: number | string
+    right?: number
+  }
+  width: number | string
+  title: string
+  // Text-only header content (rendered inside the header button).
+  headerRight?: React.ReactNode
+  interactive?: boolean
+  // Flex-column gap for the body (interactive control stacks).
+  gap?: number
+  style?: React.CSSProperties
+  children: React.ReactNode
+}> = ({
+  pos,
+  width,
+  title,
+  headerRight,
+  interactive = false,
+  gap,
+  style,
+  children
+}) => {
+  const [open, setOpen] = useState(true)
+  return (
+    <div
       style={{
-        fontFamily: SANS,
-        fontSize: 11,
-        letterSpacing: '0.18em',
-        textTransform: 'uppercase',
-        color: ACCENT
+        ...cardStyle(pos, width),
+        padding: open ? '14px 16px' : '8px 16px',
+        pointerEvents: interactive ? 'auto' : 'none',
+        ...(open && gap != null
+          ? { display: 'flex', flexDirection: 'column', gap }
+          : null),
+        ...style
       }}
     >
-      {title}
-    </span>
-    {right}
-  </div>
-)
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex',
+          width: '100%',
+          justifyContent: 'space-between',
+          alignItems: 'baseline',
+          gap: 10,
+          padding: 0,
+          marginBottom: open && gap == null ? 8 : 0,
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          pointerEvents: 'auto',
+          textAlign: 'left'
+        }}
+      >
+        <span
+          style={{
+            fontFamily: SANS,
+            fontSize: 11,
+            letterSpacing: '0.18em',
+            textTransform: 'uppercase',
+            color: ACCENT
+          }}
+        >
+          {title}
+        </span>
+        <span
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 8,
+            color: MUTED
+          }}
+        >
+          {headerRight}
+          <ChevronIcon open={open} />
+        </span>
+      </button>
+      {open && children}
+    </div>
+  )
+}
 
 const Row: FC<{ label: string; children: React.ReactNode }> = ({
   label,
@@ -172,15 +262,16 @@ const ConditionsCard: FC<{
   loading: boolean
   error: string | null
 }> = ({ locationName, sample, loading, error }) => (
-  <div style={cardStyle({ top: 60, right: 16 }, 248)}>
-    <CardHeader
-      title="Conditions"
-      right={
-        <span style={{ fontFamily: SANS, fontSize: 11, color: MUTED }}>
-          {locationName}
-        </span>
-      }
-    />
+  <Card
+    pos={{ top: 60, right: 16 }}
+    width={248}
+    title="Conditions"
+    headerRight={
+      <span style={{ fontFamily: SANS, fontSize: 11, color: MUTED }}>
+        {locationName}
+      </span>
+    }
+  >
     {error != null ? (
       <div style={{ fontFamily: SANS, fontSize: 12, color: MUTED }}>
         Data unavailable: {error}
@@ -213,7 +304,7 @@ const ConditionsCard: FC<{
       </>
     )}
     <Footnote>MET Norway · CC BY 4.0</Footnote>
-  </div>
+  </Card>
 )
 
 // --- turbine inspector -------------------------------------------------------
@@ -229,23 +320,24 @@ const TurbineInspector: FC<{
   telemetry: TurbineTelemetry
   count: number
 }> = ({ telemetry, count }) => (
-  <div style={cardStyle({ top: 76, left: 16 }, 232)}>
-    <CardHeader
-      title="Turbine"
-      right={
-        <span
-          style={{
-            fontFamily: SANS,
-            fontSize: 10,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: count === 0 ? MUTED : STATUS_COLOR[telemetry.status]
-          }}
-        >
-          {count === 0 ? 'None' : telemetry.status}
-        </span>
-      }
-    />
+  <Card
+    pos={{ top: 76, left: 16 }}
+    width={232}
+    title="Turbine"
+    headerRight={
+      <span
+        style={{
+          fontFamily: SANS,
+          fontSize: 10,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+          color: count === 0 ? MUTED : STATUS_COLOR[telemetry.status]
+        }}
+      >
+        {count === 0 ? 'None' : telemetry.status}
+      </span>
+    }
+  >
     {count === 0 ? (
       <div style={{ fontFamily: SANS, fontSize: 12, color: MUTED }}>
         No turbines at this site.
@@ -274,7 +366,50 @@ const TurbineInspector: FC<{
         <Footnote>Modelled · {count} × 8 MW ref · from forecast wind</Footnote>
       </>
     )}
-  </div>
+  </Card>
+)
+
+// --- vessel (AIS) inspector ----------------------------------------------------
+// Replaces the turbine inspector for vessel scenarios. Values are static demo
+// readings from the scenario catalogue (labelled as such) until a live AIS
+// feed is wired in — same card shape either way.
+const aisStatusColor = (status: string): string =>
+  /under\s*way/i.test(status) ? GOOD : MUTED
+
+const aisStatusBadge = (status: string): string =>
+  /under\s*way/i.test(status) ? 'Underway' : status
+
+const AisCard: FC<{ ais: AisReadings }> = ({ ais }) => (
+  <Card
+    pos={{ top: 76, left: 16 }}
+    width={248}
+    title={ais.vesselName}
+    headerRight={
+      <span
+        style={{
+          fontFamily: SANS,
+          fontSize: 10,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+          color: aisStatusColor(ais.navigationalStatus)
+        }}
+      >
+        {aisStatusBadge(ais.navigationalStatus)}
+      </span>
+    }
+  >
+    <Row label="AIS status">{ais.navigationalStatus}</Row>
+    <Row label="Speed">{fmt(ais.speedKn, 'kn', 1)}</Row>
+    <Row label="Course">
+      <span style={{ color: MUTED }}>{fmtDir(ais.courseDeg)}</span>
+    </Row>
+    <Row label="True heading">
+      <span style={{ color: MUTED }}>{fmtDir(ais.headingDeg)}</span>
+    </Row>
+    <Row label="Rate of turn">{fmt(ais.rateOfTurnDegMin, '°/min', 0)}</Row>
+    <Row label="Draught">{fmt(ais.draughtM, 'm', 1)}</Row>
+    <Footnote>AIS · static demo values</Footnote>
+  </Card>
 )
 
 // --- time scrubber -----------------------------------------------------------
@@ -305,42 +440,13 @@ const TimeScrubber: FC<{
       ? ((now - rangeStart) / (rangeEnd - rangeStart)) * 100
       : 0
   return (
-    <div
-      style={{
-        position: 'fixed',
-        bottom: 20,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        width: 'min(620px, 86vw)',
-        padding: '12px 16px',
-        background: PANEL_BG,
-        border: PANEL_BORDER,
-        borderRadius: 0,
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        pointerEvents: 'auto',
-        zIndex: 6
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 8
-        }}
-      >
-        <span
-          style={{
-            fontFamily: SANS,
-            fontSize: 10,
-            letterSpacing: '0.18em',
-            textTransform: 'uppercase',
-            color: MUTED
-          }}
-        >
-          Forecast time
-        </span>
+    <Card
+      pos={{ bottom: 20, left: '50%' }}
+      width="min(620px, 86vw)"
+      title="Forecast time"
+      interactive
+      style={{ transform: 'translateX(-50%)' }}
+      headerRight={
         <span
           style={{
             fontFamily: MONO,
@@ -351,6 +457,34 @@ const TimeScrubber: FC<{
         >
           {scrubberLabel(selected, now)}
         </span>
+      }
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ position: 'relative', flex: 1 }}>
+          {/* 'now' marker on the track */}
+          <div
+            style={{
+              position: 'absolute',
+              left: `${nowPct}%`,
+              top: -2,
+              bottom: -2,
+              width: 2,
+              background: ACCENT,
+              opacity: 0.7,
+              pointerEvents: 'none'
+            }}
+          />
+          <input
+            className="dt-scrub"
+            type="range"
+            min={rangeStart}
+            max={rangeEnd}
+            step={HOUR / 4}
+            value={selected}
+            onChange={e => onChange(Number(e.target.value))}
+            style={{ width: '100%', display: 'block' }}
+          />
+        </div>
         <button
           type="button"
           onClick={() => onChange(null)}
@@ -364,37 +498,12 @@ const TimeScrubber: FC<{
             border: PANEL_BORDER,
             borderRadius: 0,
             padding: '3px 8px',
-            cursor: 'pointer'
+            cursor: 'pointer',
+            flexShrink: 0
           }}
         >
           Now
         </button>
-      </div>
-
-      <div style={{ position: 'relative' }}>
-        {/* 'now' marker on the track */}
-        <div
-          style={{
-            position: 'absolute',
-            left: `${nowPct}%`,
-            top: -2,
-            bottom: -2,
-            width: 2,
-            background: ACCENT,
-            opacity: 0.7,
-            pointerEvents: 'none'
-          }}
-        />
-        <input
-          className="dt-scrub"
-          type="range"
-          min={rangeStart}
-          max={rangeEnd}
-          step={HOUR / 4}
-          value={selected}
-          onChange={e => onChange(Number(e.target.value))}
-          style={{ width: '100%', display: 'block' }}
-        />
       </div>
       <style>{`
         .dt-scrub { -webkit-appearance: none; appearance: none; height: 4px;
@@ -405,33 +514,22 @@ const TimeScrubber: FC<{
         .dt-scrub::-moz-range-thumb { width: 12px; height: 16px; border-radius: 0;
           background: ${TEXT}; cursor: pointer; border: none; }
       `}</style>
-    </div>
+    </Card>
   )
 }
 
 // --- camera controls panel ---------------------------------------------------
-export interface Poi {
-  name: string // must match a scene location-preset key
-  longitude: number
-  latitude: number
-  label?: string // optional shorter button text (defaults to name)
-  turbines: number // units at this site (0 = none, e.g. Oslo)
-}
+export type CameraMode = 'orbit' | 'fps'
 
 export interface CameraControlsState {
-  pois: Poi[]
-  activePoi: string
-  onFlyTo: (poi: Poi) => void
+  mode: CameraMode
+  onMode: (mode: CameraMode) => void
   autoRotate: boolean
   onAutoRotate: (v: boolean) => void
   zoom: number
   zoomMin: number
   zoomMax: number
   onZoom: (v: number) => void
-  wingsOn: boolean
-  onWings: (v: boolean) => void
-  coverOn: boolean
-  onCover: (v: boolean) => void
 }
 
 const PinIcon: FC = () => (
@@ -499,44 +597,32 @@ const Toggle: FC<{ label: string; on: boolean; onChange: (v: boolean) => void }>
 )
 
 const ControlsPanel: FC<CameraControlsState> = ({
-  pois,
-  activePoi,
-  onFlyTo,
+  mode,
+  onMode,
   autoRotate,
   onAutoRotate,
   zoom,
   zoomMin,
   zoomMax,
-  onZoom,
-  wingsOn,
-  onWings,
-  coverOn,
-  onCover
+  onZoom
 }) => (
-  <div
-    style={{
-      ...cardStyle({ bottom: 16, left: 16 }, 220),
-      pointerEvents: 'auto',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 10
-    }}
-  >
-    <CardHeader title="Camera" />
-
-    {/* POI fly-to buttons */}
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-      {pois.map(poi => {
-        const active = poi.name === activePoi
+  <Card pos={{ bottom: 16, left: 16 }} width={220} title="Camera" interactive gap={10}>
+    {/* View mode switch */}
+    <div style={{ display: 'flex', gap: 6 }}>
+      {(
+        [
+          ['orbit', 'Orbit'],
+          ['fps', 'First person']
+        ] as const
+      ).map(([value, label]) => {
+        const active = mode === value
         return (
           <button
-            key={poi.name}
+            key={value}
             type="button"
-            onClick={() => onFlyTo(poi)}
+            onClick={() => onMode(value)}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
+              flex: 1,
               padding: '5px 9px',
               fontFamily: SANS,
               fontSize: 11,
@@ -548,13 +634,49 @@ const ControlsPanel: FC<CameraControlsState> = ({
               cursor: 'pointer'
             }}
           >
-            <PinIcon />
-            {poi.label ?? poi.name}
+            {label}
           </button>
         )
       })}
     </div>
 
+    {mode === 'fps' ? (
+      <div
+        style={{
+          fontFamily: SANS,
+          fontSize: 10,
+          lineHeight: 1.6,
+          letterSpacing: '0.04em',
+          color: MUTED
+        }}
+      >
+        WASD move · drag to look
+        <br />
+        Space / C up / down · Shift fast
+      </div>
+    ) : (
+      <OrbitControlsBody
+        autoRotate={autoRotate}
+        onAutoRotate={onAutoRotate}
+        zoom={zoom}
+        zoomMin={zoomMin}
+        zoomMax={zoomMax}
+        onZoom={onZoom}
+      />
+    )}
+  </Card>
+)
+
+// Orbit-mode body of the camera card: zoom slider + auto-rotate toggle.
+const OrbitControlsBody: FC<{
+  autoRotate: boolean
+  onAutoRotate: (v: boolean) => void
+  zoom: number
+  zoomMin: number
+  zoomMax: number
+  onZoom: (v: number) => void
+}> = ({ autoRotate, onAutoRotate, zoom, zoomMin, zoomMax, onZoom }) => (
+  <>
     {/* Zoom puller */}
     <div>
       <div
@@ -590,9 +712,138 @@ const ControlsPanel: FC<CameraControlsState> = ({
     </div>
 
     <Toggle label="Auto-rotate" on={autoRotate} onChange={onAutoRotate} />
-    <Toggle label="Rotor spin" on={wingsOn} onChange={onWings} />
-    <Toggle label="Cover" on={coverOn} onChange={onCover} />
-  </div>
+  </>
+)
+
+// --- scenario panel ----------------------------------------------------------
+export interface ScenarioSettingControl {
+  label: string
+  on: boolean
+  onChange: (v: boolean) => void
+}
+
+export interface ScenarioControlsState {
+  scenarios: Scenario[]
+  activeScenario: string | null // Scenario.id
+  activeViewpoint: string | null // Viewpoint.id within the active scenario
+  onSelect: (scenario: Scenario, viewpoint: Viewpoint) => void
+  // Registry the scenarios' `settings` ids resolve against (host-owned state).
+  settings?: Record<string, ScenarioSettingControl>
+}
+
+// Accordion: exactly one scenario (the active one) shows its viewpoint chips
+// and setting toggles. Clicking a scenario row flies to its first viewpoint;
+// chips fly to specific viewpoints. Selection state lives in App (it also
+// drives the FPS spawn on scenario switches).
+const ScenarioPanel: FC<ScenarioControlsState> = ({
+  scenarios,
+  activeScenario,
+  activeViewpoint,
+  onSelect,
+  settings
+}) => (
+  <Card
+    pos={{ bottom: 16, right: 16 }}
+    width={232}
+    title="Scenarios"
+    interactive
+    gap={6}
+  >
+    {scenarios.map(scenario => {
+      const active = scenario.id === activeScenario
+      return (
+        <div key={scenario.id}>
+          <button
+            type="button"
+            onClick={() => onSelect(scenario, scenario.viewpoints[0])}
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              width: '100%',
+              gap: 10,
+              padding: '6px 8px',
+              fontFamily: SANS,
+              fontSize: 11,
+              letterSpacing: '0.04em',
+              color: active ? ACCENT : TEXT,
+              background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+              border: PANEL_BORDER,
+              borderRadius: 0,
+              cursor: 'pointer'
+            }}
+          >
+            {scenario.label}
+            <ChevronIcon open={active} />
+          </button>
+          {active && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 6,
+                padding: '6px 0 2px 12px'
+              }}
+            >
+              {scenario.viewpoints.map(viewpoint => {
+                const vpActive = viewpoint.id === activeViewpoint
+                return (
+                  <button
+                    key={viewpoint.id}
+                    type="button"
+                    onClick={() => onSelect(scenario, viewpoint)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      padding: '4px 8px',
+                      fontFamily: SANS,
+                      fontSize: 10,
+                      letterSpacing: '0.02em',
+                      color: vpActive ? ACCENT : TEXT,
+                      background: vpActive
+                        ? 'rgba(255,255,255,0.06)'
+                        : 'transparent',
+                      border: PANEL_BORDER,
+                      borderRadius: 0,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <PinIcon />
+                    {viewpoint.label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {/* Per-scenario setting toggles (e.g. wind farm rotor spin/cover) */}
+          {active && scenario.settings != null && settings != null && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                padding: '0 0 2px 12px'
+              }}
+            >
+              {scenario.settings.map(id => {
+                const setting = settings[id]
+                if (setting == null) return null
+                return (
+                  <Toggle
+                    key={id}
+                    label={setting.label}
+                    on={setting.on}
+                    onChange={setting.onChange}
+                  />
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )
+    })}
+  </Card>
 )
 
 // --- composition (presentational) -------------------------------------------
@@ -609,6 +860,10 @@ export const DigitalTwinUI: FC<{
   selected: number
   onScrub: (ms: number | null) => void
   cameraControls?: CameraControlsState
+  scenarioControls?: ScenarioControlsState
+  // AIS readings of the active scenario's vessel; replaces the turbine
+  // inspector when present.
+  ais?: AisReadings | null
 }> = ({
   locationName,
   loading,
@@ -621,10 +876,16 @@ export const DigitalTwinUI: FC<{
   now,
   selected,
   onScrub,
-  cameraControls
+  cameraControls,
+  scenarioControls,
+  ais
 }) => (
   <>
-    <TurbineInspector telemetry={telemetry} count={turbineCount} />
+    {ais != null ? (
+      <AisCard ais={ais} />
+    ) : (
+      <TurbineInspector telemetry={telemetry} count={turbineCount} />
+    )}
     <ConditionsCard
       locationName={locationName}
       sample={sample}
@@ -632,6 +893,7 @@ export const DigitalTwinUI: FC<{
       error={error}
     />
     {cameraControls != null && <ControlsPanel {...cameraControls} />}
+    {scenarioControls != null && <ScenarioPanel {...scenarioControls} />}
     {rangeStart != null && rangeEnd != null && (
       <TimeScrubber
         rangeStart={rangeStart}
