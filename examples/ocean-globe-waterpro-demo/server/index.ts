@@ -18,7 +18,24 @@ const STATIC_DIR = process.env.STATIC_DIR ?? path.resolve(process.cwd(), 'dist')
 // sirv serves the built assets; single:true falls unmatched routes back to
 // index.html (SPA). The API routes below run first, so they are never reached
 // by the fallback.
-const serveStatic = sirv(STATIC_DIR, { single: true, gzip: true, brotli: true })
+//
+// Cache policy: hashed /assets/* are immutable (1y); everything else —
+// crucially index.html and the SPA fallback — must revalidate on every load.
+// Without no-cache on index.html, browsers heuristically cache it, and after
+// a deploy returning visitors request the OLD hashed bundle → 404 → black
+// screen until their cache expires.
+const serveStatic = sirv(STATIC_DIR, {
+  single: true,
+  gzip: true,
+  brotli: true,
+  setHeaders: (res, pathname) => {
+    if (pathname.startsWith('/assets/')) {
+      res.setHeader('cache-control', 'public, max-age=31536000, immutable')
+    } else {
+      res.setHeader('cache-control', 'no-cache')
+    }
+  },
+})
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
