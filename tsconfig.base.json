@@ -52,6 +52,15 @@
       "@takram/three-geospatial-effects/r3f": [
         "./packages/effects/src/r3f/index.ts"
       ],
+      "@takram/three-geospatial-splats": [
+        "./packages/splats/src/index.ts"
+      ],
+      "@takram/three-geospatial-splats/r3f": [
+        "./packages/splats/src/r3f/index.ts"
+      ],
+      "@takram/three-geospatial-splats/webgpu": [
+        "./packages/splats/src/webgpu/index.ts"
+      ],
       "@takram/three-geospatial/r3f": [
         "./packages/core/src/r3f/index.ts"
       ],
