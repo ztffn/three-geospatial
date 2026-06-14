@@ -425,7 +425,7 @@ const SectionLabel: FC<{ children: React.ReactNode }> = ({ children }) => (
   </div>
 )
 
-const AisLayersCard: FC<Omit<AisLayersState, 'overview'>> = ({
+const AisLayersCard: FC<AisLayersState> = ({
   shadowVisible,
   patrolVisible,
   shadowCount,
@@ -1294,18 +1294,7 @@ export const DigitalTwinUI: FC<{
       <TurbineInspector telemetry={telemetry} count={turbineCount} />
     )}
     {aisLayers != null && aisLayers.overview ? (
-      <AisLayersCard
-        shadowVisible={aisLayers.shadowVisible}
-        patrolVisible={aisLayers.patrolVisible}
-        shadowCount={aisLayers.shadowCount}
-        patrolCount={aisLayers.patrolCount}
-        onToggle={aisLayers.onToggle}
-        trackVisible={aisLayers.trackVisible}
-        projectionVisible={aisLayers.projectionVisible}
-        onToggleOverlay={aisLayers.onToggleOverlay}
-        updatedAt={aisLayers.updatedAt}
-        error={aisLayers.error}
-      />
+      <AisLayersCard {...aisLayers} />
     ) : (
       <ConditionsCard
         locationName={locationName}

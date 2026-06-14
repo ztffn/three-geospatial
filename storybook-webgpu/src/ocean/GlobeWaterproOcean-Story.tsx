@@ -973,8 +973,8 @@ export const PATROL_MARKER_COLOR: MarkerColor = {
 // can fly down and inspect it. Visibility uses hysteresis (show ≥30 km altitude,
 // hide <18 km) so it doesn't flicker at the boundary. Icons are screen-space DOM
 // (drei Html), so they stay a constant size regardless of zoom.
-const SHADOW_FLEET_SHOW_ALT = 30_000 // m above the ellipsoid
-const SHADOW_FLEET_HIDE_ALT = 18_000 // m (hysteresis band below SHOW)
+const MARKER_SHOW_ALT = 30_000 // m above the ellipsoid
+const MARKER_HIDE_ALT = 18_000 // m (hysteresis band below SHOW)
 const EARTH_MEAN_RADIUS = 6_371_000
 // Distance (m) along a vessel's course used to derive the dart's ON-SCREEN
 // heading: the dart is a screen-space DOM element, so rotating it by raw COG
@@ -1043,8 +1043,8 @@ const VesselMarkers: FC<{
     // Altitude LOD: icons only at a pulled-back / globe view (hysteresis).
     const alt = camera.position.length() - EARTH_MEAN_RADIUS
     const next = visibleRef.current
-      ? alt > SHADOW_FLEET_HIDE_ALT
-      : alt > SHADOW_FLEET_SHOW_ALT
+      ? alt > MARKER_HIDE_ALT
+      : alt > MARKER_SHOW_ALT
     if (next !== visibleRef.current) {
       visibleRef.current = next
       setVisible(next)
