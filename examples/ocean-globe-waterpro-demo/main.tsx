@@ -53,11 +53,39 @@ import {
   DigitalTwinUI,
   type CameraControlsState,
   type CameraMode,
-  type ScenarioControlsState
+  type ScenarioControlsState,
+  type SelectedVessel
 } from './ui/DigitalTwinUI'
 import { SCENARIOS, type Scenario, type Viewpoint } from './ui/scenarios'
+import {
+  SHADOW_FLEET,
+  SHADOW_FLEET_GROUND_LABEL
+} from './ui/shadowFleet'
 import { modelTurbine } from './ui/turbineModel'
 import { useMetForecast } from './ui/useMetForecast'
+import {
+  useShadowFleetAis,
+  type ShadowFleetPosition
+} from './ui/useShadowFleetAis'
+import { useVesselTrack } from './ui/useVesselTrack'
+
+// IMO → EU sanctions metadata, for merging into a clicked vessel's callout.
+const SHADOW_FLEET_BY_IMO = new Map(SHADOW_FLEET.map(v => [v.imo, v]))
+
+// Stable empty marker list for a hidden layer (referential identity, so the
+// scene's memo doesn't churn each render).
+const NO_VESSELS: VesselMarker[] = []
+
+// Live AIS record → globe marker (position + heading + speed for the overlay).
+const toMarker = (p: ShadowFleetPosition): VesselMarker => ({
+  id: p.id,
+  imo: p.imo,
+  name: p.name,
+  latitude: p.latitude,
+  longitude: p.longitude,
+  courseOverGround: p.courseOverGround,
+  speedOverGround: p.speedOverGround
+})
 
 import {
   AtmosphereLight,
@@ -67,14 +95,28 @@ import {
 import {
   Content,
   locationPresets,
-  type ContentReadinessRefs
+  type ContentReadinessRefs,
+  type SelectedVesselNav,
+  type VesselMarker
 } from '../../storybook-webgpu/src/ocean/GlobeWaterproOcean-Story'
 
 const rootElement = document.getElementById('root')
 const unsupportedElement = document.getElementById('unsupported')
 
 const ZOOM_MIN = 5
-const ZOOM_MAX = 4000
+// Up to planetary full-disk (~25,000 km altitude shows the whole globe). The
+// camera panel's zoom slider is log-scaled, so the metre-scale near range stays
+// usable across this span. Must stay ≤ the story's OrbitControls maxDistance.
+const ZOOM_MAX = 30_000_000
+
+// "Inspect a vessel" camera preset: top-down + north-up (matching the
+// BarentsWatch viewpoint), zoomed in close to the clicked ship. 30 km keeps the
+// orbit distance above the marker/AIS-panel hysteresis band (so the marker stays
+// shown and the AIS panel stays up while you inspect), with the vessel and its
+// near track/projection framed.
+const VESSEL_FOCUS_DISTANCE = 30_000 // m orbit distance (≈30 km)
+const VESSEL_FOCUS_HEADING = 90 // north-up: PointOfView measures heading from EAST
+const VESSEL_FOCUS_PITCH = -82.5 // near-vertical top-down, as BarentsWatch
 
 // First-person spawn pose for a viewpoint: its declared spawn, or — when none
 // is declared — derived from the viewpoint itself (its lon/lat at ~eye level,
@@ -271,8 +313,15 @@ const App: FC = () => {
     latitude: number
     height?: number
     aimOffsetENU?: [number, number, number]
+    // Target orbit distance for this fly — owned by the fly animation, not the
+    // zoom slider, so it can't race the slider-ease into a pre-fly snap.
+    distance?: number
     headingDeg?: number
     pitchDeg?: number
+    // Gentle recenter: ease the orbit centre over at the CURRENT distance with
+    // no great-circle pull-out arc (for clicking a globe marker, where you're
+    // already pulled back and just want the centre to slew to it).
+    gentle?: boolean
   } | null>(null)
 
   // Scenario selection (ScenarioPanel, bottom-right). The scene loads at
@@ -339,12 +388,12 @@ const App: FC = () => {
         latitude,
         height: viewpoint.height,
         aimOffsetENU: viewpoint.aimOffsetENU,
+        // Distance rides on the fly itself (the rig animates to it) — NOT the
+        // zoom slider, so there's no pre-fly snap.
+        distance: viewpoint.distance,
         headingDeg: viewpoint.headingDeg,
         pitchDeg: viewpoint.pitchDeg
       })
-      if (viewpoint.distance != null) {
-        commandZoom(viewpoint.distance)
-      }
       setTurbineCount(scenario.turbines ?? 0)
       setActiveScenario(scenario.id)
       setActiveViewpoint(viewpoint.id)
@@ -352,7 +401,7 @@ const App: FC = () => {
         respawnAt(scenario, viewpoint)
       }
     },
-    [commandZoom, cameraMode, respawnAt]
+    [cameraMode, respawnAt]
   )
 
   // Single source of truth for forecast-driven state, shared by the DOM cards
@@ -386,6 +435,145 @@ const App: FC = () => {
       ),
     [sample]
   )
+
+  // Live AIS positions (BarentsWatch, via the same-origin proxy): the sanctioned
+  // shadow fleet (red) and Coast Guard / Navy patrol vessels (blue). Empty until
+  // server-side credentials are configured — never fabricated. Fed to Content's
+  // globe-overview marker layers, shown only when pulled back to a globe view.
+  const {
+    shadowFleet,
+    patrol,
+    updatedAt: aisUpdatedAt,
+    error: aisError
+  } = useShadowFleetAis(true)
+  const shadowFleetVessels = useMemo(
+    () => shadowFleet.map(toMarker),
+    [shadowFleet]
+  )
+  const patrolVessels = useMemo(() => patrol.map(toMarker), [patrol])
+
+  // Clicked globe marker → full callout, keyed by the vessel's stable id (IMO or
+  // mmsi-derived). Resolves the live record from whichever layer holds it and
+  // tags its category; shadow-fleet vessels also merge the EU sanctions
+  // metadata. Null if the vessel left the feed — the callout closes, no stale
+  // data.
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const selectedVessel = useMemo<SelectedVessel | null>(() => {
+    if (selectedId == null) return null
+    const shadow = shadowFleet.find(v => v.id === selectedId)
+    if (shadow != null) {
+      const meta =
+        shadow.imo != null ? SHADOW_FLEET_BY_IMO.get(shadow.imo) : undefined
+      return {
+        ...shadow,
+        category: 'shadow',
+        formerly: meta?.formerly ?? null,
+        groundLabel:
+          meta?.ground != null
+            ? (SHADOW_FLEET_GROUND_LABEL[meta.ground] ?? null)
+            : null,
+        listed: meta?.listed ?? null
+      }
+    }
+    const patrolVessel = patrol.find(v => v.id === selectedId)
+    if (patrolVessel != null) {
+      return {
+        ...patrolVessel,
+        category: 'patrol',
+        formerly: null,
+        groundLabel: null,
+        listed: null
+      }
+    }
+    return null
+  }, [selectedId, shadowFleet, patrol])
+
+  // Selected vessel's last-24h historic track, auto-fetched on every selection
+  // (keyed by MMSI). Null mmsi → no fetch. Drawn by Content's overlay.
+  const { points: trackPoints } = useVesselTrack(selectedVessel?.mmsi ?? null)
+
+  // Selected vessel's live nav for the forward-projection overlay (where she'll
+  // be after 30 min / 1 h / 3 h along her course).
+  const selectedVesselNav = useMemo<SelectedVesselNav | null>(
+    () =>
+      selectedVessel == null
+        ? null
+        : {
+            latitude: selectedVessel.latitude,
+            longitude: selectedVessel.longitude,
+            courseOverGround: selectedVessel.courseOverGround,
+            speedOverGround: selectedVessel.speedOverGround
+          },
+    [selectedVessel]
+  )
+
+  // Click any vessel marker → open the callout AND fly the orbit camera to
+  // centre on it (holding the current distance; the marker stays visible). A
+  // standalone "inspect tracked vessel" action, distinct from a scenario: clears
+  // scenario state and the farm so the rig frames the vessel, not a site.
+  const handleVesselSelect = useCallback(
+    (id: string) => {
+      setSelectedId(id)
+      const p =
+        shadowFleet.find(v => v.id === id) ?? patrol.find(v => v.id === id)
+      if (p == null) return
+      setActiveScenario(null)
+      setActiveViewpoint(null)
+      setTurbineCount(0)
+      // Descend straight onto the vessel: top-down, north-up (like the
+      // BarentsWatch viewpoint), zoomed in. `gentle` keeps it a direct descent
+      // with no great-circle pull-out arc; the rig still honors `distance`.
+      setFlyTo({
+        name: p.name ?? p.imo ?? id,
+        longitude: p.longitude,
+        latitude: p.latitude,
+        height: 0,
+        distance: VESSEL_FOCUS_DISTANCE,
+        headingDeg: VESSEL_FOCUS_HEADING,
+        pitchDeg: VESSEL_FOCUS_PITCH,
+        gentle: true
+      })
+    },
+    [shadowFleet, patrol]
+  )
+
+  // Marker-layer visibility, toggled from the high-altitude AIS panel. Hiding a
+  // layer that owns the selected vessel also closes its callout (no orphaned
+  // card with no marker).
+  const [layerVisible, setLayerVisible] = useState({
+    shadow: true,
+    patrol: true
+  })
+  const handleLayerToggle = useCallback(
+    (layer: 'shadow' | 'patrol') => {
+      const willHide = layerVisible[layer]
+      setLayerVisible(v => ({ ...v, [layer]: !v[layer] }))
+      if (willHide && selectedId != null) {
+        const list = layer === 'shadow' ? shadowFleet : patrol
+        if (list.some(v => v.id === selectedId)) setSelectedId(null)
+      }
+    },
+    [layerVisible, selectedId, shadowFleet, patrol]
+  )
+
+  // Selected-vessel overlay visibility (historic track + course projection),
+  // toggled from the same AIS panel.
+  const [overlayVisible, setOverlayVisible] = useState({
+    track: true,
+    projection: true
+  })
+  const handleOverlayToggle = useCallback((overlay: 'track' | 'projection') => {
+    setOverlayVisible(v => ({ ...v, [overlay]: !v[overlay] }))
+  }, [])
+
+  // Show the AIS-layers panel (instead of point weather) once pulled back to the
+  // overview, using the same altitude hysteresis as the markers themselves
+  // (appear ≥30 km, hide <18 km) so the panel and the markers swap together.
+  // `liveZoom` is the camera's orbit distance ≈ altitude over a sea-level target.
+  const [aisOverview, setAisOverview] = useState(false)
+  useEffect(() => {
+    setAisOverview(prev => (prev ? liveZoom > 18_000 : liveZoom > 30_000))
+  }, [liveZoom])
 
   const handleAtmosphereReady = useCallback((elapsedMs: number) => {
     // eslint-disable-next-line no-console
@@ -429,6 +617,14 @@ const App: FC = () => {
           flyTo={flyTo}
           cameraMode={cameraMode}
           fpsSpawn={fpsSpawn}
+          shadowFleetVessels={layerVisible.shadow ? shadowFleetVessels : NO_VESSELS}
+          patrolVessels={layerVisible.patrol ? patrolVessels : NO_VESSELS}
+          onVesselSelect={handleVesselSelect}
+          selectedVesselId={selectedId}
+          selectedVesselNav={selectedVesselNav}
+          trackPoints={trackPoints}
+          showProjection={overlayVisible.projection}
+          showTrack={overlayVisible.track}
           farmCount={turbineCount}
           autoRotate={autoRotate}
           zoomDistance={zoom}
@@ -457,6 +653,21 @@ const App: FC = () => {
         selected={selected}
         onScrub={setScrubbed}
         ais={SCENARIOS.find(s => s.id === activeScenario)?.ais ?? null}
+        selectedVessel={selectedVessel}
+        onCloseVessel={() => setSelectedId(null)}
+        aisLayers={{
+          overview: aisOverview,
+          shadowVisible: layerVisible.shadow,
+          patrolVisible: layerVisible.patrol,
+          shadowCount: shadowFleet.length,
+          patrolCount: patrol.length,
+          onToggle: handleLayerToggle,
+          trackVisible: overlayVisible.track,
+          projectionVisible: overlayVisible.projection,
+          onToggleOverlay: handleOverlayToggle,
+          updatedAt: aisUpdatedAt,
+          error: aisError
+        }}
         cameraControls={
           {
             mode: cameraMode,

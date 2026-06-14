@@ -4,12 +4,19 @@
 // (/.netlify/functions/met) by reusing fetchMergedForecast — no secret needed,
 // only MET's mandated User-Agent. Replaces the Netlify Function on mediaserver.
 
-import { createServer } from 'node:http'
+import { createServer, type ServerResponse } from 'node:http'
 import path from 'node:path'
 
 import sirv from 'sirv'
 
 import { fetchMergedForecast } from '../../../netlify/functions/_met-core'
+import {
+  fetchAisPositions,
+  fetchVesselTrack
+} from '../../../netlify/functions/_ais-core'
+import { SHADOW_FLEET } from '../ui/shadowFleet'
+
+const SHADOW_FLEET_IMOS = SHADOW_FLEET.map(v => v.imo)
 
 const PORT = Number(process.env.PORT ?? 3000)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -37,6 +44,19 @@ const serveStatic = sirv(STATIC_DIR, {
   },
 })
 
+// Write a JSON response with an optional cache-control header.
+function sendJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  cacheControl?: string
+): void {
+  res.statusCode = status
+  res.setHeader('content-type', 'application/json')
+  if (cacheControl != null) res.setHeader('cache-control', cacheControl)
+  res.end(JSON.stringify(body))
+}
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
 
@@ -48,18 +68,15 @@ const server = createServer((req, res) => {
     return
   }
 
-  // Same-origin MET proxy. Identical contract to netlify/functions/met.mts so
-  // the client (useMetForecast) hits one unchanged URL across dev/Netlify/self-
-  // hosted. On upstream failure: 502 with the error — never fabricated data.
+  // Same-origin MET proxy. One unchanged URL across dev + self-hosted. On
+  // upstream failure: 502 with the error — never fabricated data.
   if (url.pathname === '/.netlify/functions/met') {
     const lat = Number(url.searchParams.get('lat'))
     const lon = Number(url.searchParams.get('lon'))
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      res.statusCode = 400
-      res.setHeader('content-type', 'application/json')
-      res.end(
-        JSON.stringify({ error: 'lat and lon query params are required numbers' })
-      )
+      sendJson(res, 400, {
+        error: 'lat and lon query params are required numbers'
+      })
       return
     }
     fetchMergedForecast(lat, lon)
@@ -68,16 +85,40 @@ const server = createServer((req, res) => {
           60,
           Math.round((Date.parse(forecast.expires) - Date.now()) / 1000)
         )
-        res.statusCode = 200
-        res.setHeader('content-type', 'application/json')
-        res.setHeader('cache-control', `public, max-age=${maxAge}`)
-        res.end(JSON.stringify(forecast))
+        sendJson(res, 200, forecast, `public, max-age=${maxAge}`)
       })
-      .catch((err: Error) => {
-        res.statusCode = 502
-        res.setHeader('content-type', 'application/json')
-        res.end(JSON.stringify({ error: err.message ?? 'MET fetch failed' }))
-      })
+      .catch((err: Error) =>
+        sendJson(res, 502, { error: err.message ?? 'MET fetch failed' })
+      )
+    return
+  }
+
+  // Same-origin BarentsWatch AIS proxy: live positions split into the sanctioned
+  // shadow fleet (by IMO) and Coast Guard / Navy patrol vessels (by name/type),
+  // all currently in Norwegian waters. Secret stays server-side. 503 (not
+  // fabricated data) when credentials are unset.
+  if (url.pathname === '/.netlify/functions/ais-shadow-fleet') {
+    fetchAisPositions(SHADOW_FLEET_IMOS)
+      .then(data => sendJson(res, 200, data, 'public, max-age=30'))
+      .catch((err: Error) =>
+        sendJson(res, 503, { error: err.message ?? 'AIS fetch failed' })
+      )
+    return
+  }
+
+  // One vessel's last-24h historic track, keyed by MMSI (?mmsi=). Fetched on
+  // demand when a vessel is selected. 400 on a missing/invalid MMSI.
+  if (url.pathname === '/.netlify/functions/ais-track') {
+    const mmsi = Number(url.searchParams.get('mmsi'))
+    if (!Number.isFinite(mmsi) || mmsi <= 0) {
+      sendJson(res, 400, { error: 'missing or invalid mmsi' })
+      return
+    }
+    fetchVesselTrack(mmsi)
+      .then(data => sendJson(res, 200, data, 'public, max-age=60'))
+      .catch((err: Error) =>
+        sendJson(res, 503, { error: err.message ?? 'track fetch failed' })
+      )
     return
   }
 

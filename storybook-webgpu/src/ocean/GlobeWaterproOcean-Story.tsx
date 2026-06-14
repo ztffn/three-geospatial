@@ -7,7 +7,7 @@
 
 'use client'
 
-import { OrbitControls } from '@react-three/drei'
+import { Html, OrbitControls } from '@react-three/drei'
 import {
   extend,
   useFrame,
@@ -34,7 +34,6 @@ import {
 } from 'react'
 import {
   AgXToneMapping,
-  ArrowHelper,
   MathUtils,
   Matrix4,
   Mesh,
@@ -56,6 +55,11 @@ import {
   PostProcessing,
   type Renderer,
 } from 'three/webgpu'
+// Fat (wide, optionally dashed) screen-space lines for the AIS overlays. These
+// are the WebGPURenderer variants — `Line2NodeMaterial` reads the viewport for
+// pixel-width + dashing automatically (no manual resolution).
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
+import { Line2 } from 'three/addons/lines/webgpu/Line2.js'
 
 import {
   getECIToECEFRotationMatrix,
@@ -430,7 +434,13 @@ const CameraRig: FC<{
   // triggers a fly even when the location target is unchanged — same-site
   // viewpoint hops without moving the farm. Null → default behaviour.
   aim?: Vector3 | null
+  // Slider-commanded orbit distance. Eased ONLY when it actually changes (the
+  // user moved the slider) — never used as a fly target, so a programmatic
+  // fly-to can't race it into a pre-fly snap.
   zoomDistance?: number
+  // Target orbit distance for the CURRENT fly-to (scenario/viewpoint). The fly
+  // animates fromDist→flyDistance as one motion; omitted → keep current distance.
+  flyDistance?: number
   // Per-viewpoint camera attitude (scenario presets). Omitted → the module
   // defaults (heading 180, pitch -20). Like the defaults, applied for the
   // whole fly — the camera snaps to the new attitude at fly start.
@@ -440,6 +450,9 @@ const CameraRig: FC<{
   // carried an explicit aim height (deliberately placed on/above terrain),
   // so the turbine-free overview clamp would be wrong.
   landExact?: boolean
+  // Gentle recenter: keep the CURRENT distance (no zoom change) and skip the
+  // great-circle pull-out bump — a smooth pan of the orbit centre.
+  gentleRecenter?: boolean
   // Reports the camera's live distance to the orbit target when at rest
   // (including after a mouse-wheel zoom), so a host slider can track it.
   // Suppressed mid-fly and mid-slider-ease to avoid fighting those commands.
@@ -449,9 +462,11 @@ const CameraRig: FC<{
   focus,
   aim = null,
   zoomDistance,
+  flyDistance,
   headingDeg,
   pitchDeg,
   landExact = false,
+  gentleRecenter = false,
   onDistance
 }) => {
   const camera = useThree(({ camera }) => camera)
@@ -466,7 +481,12 @@ const CameraRig: FC<{
     toDist: number
     bump: number
   } | null>(null)
-  const appliedZoom = useRef<number | null>(null)
+  // Slider-zoom ease is EDGE-triggered: when zoomDistance changes (user moved
+  // the slider) we latch it as easeTarget and damp toward it until reached.
+  // A fly-to never changes zoomDistance, so it can't arm this — which is what
+  // killed the pre-fly "snap". prevZoom detects the change edge.
+  const prevZoom = useRef<number | undefined>(zoomDistance)
+  const easeTarget = useRef<number | null>(null)
   const lastTarget = useRef<Vector3 | null>(null)
   const lastAim = useRef<Vector3 | null>(null)
   const tmpAim = useRef(new Vector3())
@@ -516,7 +536,6 @@ const CameraRig: FC<{
       (lastAim.current != null && aim != null && !lastAim.current.equals(aim))
     if (lastTarget.current == null) {
       place(startAim, dist)
-      appliedZoom.current = dist
     } else if (!lastTarget.current.equals(target) || aimChanged) {
       const fromAim = controls?.target?.clone() ?? lastTarget.current.clone()
       const fromDist =
@@ -531,16 +550,21 @@ const CameraRig: FC<{
           1
         )
       )
+      // Distance is owned by the fly: animate from the TRUE current distance to
+      // the fly's target (flyDistance) whenever one is given — including a gentle
+      // recenter, so a marker focus descends straight to its zoom with no pull-
+      // out arc (gentle still zeroes the bump below). No flyDistance → hold the
+      // current distance. The slider channel is untouched, so no ease races this.
+      const toDist = flyDistance ?? fromDist
       fly.current = {
         t: 0,
         dur: 1.6 + (sep / Math.PI) * 1.8,
         fromAim,
         toAim: startAim,
         fromDist,
-        toDist: dist,
-        bump: (sep / Math.PI) * 1.2e7 // up to ~globe scale for antipodal jumps
+        toDist,
+        bump: gentleRecenter ? 0 : (sep / Math.PI) * 1.2e7 // ~globe scale for antipodal
       }
-      appliedZoom.current = dist
     }
     lastTarget.current = target.clone()
     lastAim.current = aim?.clone() ?? null
@@ -549,6 +573,13 @@ const CameraRig: FC<{
 
   useFrame((_, dt) => {
     if (controls?.target == null) return
+
+    // Edge-detect a slider move and latch it as the ease target. Done every
+    // frame (not in an effect) so it's caught even mid-fly and applied after.
+    if (zoomDistance !== prevZoom.current) {
+      prevZoom.current = zoomDistance
+      if (zoomDistance != null) easeTarget.current = zoomDistance
+    }
 
     if (fly.current != null) {
       const f = fly.current
@@ -584,20 +615,24 @@ const CameraRig: FC<{
       return
     }
 
-    // Slider zoom: ease distance toward zoomDistance only when it changed, so
-    // mouse-wheel zoom is left alone between slider moves.
-    if (zoomDistance != null && zoomDistance !== appliedZoom.current) {
+    // Ease toward a latched slider target (set above on a slider move). Mouse-
+    // wheel zoom is left alone — it doesn't change zoomDistance, so nothing is
+    // latched. Cleared when reached.
+    if (easeTarget.current != null) {
+      const goal = easeTarget.current
       const dir = camera.position.clone().sub(controls.target)
       const cur = dir.length()
       if (cur > 1e-6) {
-        const next = MathUtils.damp(cur, zoomDistance, 6, dt)
+        const next = MathUtils.damp(cur, goal, 6, dt)
         camera.position
           .copy(controls.target)
           .addScaledVector(dir.normalize(), next)
         controls.update?.()
-        if (Math.abs(next - zoomDistance) < zoomDistance * 0.01) {
-          appliedZoom.current = zoomDistance
+        if (Math.abs(next - goal) < goal * 0.01) {
+          easeTarget.current = null
         }
+      } else {
+        easeTarget.current = null
       }
       return
     }
@@ -659,6 +694,12 @@ const fpsTmpRide = new Vector3()
 const fpsTmpM1 = new Matrix4()
 const fpsTmpM2 = new Matrix4()
 const fpsSpawnRay = new THREE.Raycaster()
+
+// The single list of FPS deck-spawn/ride platform ids — the ship registry's
+// `platformId`s, the live-group setters, and a scenario's `spawn.platform` all
+// key off this, so adding a deck-capable vessel can't silently miss a setter.
+const FPS_PLATFORM_IDS = ['ship', 'patrolship', 'platform'] as const
+type FpsPlatformId = (typeof FPS_PLATFORM_IDS)[number]
 
 const FpsRig: FC<{
   active: boolean
@@ -894,6 +935,481 @@ const FpsRig: FC<{
   })
 
   return null
+}
+
+// One vessel for a globe-overview marker layer (sanctioned shadow fleet or
+// Norwegian Coast Guard / Navy patrol). The host (deploy) resolves live
+// positions from AIS and passes them in; the scene never invents positions.
+// `id` is the stable selection key (IMO when broadcast, else mmsi-derived);
+// `speedOverGround` feeds the selected vessel's forward-projection overlay.
+export interface VesselMarker {
+  id: string
+  imo: string | null
+  name: string | null
+  latitude: number
+  longitude: number
+  courseOverGround: number | null
+  speedOverGround: number | null
+}
+
+// Per-layer marker palette: dart fill + label text colour (selected → white).
+export interface MarkerColor {
+  fill: string
+  text: string
+}
+export const SHADOW_MARKER_COLOR: MarkerColor = {
+  fill: 'oklch(0.6671 0.2199 26.4681)',
+  text: '#ffd7d0'
+}
+export const PATROL_MARKER_COLOR: MarkerColor = {
+  fill: 'oklch(0.62 0.17 248)',
+  text: '#cfe0ff'
+}
+
+// Globe-overview marker layer: drops an icon at each vessel's live position,
+// shown ONLY when the camera is pulled back to a regional/globe view (where the
+// ship models are sub-pixel specks) and hidden as you descend into a scenario —
+// EXCEPT the selected vessel, which persists through the hide threshold so you
+// can fly down and inspect it. Visibility uses hysteresis (show ≥30 km altitude,
+// hide <18 km) so it doesn't flicker at the boundary. Icons are screen-space DOM
+// (drei Html), so they stay a constant size regardless of zoom.
+const SHADOW_FLEET_SHOW_ALT = 30_000 // m above the ellipsoid
+const SHADOW_FLEET_HIDE_ALT = 18_000 // m (hysteresis band below SHOW)
+const EARTH_MEAN_RADIUS = 6_371_000
+// Distance (m) along a vessel's course used to derive the dart's ON-SCREEN
+// heading: the dart is a screen-space DOM element, so rotating it by raw COG
+// would peg it to screen-up, not geographic north — it would then appear to
+// spin with the camera. Instead we project this probe point and rotate the dart
+// to the screen-space bearing, so it tracks true course under any camera angle.
+const HEADING_PROBE_M = 5000
+const _rotNdcA = new Vector3()
+const _rotNdcB = new Vector3()
+
+const VesselMarkers: FC<{
+  vessels: VesselMarker[]
+  color: MarkerColor
+  // Marker click → host opens the full vessel callout (deploy HUD).
+  onSelect?: (id: string) => void
+  // Currently-selected vessel id, so its marker reads as active. Shared across
+  // every layer; only the layer that OWNS it (has it in `vessels`) reacts.
+  selectedId?: string | null
+}> = ({ vessels, color, onSelect, selectedId }) => {
+  const [visible, setVisible] = useState(false)
+  const visibleRef = useRef(false)
+  // Live <svg> elements by vessel id, so the frame loop can rotate each dart to
+  // its on-screen course bearing imperatively (no React re-render per frame).
+  const svgRefs = useRef(new Map<string, SVGSVGElement>())
+  // Last view state the darts were oriented for. The per-marker rotation pass
+  // is skipped entirely when none of (camera pose, viewport, marker set) changed
+  // — so a static view costs nothing. Per-instance (not module scope) so the
+  // shadow and patrol layers don't clobber each other's guard.
+  const lastPose = useRef({
+    x: NaN,
+    y: NaN,
+    z: NaN,
+    qx: NaN,
+    qy: NaN,
+    qz: NaN,
+    qw: NaN,
+    w: 0,
+    h: 0,
+    placed: null as typeof placed | null,
+    sel: undefined as string | null | undefined
+  })
+  const placed = useMemo(
+    () =>
+      vessels.map(v => {
+        const pos = new Geodetic(
+          radians(v.longitude),
+          radians(v.latitude),
+          0
+        ).toECEF()
+        // Probe point a little way along the course, for the screen-bearing.
+        let headPos: Vector3 | null = null
+        if (v.courseOverGround != null) {
+          const { east, north } = enuBasis(pos)
+          headPos = pos
+            .clone()
+            .addScaledVector(
+              bearingVector(v.courseOverGround, east, north),
+              HEADING_PROBE_M
+            )
+        }
+        return { v, pos, headPos }
+      }),
+    [vessels]
+  )
+  useFrame(({ camera, size }) => {
+    // Altitude LOD: icons only at a pulled-back / globe view (hysteresis).
+    const alt = camera.position.length() - EARTH_MEAN_RADIUS
+    const next = visibleRef.current
+      ? alt > SHADOW_FLEET_HIDE_ALT
+      : alt > SHADOW_FLEET_SHOW_ALT
+    if (next !== visibleRef.current) {
+      visibleRef.current = next
+      setVisible(next)
+    }
+    // Rotate each drawn dart to the screen-space bearing of its course, so it
+    // points at true heading regardless of camera azimuth (and doesn't spin with
+    // the globe). Skipped unless the view changed since last frame — the course
+    // is baked into headPos in the memo, so only the camera/viewport move it.
+    const cp = camera.position
+    const cq = camera.quaternion
+    const lp = lastPose.current
+    const viewChanged =
+      lp.placed !== placed ||
+      lp.sel !== selectedId ||
+      lp.w !== size.width ||
+      lp.h !== size.height ||
+      lp.x !== cp.x ||
+      lp.y !== cp.y ||
+      lp.z !== cp.z ||
+      lp.qx !== cq.x ||
+      lp.qy !== cq.y ||
+      lp.qz !== cq.z ||
+      lp.qw !== cq.w
+    if (viewChanged) {
+      for (const p of placed) {
+        if (p.headPos == null) continue
+        const el = svgRefs.current.get(p.v.id)
+        if (el == null) continue
+        _rotNdcA.copy(p.pos).project(camera)
+        _rotNdcB.copy(p.headPos).project(camera)
+        // NDC deltas scaled by viewport px to undo aspect distortion. Dart points
+        // up (−y screen) at 0°; CSS rotate is clockwise; NDC y is up, so a course
+        // toward +NDC.y (north on a north-up view) → atan2(dx, dy)=0 (no spin),
+        // east (dx>0) → +90° (right).
+        const dx = (_rotNdcB.x - _rotNdcA.x) * size.width
+        const dy = (_rotNdcB.y - _rotNdcA.y) * size.height
+        el.style.transform = `rotate(${(Math.atan2(dx, dy) * 180) / Math.PI}deg)`
+      }
+      lp.placed = placed
+      lp.sel = selectedId
+      lp.w = size.width
+      lp.h = size.height
+      lp.x = cp.x
+      lp.y = cp.y
+      lp.z = cp.z
+      lp.qx = cq.x
+      lp.qy = cq.y
+      lp.qz = cq.z
+      lp.qw = cq.w
+    }
+  })
+  if (placed.length === 0) return null
+  // Pulled back → all markers. Zoomed past the hide threshold → only the
+  // selected vessel this layer owns, so you can descend onto it for inspection.
+  const ownedSelected =
+    selectedId != null ? placed.find(p => p.v.id === selectedId) : undefined
+  const toDraw = visible ? placed : ownedSelected != null ? [ownedSelected] : []
+  if (toDraw.length === 0) return null
+  return (
+    <>
+      {toDraw.map(({ v, pos }) => (
+        <Html
+          key={v.id}
+          position={pos}
+          center
+          zIndexRange={[4, 0]}
+          style={{ pointerEvents: 'none', userSelect: 'none' }}
+        >
+          <div
+            onClick={onSelect != null ? () => onSelect(v.id) : undefined}
+            title={`${v.name ?? 'Unknown'}${
+              v.imo != null ? ` · IMO ${v.imo}` : ''
+            }${
+              v.courseOverGround != null
+                ? ` · ${Math.round(v.courseOverGround)}°`
+                : ''
+            }`}
+            style={{
+              // Wrapper shrinks to the dart so drei's `center` lands the DART
+              // exactly on the vessel position; the name floats beside it
+              // (absolute, below) without shifting the icon off the point.
+              position: 'relative',
+              display: 'inline-flex',
+              lineHeight: 0,
+              color: selectedId === v.id ? '#fff' : color.text,
+              // Only the marker is interactive; the rest of the Html layer
+              // stays click-through so the globe drags normally.
+              pointerEvents: onSelect != null ? 'auto' : 'none',
+              cursor: onSelect != null ? 'pointer' : 'default'
+            }}
+          >
+            {(() => {
+              const sel = selectedId === v.id
+              const cog = v.courseOverGround
+              const sz = sel ? 18 : 14
+              const stroke = sel ? '#fff' : 'rgba(255,255,255,0.85)'
+              const fill = color.fill
+              return (
+                <svg
+                  ref={el => {
+                    if (el != null) svgRefs.current.set(v.id, el)
+                    else svgRefs.current.delete(v.id)
+                  }}
+                  width={sz}
+                  height={sz}
+                  viewBox="0 0 24 24"
+                  style={{
+                    flexShrink: 0,
+                    // Rotation is set imperatively each frame to the on-screen
+                    // course bearing (see the useFrame loop) — a static
+                    // rotate(cog) would peg the dart to screen-up, not north.
+                    filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.7))',
+                    transition: 'width 120ms, height 120ms'
+                  }}
+                >
+                  {cog != null ? (
+                    // Ship dart pointing N: bow tip, two stern corners, notch.
+                    <path
+                      d="M12 2 L19 21 L12 16.5 L5 21 Z"
+                      fill={fill}
+                      stroke={stroke}
+                      strokeWidth={1.3}
+                      strokeLinejoin="round"
+                    />
+                  ) : (
+                    // Heading unknown — neutral disc.
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="6"
+                      fill={fill}
+                      stroke={stroke}
+                      strokeWidth={1.3}
+                    />
+                  )}
+                </svg>
+              )
+            })()}
+            <span
+              style={{
+                // Floated to the right of the dart, vertically centred, OUT of
+                // flow so it never displaces the icon from the vessel position.
+                position: 'absolute',
+                left: '100%',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                marginLeft: 4,
+                fontFamily:
+                  "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+                fontSize: 10,
+                lineHeight: 1,
+                whiteSpace: 'nowrap',
+                textShadow: '0 0 3px rgba(0,0,0,0.85)'
+              }}
+            >
+              {v.name ?? v.imo ?? v.id}
+            </span>
+          </div>
+        </Html>
+      ))}
+    </>
+  )
+}
+
+// Overlay polylines sit at sea level (height 0), exactly like the marker dart's
+// anchor, so the line and the icon rest at the same height — no parallax gap
+// between them at an angled/zoomed view. No lift is needed because the lines are
+// drawn with depthTest off (always on top), so the wave mesh can't bury them.
+const OVERLAY_LIFT_M = 0
+const KNOTS_TO_M = 1852 // 1 knot·hour = 1 nautical mile = 1852 m
+// Forward dead-reckoning horizons for the selected vessel, matching NAIS
+// ("where will she be after 30 min / 1 h / 3 h"). Distance to each tick is
+// SOG × time, drawn straight along course-over-ground.
+const PROJECTION_HOURS: ReadonlyArray<{ h: number; label: string }> = [
+  { h: 0.5, label: '30 min' },
+  { h: 1, label: '1 h' },
+  { h: 3, label: '3 h' }
+]
+const PROJECTION_COLOR = 0xffcc33 // bright amber predictor (vs cyan wind arrow)
+const TRACK_COLOR = 0x4dd2ff // bright cyan historic trail
+// Screen-space line widths (px) — fat lines, constant thickness at any zoom.
+const TRACK_WIDTH = 4
+const PROJECTION_WIDTH = 3
+// Projection dash pattern, in world metres along the line (it spans tens of km,
+// so km-scale dashes give a handful of visible segments). Tunable.
+const PROJECTION_DASH_M = 2500
+const PROJECTION_GAP_M = 1800
+// Below this speed a vessel is effectively stopped — no meaningful prediction.
+const PROJECTION_MIN_SOG_KN = 0.5
+
+// Minimal nav + track shapes the overlay needs (position + kinematics only),
+// kept local so the story doesn't import the deploy's AIS types.
+export interface SelectedVesselNav {
+  latitude: number
+  longitude: number
+  courseOverGround: number | null
+  speedOverGround: number | null
+}
+export interface TrackVertex {
+  latitude: number
+  longitude: number
+}
+
+// Fat (wide, optionally dashed) polyline through ECEF points, drawn as an
+// always-on-top data overlay: depthTest off (so the ocean, haze and waves can't
+// bury it) and a high renderOrder so it paints last; depthWrite off so it never
+// occludes the scene. Width is screen-space px (constant at any zoom); dashes,
+// when enabled, are measured in world metres along the line. Tracks/projections
+// are local (regional), so drawing over the globe doesn't bleed through in
+// practice.
+function lineFromEcef(
+  points: Vector3[],
+  color: number,
+  opacity: number,
+  linewidth: number,
+  dash?: { size: number; gap: number }
+): Line2 {
+  const positions: number[] = []
+  for (const p of points) positions.push(p.x, p.y, p.z)
+  const geometry = new LineGeometry()
+  geometry.setPositions(positions)
+  const material = new THREE.Line2NodeMaterial({
+    color,
+    linewidth,
+    transparent: true,
+    opacity,
+    dashed: dash != null,
+    ...(dash != null ? { dashSize: dash.size, gapSize: dash.gap } : {}),
+    depthWrite: false,
+    depthTest: false
+  })
+  const line = new Line2(geometry, material)
+  // Dashing keys off cumulative segment length, which must be precomputed.
+  if (dash != null) line.computeLineDistances()
+  line.frustumCulled = false
+  line.renderOrder = 10
+  return line
+}
+
+// Dispose a built line's geometry + material when it is replaced or unmounted
+// (these rebuild on every selection, so otherwise they would leak).
+function useDisposableLine(line: Line2 | null): void {
+  useEffect(
+    () => () => {
+      if (line == null) return
+      line.geometry.dispose()
+      const m = line.material
+      if (Array.isArray(m)) {
+        m.forEach(x => {
+          x.dispose()
+        })
+      } else m.dispose()
+    },
+    [line]
+  )
+}
+
+// Selected-vessel overlay: a NAIS-style forward dead-reckoning projection (amber
+// line + 30 min/1 h/3 h ticks labelled with distance run) and the vessel's
+// last-24h historic track (blue-white trail). Pure client geometry on the sea
+// surface — no API beyond the track fetch the host passes in. Renders whenever a
+// vessel is selected, independent of the marker LOD (so it persists on descent).
+const SelectedVesselOverlay: FC<{
+  nav: SelectedVesselNav
+  track: TrackVertex[]
+  // Overlay visibility, toggled from the AIS panel (default on).
+  showProjection?: boolean
+  showTrack?: boolean
+}> = ({ nav, track, showProjection = true, showTrack = true }) => {
+  const projection = useMemo(() => {
+    if (!showProjection) return null
+    const { courseOverGround: cog, speedOverGround: sog } = nav
+    if (cog == null || sog == null || sog < PROJECTION_MIN_SOG_KN) return null
+    // Anchor at sea level; offset along the COG bearing in the local tangent
+    // frame, then reproject each tick back onto the surface (so the line hugs
+    // the globe) and lift it clear of the waves.
+    const anchor = new Geodetic(
+      radians(nav.longitude),
+      radians(nav.latitude),
+      0
+    ).toECEF()
+    const { east, north } = enuBasis(anchor)
+    const bearing = bearingVector(cog, east, north)
+    const g = new Geodetic()
+    const ticks = PROJECTION_HOURS.map(({ h, label }) => {
+      const distNm = sog * h
+      const offset = anchor
+        .clone()
+        .addScaledVector(bearing, distNm * KNOTS_TO_M)
+      g.setFromECEF(offset)
+      g.height = OVERLAY_LIFT_M
+      return { ecef: g.toECEF(), label, distNm }
+    })
+    const start = new Geodetic(
+      radians(nav.longitude),
+      radians(nav.latitude),
+      OVERLAY_LIFT_M
+    ).toECEF()
+    const line = lineFromEcef(
+      [start, ...ticks.map(t => t.ecef)],
+      PROJECTION_COLOR,
+      1,
+      PROJECTION_WIDTH,
+      { size: PROJECTION_DASH_M, gap: PROJECTION_GAP_M }
+    )
+    return { line, ticks }
+  }, [nav, showProjection])
+
+  const trackLine = useMemo(() => {
+    if (!showTrack || track.length < 2) return null
+    return lineFromEcef(
+      track.map(p =>
+        new Geodetic(
+          radians(p.longitude),
+          radians(p.latitude),
+          OVERLAY_LIFT_M
+        ).toECEF()
+      ),
+      TRACK_COLOR,
+      0.9,
+      TRACK_WIDTH
+    )
+  }, [track, showTrack])
+
+  useDisposableLine(projection?.line ?? null)
+  useDisposableLine(trackLine)
+
+  return (
+    <>
+      {trackLine != null && (
+        // Keyed by uuid so a new line on re-selection remounts the primitive
+        // (R3F doesn't reliably swap a changed `object` prop in place).
+        <primitive key={trackLine.uuid} object={trackLine} />
+      )}
+      {projection != null && (
+        <>
+          <primitive key={projection.line.uuid} object={projection.line} />
+          {projection.ticks.map(t => (
+            <Html
+              key={t.label}
+              position={t.ecef}
+              center
+              zIndexRange={[3, 0]}
+              style={{ pointerEvents: 'none', userSelect: 'none' }}
+            >
+              <div
+                style={{
+                  transform: 'translateY(-50%)',
+                  fontFamily:
+                    "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+                  fontSize: 9,
+                  lineHeight: 1,
+                  whiteSpace: 'nowrap',
+                  color: '#ffe9b0',
+                  textShadow: '0 0 3px rgba(0,0,0,0.85)'
+                }}
+              >
+                {t.label} · {t.distNm.toFixed(1)} nm
+              </div>
+            </Html>
+          ))}
+        </>
+      )}
+    </>
+  )
 }
 
 // Keeps the camera from dropping below the 3D terrain tiles. Rendered as a
@@ -1272,28 +1788,6 @@ const TurbineFarm: FC<{
   )
 }
 
-// Debug-only wind arrow: a large ArrowHelper on the tangent plane at `target`,
-// pointing in the direction the wind BLOWS TOWARD (downwind = windHeadingDeg +
-// 180°). Use it to sanity-check that the turbine array's long axis runs along
-// the arrow and every rotor faces INTO the wind (opposite the arrow tip).
-const WindArrow: FC<{
-  target: Vector3
-  windHeadingDeg: number
-  lengthM: number
-}> = ({ target, windHeadingDeg, lengthM }) => {
-  const arrow = useMemo(() => new ArrowHelper(), [])
-  useMemo(() => {
-    const { east, north, up } = enuBasis(target)
-    // Points the way the wind blows TOWARD (downwind = wind-from + 180°).
-    const dir = bearingVector(windHeadingDeg + 180, east, north)
-    arrow.position.copy(target).addScaledVector(up, lengthM * 0.05)
-    arrow.setDirection(dir)
-    arrow.setLength(lengthM, lengthM * 0.18, lengthM * 0.09)
-    arrow.setColor(0x33ccff)
-  }, [arrow, target, windHeadingDeg, lengthM])
-  return <primitive object={arrow} />
-}
-
 // SCENE_RADIANCE_SCALE — matches WaterproAtmosphere-Story.tsx:145. The
 // WaterPro composition peaks ~2× higher than the legacy WGSL fragment, so
 // 0.28 is the calibrated value for AgX exposure 10 (PORT-STATUS §13). Using
@@ -1358,8 +1852,14 @@ export const Content: FC<{
     name: string
     height?: number
     aimOffsetENU?: [number, number, number]
+    // Target orbit distance for this fly (owned by the fly animation, NOT the
+    // zoom slider — so it can't race the slider-ease into a pre-fly snap).
+    distance?: number
     headingDeg?: number
     pitchDeg?: number
+    // Gentle recenter: ease the orbit centre at the CURRENT distance, no
+    // great-circle pull-out arc (clicking a globe marker — already pulled back).
+    gentle?: boolean
   } | null
   // 'orbit' (default): OrbitControls + CameraRig fly-tos. 'fps': free-fly
   // first-person rig (WASD + drag look); OrbitControls and the rig are
@@ -1381,6 +1881,22 @@ export const Content: FC<{
     pitchDeg?: number
     nonce?: number
   } | null
+  // Live vessel positions for the globe-overview marker layers (red shadow
+  // fleet, blue Coast Guard / Navy patrol). Host-supplied from AIS; the scene
+  // shows them only at a pulled-back view.
+  shadowFleetVessels?: VesselMarker[]
+  patrolVessels?: VesselMarker[]
+  // Marker click → host opens the full vessel callout; selectedVesselId
+  // highlights. Selection is shared across both layers (one id).
+  onVesselSelect?: (id: string) => void
+  selectedVesselId?: string | null
+  // Selected vessel's live nav + last-24h track, for the forward-projection and
+  // historic-trail overlay. Null when nothing is selected.
+  selectedVesselNav?: SelectedVesselNav | null
+  trackPoints?: TrackVertex[]
+  // Overlay visibility, toggled from the AIS panel (default on when omitted).
+  showProjection?: boolean
+  showTrack?: boolean
   autoRotate?: boolean
   zoomDistance?: number
   // Live orbit distance reported back each frame when the camera is at rest, so
@@ -1405,6 +1921,14 @@ export const Content: FC<{
   flyTo,
   cameraMode,
   fpsSpawn,
+  shadowFleetVessels,
+  patrolVessels,
+  onVesselSelect,
+  selectedVesselId,
+  selectedVesselNav,
+  trackPoints,
+  showProjection,
+  showTrack,
   autoRotate,
   zoomDistance,
   onZoomChange,
@@ -1588,16 +2112,16 @@ export const Content: FC<{
     Record<string, Object3D | null>
   >({})
   const platformSetters = useMemo(() => {
-    const make =
-      (id: string) =>
-      (group: Object3D | null): void => {
+    const setters = {} as Record<
+      FpsPlatformId,
+      (group: Object3D | null) => void
+    >
+    for (const id of FPS_PLATFORM_IDS) {
+      setters[id] = (group: Object3D | null): void => {
         setFpsPlatforms(platforms => ({ ...platforms, [id]: group }))
       }
-    return {
-      ship: make('ship'),
-      patrolship: make('patrolship'),
-      platform: make('platform')
-    } as Record<string, (group: Object3D | null) => void>
+    }
+    return setters
   }, [])
 
   const atmosphereControls = useControls('Atmosphere', {
@@ -1620,15 +2144,15 @@ export const Content: FC<{
     source: { value: 'procedural', options: ['procedural', 'live'] },
     preset: { value: 'fair' as CloudPresetName, options: CLOUD_PRESET_NAMES },
     altitude: { value: 4000, min: 500, max: 12000, step: 100 },
-    opacity: { value: 0.85, min: 0, max: 1, step: 0.01 },
-    coverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
+    opacity: { value: 0.24, min: 0, max: 1, step: 0.01 },
+    coverage: { value: 0.71, min: 0, max: 1, step: 0.01 },
     windSpeed: { value: 0.004, min: 0, max: 0.05, step: 0.001 },
     tiles: { value: 69, min: 1, max: 100, step: 1 },
     dayColor: '#ffffff',
     nightAmbient: { value: 0.03, min: 0, max: 0.5, step: 0.01 },
-    density: { value: 0.1, min: 0, max: 1, step: 0.01 },
+    density: { value: 0, min: 0, max: 1, step: 0.01 },
     intensity: { value: 2.5, min: 0, max: 6, step: 0.1 },
-    contrast: { value: 1, min: 0.5, max: 5, step: 0.1 },
+    contrast: { value: 1.3, min: 0.5, max: 5, step: 0.1 },
     // Analytic effects on the ocean (shared coverage; no extra passes).
     reflectionStrength: { value: 0.05, min: 0, max: 1, step: 0.01 },
     shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 },
@@ -1754,7 +2278,14 @@ export const Content: FC<{
       ).y
     }
     const depthBelow = surfaceY - uwScratch.p.y
-    if (uwScratch.submerged) {
+    // The planar depth test (height above the target's tangent plane) is only
+    // valid near the surface. Far out — e.g. planetary zoom — orbiting below
+    // that infinite plane reads as "deep underwater" and fades the post to
+    // black. Gate it by true altitude (generous vs any real diving view).
+    const camAltitude = camera.position.length() - target.length()
+    if (camAltitude > 500) {
+      uwScratch.submerged = false
+    } else if (uwScratch.submerged) {
       if (depthBelow < 0.05) uwScratch.submerged = false
     } else if (depthBelow > 0.35) {
       uwScratch.submerged = true
@@ -1882,17 +2413,6 @@ export const Content: FC<{
     cover: { value: true, label: 'Hero: cover' },
   })
 
-  const debugControls = useControls('Debug', {
-    windArrow: { value: true, label: 'Wind arrow' },
-    windArrowKm: {
-      value: 3,
-      min: 0.5,
-      max: 20,
-      step: 0.5,
-      label: 'Arrow length (km)',
-    },
-  })
-
   useEffect(() => {
     onTurbineCountChange?.(turbineControls.count)
   }, [onTurbineCountChange, turbineControls.count])
@@ -1927,7 +2447,7 @@ export const Content: FC<{
     url: string
     controls: typeof ship0.controls
     anchor: Vector3
-    platformId?: string
+    platformId?: FpsPlatformId
     buoyant: boolean
     waterOcclusion: boolean
   }> = [
@@ -2090,7 +2610,9 @@ export const Content: FC<{
 
   const cameraControls = useControls('Camera', {
     minDistance: { value: 1, min: 0.1, max: 5000, step: 0.1 },
-    maxDistance: { value: 100000, min: 1000, max: 50_000_000, step: 100_000 },
+    // 30,000 km lets the camera pull back to a planetary full-disk view (earth
+    // radius ~6,371 km); the deploy's zoom slider maps to this same ceiling.
+    maxDistance: { value: 30_000_000, min: 1000, max: 50_000_000, step: 100_000 },
     autoOrbit: { value: true },
     orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
     // After a full load, frame the view you want, then click this. It logs +
@@ -2802,9 +3324,11 @@ export const Content: FC<{
           focus={heroFocus}
           aim={flyAim}
           zoomDistance={zoomDistance}
+          flyDistance={flyTo?.distance}
           headingDeg={flyTo?.headingDeg}
           pitchDeg={flyTo?.pitchDeg}
           landExact={flyTo?.height != null}
+          gentleRecenter={flyTo?.gentle === true}
           onDistance={onZoomChange}
         />
       )}
@@ -2813,6 +3337,30 @@ export const Content: FC<{
         spawn={fpsSpawnPose}
         platforms={fpsPlatforms}
       />
+      {shadowFleetVessels != null && shadowFleetVessels.length > 0 && (
+        <VesselMarkers
+          vessels={shadowFleetVessels}
+          color={SHADOW_MARKER_COLOR}
+          onSelect={onVesselSelect}
+          selectedId={selectedVesselId}
+        />
+      )}
+      {patrolVessels != null && patrolVessels.length > 0 && (
+        <VesselMarkers
+          vessels={patrolVessels}
+          color={PATROL_MARKER_COLOR}
+          onSelect={onVesselSelect}
+          selectedId={selectedVesselId}
+        />
+      )}
+      {selectedVesselNav != null && (
+        <SelectedVesselOverlay
+          nav={selectedVesselNav}
+          track={trackPoints ?? []}
+          showProjection={showProjection}
+          showTrack={showTrack}
+        />
+      )}
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth
           pre-pass for shoreline-foam gating.
@@ -2841,13 +3389,6 @@ export const Content: FC<{
         onHeroFocus={setHeroFocus}
         cables={cables}
       />
-      {debugControls.windArrow && (
-        <WindArrow
-          target={target}
-          windHeadingDeg={windHeading ?? turbineControls.windDir}
-          lengthM={debugControls.windArrowKm * 1000}
-        />
-      )}
       {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
           download/parse doesn't compete with the stage-1 atmosphere-LUT
           compute) and isolated in its own Suspense so loading can't blank the
