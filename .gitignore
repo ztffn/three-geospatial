@@ -333,3 +333,20 @@ storybook-static
 
 # Local Netlify folder
 .netlify
+
+# Blender working files + raw uncompressed GLB exports for the twin, kept local.
+# The app loads the committed *-compressed.glb deliverables; these are heavy
+# (tens of MB) and regenerable from the .blend source. Scoped to this assets dir
+# so it never touches the tracked .blend under packages/ocean-ifft/.
+storybook-webgpu/assets/*.blend
+storybook-webgpu/assets/*.blend1
+storybook-webgpu/assets/patrolship.glb
+storybook-webgpu/assets/platform-demo.glb
+storybook-webgpu/assets/ship-demo-small.glb
+storybook-webgpu/assets/ship_demo.glb
+storybook-webgpu/assets/turbine-demo2.glb
+storybook-webgpu/assets/turbine-demo3.glb
+storybook-webgpu/assets/turbine-engineglb.glb
+
+# Claude Code runtime lock
+.claude/scheduled_tasks.lock
