@@ -567,13 +567,10 @@ const App: FC = () => {
   }, [])
 
   // Show the AIS-layers panel (instead of point weather) once pulled back to the
-  // overview, using the same altitude hysteresis as the markers themselves
-  // (appear ≥30 km, hide <18 km) so the panel and the markers swap together.
-  // `liveZoom` is the camera's orbit distance ≈ altitude over a sea-level target.
+  // globe overview. The scene owns this LOD (it knows the true camera altitude)
+  // and reports it via Content's onOverviewChange — the SAME boolean that drives
+  // the markers, so the panel and the markers always swap together.
   const [aisOverview, setAisOverview] = useState(false)
-  useEffect(() => {
-    setAisOverview(prev => (prev ? liveZoom > 18_000 : liveZoom > 30_000))
-  }, [liveZoom])
 
   const handleAtmosphereReady = useCallback((elapsedMs: number) => {
     // eslint-disable-next-line no-console
@@ -629,6 +626,7 @@ const App: FC = () => {
           autoRotate={autoRotate}
           zoomDistance={zoom}
           onZoomChange={setLiveZoom}
+          onOverviewChange={setAisOverview}
           wingsEnabled={wingsOn}
           heroCover={coverOn}
         />

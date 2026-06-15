@@ -143,6 +143,17 @@ extend({ AtmosphereLight })
 const heading = 180
 const pitch = -20
 const distance = 400
+// Scroll-zoom rate: new orbit distance = current × e^(wheelDeltaY × this). ~17%
+// per typical mouse notch (deltaY ≈ 120). Positive deltaY (scroll down) → larger
+// distance (zoom out). Fed into the damped distance ease for a soft stop.
+const WHEEL_ZOOM_RATE = 0.0013
+// Damp rates (1/s) for the distance ease. The wheel responds snappily to direct
+// scrolling (still decelerating to a soft stop); the slider stays gentle.
+const WHEEL_ZOOM_LAMBDA = 12
+const SLIDER_ZOOM_LAMBDA = 6
+// Scratch for the per-frame dolly direction (avoids an allocation each glide
+// frame). Single CameraRig instance, used+discarded synchronously per frame.
+const _dollyDir = new Vector3()
 // Minimum fly-to landing distance for turbine-FREE sites (focus null, e.g. Oslo
 // / Bergen). Their target sits at sea level (ellipsoid height 20), which is
 // underground for an onshore city — a close zoom would bury the camera in the
@@ -471,6 +482,7 @@ const CameraRig: FC<{
 }) => {
   const camera = useThree(({ camera }) => camera)
   const controls = useThree(({ controls }) => controls as any)
+  const domElement = useThree(({ gl }) => gl.domElement)
 
   const fly = useRef<{
     t: number
@@ -487,10 +499,37 @@ const CameraRig: FC<{
   // killed the pre-fly "snap". prevZoom detects the change edge.
   const prevZoom = useRef<number | undefined>(zoomDistance)
   const easeTarget = useRef<number | null>(null)
+  // Damp rate for the current ease — set by whichever input armed easeTarget
+  // (wheel = snappy, slider = gentle), so the two interactions feel distinct.
+  const easeLambda = useRef(SLIDER_ZOOM_LAMBDA)
   const lastTarget = useRef<Vector3 | null>(null)
   const lastAim = useRef<Vector3 | null>(null)
   const tmpAim = useRef(new Vector3())
   const lastEmitted = useRef(-1)
+
+  // Soft scroll-zoom. OrbitControls' own dolly is undamped (the `scale` is applied
+  // and reset every frame — see three-stdlib), so the wheel stops dead. Instead we
+  // disable its zoom (enableZoom={false}) and feed each wheel delta into the same
+  // damped distance ease the slider uses (easeTarget → MathUtils.damp), so the
+  // zoom glides to a stop. Multiplicative per delta + clamped to the orbit limits;
+  // accumulates across rapid scrolls. (Also disables pinch-zoom — desktop demo.)
+  useEffect(() => {
+    if (controls?.target == null) return
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      const base =
+        easeTarget.current ?? camera.position.distanceTo(controls.target)
+      const next = MathUtils.clamp(
+        base * Math.exp(e.deltaY * WHEEL_ZOOM_RATE),
+        controls.minDistance ?? 1,
+        controls.maxDistance ?? Infinity
+      )
+      easeTarget.current = next
+      easeLambda.current = WHEEL_ZOOM_LAMBDA
+    }
+    domElement.addEventListener('wheel', onWheel, { passive: false })
+    return () => domElement.removeEventListener('wheel', onWheel)
+  }, [domElement, controls, camera])
 
   // Initial placement and the fly's start anchor use the LOCATION (target). The
   // fly DESTINATION, however, is the hero engine (`focus`, the nacelle/axle) —
@@ -578,7 +617,10 @@ const CameraRig: FC<{
     // frame (not in an effect) so it's caught even mid-fly and applied after.
     if (zoomDistance !== prevZoom.current) {
       prevZoom.current = zoomDistance
-      if (zoomDistance != null) easeTarget.current = zoomDistance
+      if (zoomDistance != null) {
+        easeTarget.current = zoomDistance
+        easeLambda.current = SLIDER_ZOOM_LAMBDA
+      }
     }
 
     if (fly.current != null) {
@@ -620,10 +662,10 @@ const CameraRig: FC<{
     // latched. Cleared when reached.
     if (easeTarget.current != null) {
       const goal = easeTarget.current
-      const dir = camera.position.clone().sub(controls.target)
+      const dir = _dollyDir.copy(camera.position).sub(controls.target)
       const cur = dir.length()
       if (cur > 1e-6) {
-        const next = MathUtils.damp(cur, goal, 6, dt)
+        const next = MathUtils.damp(cur, goal, easeLambda.current, dt)
         camera.position
           .copy(controls.target)
           .addScaledVector(dir.normalize(), next)
@@ -985,6 +1027,25 @@ const HEADING_PROBE_M = 5000
 const _rotNdcA = new Vector3()
 const _rotNdcB = new Vector3()
 
+// Single source of truth for the globe-overview LOD: true when the camera is
+// pulled back past the marker show-altitude (hysteresis so it doesn't flicker at
+// the boundary). Computed once from the real altitude above the ellipsoid and
+// shared by every marker layer AND the host's AIS panel — so markers and panel
+// swap together instead of each re-deriving it from a different camera metric.
+function useOverviewLOD(): boolean {
+  const [overview, setOverview] = useState(false)
+  const ref = useRef(false)
+  useFrame(({ camera }) => {
+    const alt = camera.position.length() - EARTH_MEAN_RADIUS
+    const next = ref.current ? alt > MARKER_HIDE_ALT : alt > MARKER_SHOW_ALT
+    if (next !== ref.current) {
+      ref.current = next
+      setOverview(next)
+    }
+  })
+  return overview
+}
+
 const VesselMarkers: FC<{
   vessels: VesselMarker[]
   color: MarkerColor
@@ -993,9 +1054,11 @@ const VesselMarkers: FC<{
   // Currently-selected vessel id, so its marker reads as active. Shared across
   // every layer; only the layer that OWNS it (has it in `vessels`) reacts.
   selectedId?: string | null
-}> = ({ vessels, color, onSelect, selectedId }) => {
-  const [visible, setVisible] = useState(false)
-  const visibleRef = useRef(false)
+  // The shared overview-LOD boolean (computed once by useOverviewLOD in Content):
+  // true when pulled back to the globe view. Every marker layer AND the host's
+  // AIS panel read the same boolean, so markers and panel swap in lockstep.
+  visible: boolean
+}> = ({ vessels, color, onSelect, selectedId, visible }) => {
   // Live <svg> elements by vessel id, so the frame loop can rotate each dart to
   // its on-screen course bearing imperatively (no React re-render per frame).
   const svgRefs = useRef(new Map<string, SVGSVGElement>())
@@ -1040,15 +1103,6 @@ const VesselMarkers: FC<{
     [vessels]
   )
   useFrame(({ camera, size }) => {
-    // Altitude LOD: icons only at a pulled-back / globe view (hysteresis).
-    const alt = camera.position.length() - EARTH_MEAN_RADIUS
-    const next = visibleRef.current
-      ? alt > MARKER_HIDE_ALT
-      : alt > MARKER_SHOW_ALT
-    if (next !== visibleRef.current) {
-      visibleRef.current = next
-      setVisible(next)
-    }
     // Rotate each drawn dart to the screen-space bearing of its course, so it
     // points at true heading regardless of camera azimuth (and doesn't spin with
     // the globe). Skipped unless the view changed since last frame — the course
@@ -1902,6 +1956,9 @@ export const Content: FC<{
   // Live orbit distance reported back each frame when the camera is at rest, so
   // the deploy's zoom slider tracks mouse-wheel zoom. Additive; Storybook omits.
   onZoomChange?: (distance: number) => void
+  // Globe-overview LOD reported to the host so its AIS panel swaps in lockstep
+  // with the markers (both read this one boolean). Additive; Storybook omits.
+  onOverviewChange?: (overview: boolean) => void
   wingsEnabled?: boolean
   // Hero "cover" visibility override from the deploy. When omitted, the leva
   // Turbine panel governs (Storybook). false hides the cover.
@@ -1932,6 +1989,7 @@ export const Content: FC<{
   autoRotate,
   zoomDistance,
   onZoomChange,
+  onOverviewChange,
   wingsEnabled,
   heroCover,
   farmCount
@@ -1953,6 +2011,14 @@ export const Content: FC<{
   const context = useMemo(() => new AtmosphereContext(), [])
   context.camera = camera
   useAtmosphereContextNode(context)
+
+  // Globe-overview LOD, computed once here from the camera altitude. Drives both
+  // marker layers (the `visible` prop) and — reported to the host — its AIS panel
+  // swap, so they transition on exactly the same boolean.
+  const overview = useOverviewLOD()
+  useEffect(() => {
+    onOverviewChange?.(overview)
+  }, [overview, onOverviewChange])
 
   // Surface the context + a live getter for the ocean manager once, so a
   // host page (standalone deploy) can poll readiness without re-reading
@@ -3310,6 +3376,9 @@ export const Content: FC<{
       <OrbitControls
         makeDefault
         enableDamping
+        // Wheel/pinch dolly is undamped in OrbitControls (hard stop). The
+        // CameraRig handles scroll zoom through its damped distance ease instead.
+        enableZoom={false}
         enabled={cameraMode !== 'fps'}
         minDistance={cameraControls.minDistance}
         maxDistance={cameraControls.maxDistance}
@@ -3343,6 +3412,7 @@ export const Content: FC<{
           color={SHADOW_MARKER_COLOR}
           onSelect={onVesselSelect}
           selectedId={selectedVesselId}
+          visible={overview}
         />
       )}
       {patrolVessels != null && patrolVessels.length > 0 && (
@@ -3351,6 +3421,7 @@ export const Content: FC<{
           color={PATROL_MARKER_COLOR}
           onSelect={onVesselSelect}
           selectedId={selectedVesselId}
+          visible={overview}
         />
       )}
       {selectedVesselNav != null && (
