@@ -168,27 +168,31 @@ export const SCENARIOS: Scenario[] = [
       }
     ]
   },
+  // Offshore wind-turbine installation rig (hregg_pivot.glb, InstallationRig.tsx),
+  // anchored at the 'Utsira Nord' offshore preset. The Installation panel
+  // (DigitalTwinUI) plays its 10 install-phase clips + the operating idle loop.
   {
-    id: 'farm',
-    label: 'Farm',
+    id: 'turbine-install',
+    label: 'Turbine Installation',
+    preset: 'Utsira Nord',
+    // East/North aim offsets match the rig's RIG_TILE_OFFSET_M (250 m) so the
+    // camera centres on the rig after it's nudged off the ocean grid seam.
     viewpoints: [
-      // TODO real site — placeholder: Jæren farmland, Rogaland.
+      // Close on the rig, framing the mast/beam during the install sequence.
+      {
+        id: 'rig',
+        label: 'Rig',
+        aimOffsetENU: [250, 250, 30],
+        distance: 320,
+        pitchDeg: -8
+      },
       {
         id: 'overview',
         label: 'Overview',
-        longitude: 5.66,
-        latitude: 58.78,
-        height: 60,
-        distance: 900,
-        pitchDeg: -30
-      },
-      {
-        id: 'yard',
-        label: 'Yard',
-        longitude: 5.658,
-        latitude: 58.781,
-        height: 45,
-        distance: 250
+        // Slightly different aim height than 'rig' so the switch re-flies.
+        aimOffsetENU: [250, 250, 33],
+        distance: 1100,
+        pitchDeg: -28
       }
     ]
   },

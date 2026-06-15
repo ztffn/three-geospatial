@@ -78,6 +78,12 @@ const staticAssets: Array<{ from: string; to: string }> = [
     from: path.join(storybookAssets, 'platform-compressed.glb'),
     to: 'public/platform-compressed.glb'
   },
+  // Offshore wind-turbine installation rig (InstallationRig.tsx, turbine-install
+  // scenario) — 11 animation clips (anim1-10 install phases + operating_spin).
+  {
+    from: path.join(storybookAssets, 'hregg_pivot.glb'),
+    to: 'public/hregg_pivot.glb'
+  },
   // Huma brand mark (top-left overlay in main.tsx): favicon + HumaDisplay
   // wordmark font. Served at /public/brand/* (dev via sirv, build via copy).
   {

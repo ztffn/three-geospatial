@@ -11,6 +11,14 @@ import type { MetSample } from './useMetForecast'
 import type { TurbineTelemetry, TurbineStatus } from './turbineModel'
 import type { AisReadings, Scenario, Viewpoint } from './scenarios'
 import type { VesselPosition } from '../../../netlify/functions/_ais-core'
+import {
+  PHASE_CLIPS,
+  IDLE_CLIP,
+  RIG_PHASES,
+  WINCH_SWL,
+  RAM_SWL,
+  loadColor
+} from './rigPhases'
 
 // --- design tokens (Huma system, tuned for legibility over a 3D scene) -------
 const PANEL_BG = 'rgba(10, 18, 30, 0.55)'
@@ -1259,6 +1267,191 @@ const VesselCallout: FC<{
 }
 
 // --- composition (presentational) -------------------------------------------
+// --- installation rig panel --------------------------------------------------
+export interface InstallControlsState {
+  activeClip: string // current rig clip name
+  speed: number // playback timeScale
+  playingSequence: boolean
+  onSelectPhase: (clip: string) => void
+  onSetSpeed: (speed: number) => void
+  onPlaySequence: () => void
+}
+
+// One load gauge: label + colour-coded fill bar (load / SWL) + tonnage readout.
+const LoadGauge: FC<{ label: string; load: number; swl: number }> = ({
+  label,
+  load,
+  swl
+}) => {
+  const ratio = swl > 0 ? load / swl : 0
+  return (
+    <div
+      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}
+    >
+      <span
+        style={{ fontFamily: MONO, fontSize: 10, color: MUTED, width: 22 }}
+      >
+        {label}
+      </span>
+      <div
+        style={{
+          position: 'relative',
+          flex: 1,
+          height: 9,
+          background: 'rgba(255,255,255,0.08)',
+          border: PANEL_BORDER
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: `${Math.min(Math.max(ratio, 0), 1) * 100}%`,
+            background: loadColor(ratio),
+            transition: 'width .12s linear, background .2s linear'
+          }}
+        />
+      </div>
+      <span
+        style={{
+          fontFamily: MONO,
+          fontSize: 11,
+          fontVariantNumeric: 'tabular-nums',
+          color: TEXT,
+          width: 42,
+          textAlign: 'right'
+        }}
+      >
+        {load >= 1 ? Math.round(load) : load.toFixed(1)} t
+      </span>
+    </div>
+  )
+}
+
+// Installation control panel (turbine-install scenario): the 10 install-phase
+// buttons + play-sequence/idle/speed, the active phase narrative, and the
+// winch/beam-ram/guy-ram load gauges. Ports the original viewer's HUD into one
+// Card; occupies the top-left inspector slot (no turbine farm at the rig site).
+const InstallationPanel: FC<InstallControlsState> = ({
+  activeClip,
+  speed,
+  playingSequence,
+  onSelectPhase,
+  onSetSpeed,
+  onPlaySequence
+}) => {
+  const phase = RIG_PHASES[activeClip] ?? RIG_PHASES[IDLE_CLIP]
+  return (
+    <Card
+      pos={{ top: 76, left: 16 }}
+      width={252}
+      title="Installation"
+      interactive
+      gap={10}
+      headerRight={
+        <span
+          style={{
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            color: ACCENT
+          }}
+        >
+          {phase.label}
+        </span>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {PHASE_CLIPS.map((clip, i) => (
+          <button
+            key={clip}
+            type="button"
+            onClick={() => onSelectPhase(clip)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '4px 8px',
+              fontSize: 11,
+              ...pillStyle(clip === activeClip)
+            }}
+          >
+            <span style={{ fontFamily: MONO, color: MUTED, width: 16 }}>
+              {i + 1}
+            </span>
+            <span style={{ fontFamily: SANS }}>{RIG_PHASES[clip].label}</span>
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={onPlaySequence}
+        style={{
+          width: '100%',
+          padding: '5px 8px',
+          fontSize: 11,
+          ...pillStyle(playingSequence)
+        }}
+      >
+        {playingSequence ? 'Playing…' : 'Play sequence'}
+      </button>
+      <div>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            color: MUTED,
+            marginBottom: 4
+          }}
+        >
+          <span>Speed</span>
+          <span style={{ fontFamily: MONO }}>{speed.toFixed(2)}×</span>
+        </div>
+        <input
+          className="dt-scrub"
+          type="range"
+          min={0.25}
+          max={3}
+          step={0.05}
+          value={speed}
+          onChange={e => onSetSpeed(Number(e.target.value))}
+          style={{ width: '100%', display: 'block' }}
+        />
+      </div>
+      <div style={{ fontFamily: SANS, fontSize: 11, color: TEXT, lineHeight: 1.4 }}>
+        {phase.narrative}
+        <div style={{ marginTop: 3, fontSize: 10, color: MUTED }}>
+          {phase.capability}
+        </div>
+      </div>
+      <div>
+        <SectionLabel>{`Winch ×3 · SWL ${WINCH_SWL} t/drum`}</SectionLabel>
+        {phase.winch.map((load, i) => (
+          <LoadGauge key={`w${i}`} label={`${i + 1}`} load={load} swl={WINCH_SWL} />
+        ))}
+        <div style={{ marginTop: 7 }}>
+          <SectionLabel>{`Beam rams ×3 · SWL ${RAM_SWL} t`}</SectionLabel>
+        </div>
+        {phase.beam.map((load, i) => (
+          <LoadGauge key={`r${i}`} label={`R${i + 1}`} load={load} swl={RAM_SWL} />
+        ))}
+        <div style={{ marginTop: 7 }}>
+          <SectionLabel>{`Guy ram · SWL ${RAM_SWL} t`}</SectionLabel>
+        </div>
+        <LoadGauge label="G" load={phase.guy} swl={RAM_SWL} />
+      </div>
+    </Card>
+  )
+}
+
 export const DigitalTwinUI: FC<{
   locationName: string
   loading: boolean
@@ -1282,6 +1475,9 @@ export const DigitalTwinUI: FC<{
   // AIS marker-layer toggles + counts. Replaces the conditions card at the
   // globe-overview altitude (where point weather is meaningless).
   aisLayers?: AisLayersState | null
+  // Installation-rig controls (turbine-install scenario). When present, the
+  // Installation panel takes the top-left inspector slot.
+  installControls?: InstallControlsState | null
 }> = ({
   locationName,
   loading,
@@ -1299,16 +1495,20 @@ export const DigitalTwinUI: FC<{
   ais,
   selectedVessel,
   onCloseVessel,
-  aisLayers
+  aisLayers,
+  installControls
 }) => {
   // The top-left inspector slot shows, in priority: the clicked shadow-fleet
-  // vessel callout → the scenario's AIS card → the turbine inspector.
+  // vessel callout → the scenario's AIS card → the installation panel (rig
+  // scenario) → the turbine inspector.
   return (
   <>
     {selectedVessel != null && onCloseVessel != null ? (
       <VesselCallout vessel={selectedVessel} onClose={onCloseVessel} />
     ) : ais != null ? (
       <AisCard ais={ais} />
+    ) : installControls != null ? (
+      <InstallationPanel {...installControls} />
     ) : (
       <TurbineInspector telemetry={telemetry} count={turbineCount} />
     )}

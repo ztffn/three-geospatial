@@ -53,10 +53,12 @@ import {
   DigitalTwinUI,
   type CameraControlsState,
   type CameraMode,
+  type InstallControlsState,
   type ScenarioControlsState,
   type SelectedVessel
 } from './ui/DigitalTwinUI'
 import { SCENARIOS, type Scenario, type Viewpoint } from './ui/scenarios'
+import { INSTALL_CLIPS, IDLE_CLIP } from './ui/rigPhases'
 import {
   SHADOW_FLEET,
   SHADOW_FLEET_GROUND_LABEL
@@ -576,6 +578,43 @@ const App: FC = () => {
     setCableVisible(v => ({ ...v, [layer]: !v[layer] }))
   }, [])
 
+  // Installation-rig playback (turbine-install scenario): the active clip drives
+  // the rig's AnimationMixer; speed is its timeScale. The sequence chains the 10
+  // install phases (advance on each clip's 'finished' event) then settles to the
+  // operating idle loop. Default = idle, so arriving frames a finished rig.
+  const [rigClip, setRigClip] = useState<string>(IDLE_CLIP)
+  const [rigSpeed, setRigSpeed] = useState(1)
+  const [playingSequence, setPlayingSequence] = useState(false)
+  // Latest sequence flag for the (stable) clip-finished handler.
+  const playingSeqRef = useRef(false)
+  useEffect(() => {
+    playingSeqRef.current = playingSequence
+  }, [playingSequence])
+
+  const handleSelectPhase = useCallback((clip: string) => {
+    setPlayingSequence(false)
+    setRigClip(clip)
+  }, [])
+  const handlePlaySequence = useCallback(() => {
+    setPlayingSequence(true)
+    setRigClip(INSTALL_CLIPS[0])
+  }, [])
+  // Advance the sequence when a one-shot phase finishes; settle into the
+  // looping Operating state after the last phase. Reads the live flag via ref
+  // so the callback stays stable.
+  const handleRigClipFinished = useCallback((finished: string) => {
+    if (!playingSeqRef.current) return
+    const i = (INSTALL_CLIPS as readonly string[]).indexOf(finished)
+    if (i < 0) return
+    const next = INSTALL_CLIPS[i + 1]
+    if (next != null) {
+      setRigClip(next)
+    } else {
+      setPlayingSequence(false)
+      setRigClip(IDLE_CLIP)
+    }
+  }, [])
+
   // Show the AIS-layers panel (instead of point weather) once pulled back to the
   // globe overview. The scene owns this LOD (it knows the true camera altitude)
   // and reports it via Content's onOverviewChange — the SAME boolean that drives
@@ -635,6 +674,9 @@ const App: FC = () => {
           showPowerCables={cableVisible.power}
           showTelecomCables={cableVisible.telecom}
           farmCount={turbineCount}
+          rigClip={rigClip}
+          rigTimeScale={rigSpeed}
+          onRigClipFinished={handleRigClipFinished}
           autoRotate={autoRotate}
           zoomDistance={zoom}
           onZoomChange={setLiveZoom}
@@ -665,6 +707,18 @@ const App: FC = () => {
         ais={SCENARIOS.find(s => s.id === activeScenario)?.ais ?? null}
         selectedVessel={selectedVessel}
         onCloseVessel={() => setSelectedId(null)}
+        installControls={
+          activeScenario === 'turbine-install'
+            ? ({
+                activeClip: rigClip,
+                speed: rigSpeed,
+                playingSequence,
+                onSelectPhase: handleSelectPhase,
+                onSetSpeed: setRigSpeed,
+                onPlaySequence: handlePlaySequence
+              } satisfies InstallControlsState)
+            : null
+        }
         aisLayers={{
           overview: aisOverview,
           shadowVisible: layerVisible.shadow,

@@ -117,6 +117,7 @@ import {
   useShip,
   type ShipMotionControls,
 } from './ShipModel'
+import { InstallationRig } from './InstallationRig'
 import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
 import { CABLE_BAKE } from './cable-bake'
 import { CloudLayer } from './CloudLayer'
@@ -191,10 +192,19 @@ export const locationPresets = {
   'Bodø': { longitude: 14.25, latitude: 67.3, height: 20 },
   // Open Vestfjorden / Norwegian Sea, ~50 km out from Bodø (platform scenario).
   'Norwegian Sea': { longitude: 13.2, latitude: 67.5, height: 20 },
+  // Offshore wind installation site for the rig (turbine-install scenario).
+  // PROVISIONAL placeholder in the Utsira Nord zone, W of Karmøy — set per site.
+  'Utsira Nord': { longitude: 4.55, latitude: 59.3, height: 20 },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
 >
+
+// The ocean quadtree root is centred on the scene target and always splits at
+// its centre, so the target sits at a 4-cell seam junction. Offset the rig (and
+// its camera aim) by half the ~500 m min cell (QT_OCEAN_MIN_CELL_SIZE) so it
+// rests inside one tile, clear of the seams. Tune if the visible cell differs.
+export const RIG_TILE_OFFSET_M = 250
 
 function getLocalDate(
   longitudeDegrees: number,
@@ -2100,6 +2110,13 @@ export const Content: FC<{
   // Per-site farm size from the deploy; overrides the leva Turbine count.
   // Undefined in Storybook, where the leva count governs.
   farmCount?: number
+  // Active installation-rig clip + playback speed from the deploy's Installation
+  // panel (turbine-install scenario). Undefined in Storybook → idle defaults.
+  rigClip?: string
+  rigTimeScale?: number
+  // Fired when a one-shot rig clip finishes, so the deploy can advance the
+  // install sequence. Additive; Storybook omits.
+  onRigClipFinished?: (clip: string) => void
 }> = ({
   onReadinessRefs,
   disableOcean = false,
@@ -2128,7 +2145,10 @@ export const Content: FC<{
   onOverviewChange,
   wingsEnabled,
   heroCover,
-  farmCount
+  farmCount,
+  rigClip = 'operating_spin',
+  rigTimeScale = 1,
+  onRigClipFinished
 }) => {
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
@@ -2671,6 +2691,12 @@ export const Content: FC<{
     locationPresets['Norwegian Sea'].longitude,
     locationPresets['Norwegian Sea'].latitude,
     locationPresets['Norwegian Sea'].height
+  )
+  // Installation-rig site (turbine-install scenario) — animated, static anchor.
+  const rigAnchor = useTargetECEF(
+    locationPresets['Utsira Nord'].longitude,
+    locationPresets['Utsira Nord'].latitude,
+    locationPresets['Utsira Nord'].height
   )
   const ship0 = useShip(SHIP_DEFS[0], shipAnchor, orbitControlsRef)
   const ship1 = useShip(SHIP_DEFS[1], shipAnchor, orbitControlsRef)
@@ -3671,6 +3697,27 @@ export const Content: FC<{
               />
             </Suspense>
           )
+      )}
+      {/* Installation rig (turbine-install scenario), anchored offshore at the
+          Utsira Nord preset, nudged half a tile off the ocean grid origin so it
+          sits inside one water cell (not on the 4-cell seam). Behind the ocean
+          stage + its own Suspense like the ships. scale/waterline are
+          placeholders — tune per the GLB's origin. */}
+      {!disableOcean && (
+        <Suspense fallback={null}>
+          <InstallationRig
+            url="public/hregg_pivot.glb"
+            anchor={rigAnchor}
+            scale={1}
+            heightOffset={26}
+            eastOffset={RIG_TILE_OFFSET_M}
+            northOffset={RIG_TILE_OFFSET_M}
+            yawDeg={0}
+            clip={rigClip}
+            timeScale={rigTimeScale}
+            onClipFinished={onRigClipFinished}
+          />
+        </Suspense>
       )}
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
