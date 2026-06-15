@@ -43,6 +43,13 @@ const oceanIfftResources = path.resolve(repoRoot, 'packages/ocean-ifft/resources
 // OceanChunksWaterpro.tsx. Atmosphere LUTs are computed on-GPU in the WebGPU
 // pipeline (no .bin LUTs needed); stars.bin is bundled via `new URL(...)`.
 const staticAssets: Array<{ from: string; to: string }> = [
+  // Subsea cable network: submarine power (OSM/ODbL) + telecom (TeleGeography/
+  // CC BY-NC-SA) for the North Sea/Arctic overview, fetched and drawn as ECEF
+  // line geometry by the scene.
+  {
+    from: path.join(storybookAssets, 'subsea-cables.json'),
+    to: 'public/subsea-cables.json'
+  },
   // Draco+WebP compressed turbines (light farm model + detailed hero). ~440 KB
   // and ~6 MB — decoded via the DRACOLoader the useGLTF hook configures.
   {

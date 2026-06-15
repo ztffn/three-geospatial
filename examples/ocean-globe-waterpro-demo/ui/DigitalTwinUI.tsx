@@ -406,6 +406,10 @@ export interface AisLayersState {
   trackVisible: boolean
   projectionVisible: boolean
   onToggleOverlay: (overlay: 'track' | 'projection') => void
+  // Subsea cable layers: power grid (OSM/ODbL) + telecom (TeleGeography/CC BY-NC-SA).
+  cablePowerVisible: boolean
+  cableTelecomVisible: boolean
+  onToggleCable: (layer: 'power' | 'telecom') => void
   updatedAt: string | null
   error: string | null
 }
@@ -434,6 +438,9 @@ const AisLayersCard: FC<AisLayersState> = ({
   trackVisible,
   projectionVisible,
   onToggleOverlay,
+  cablePowerVisible,
+  cableTelecomVisible,
+  onToggleCable,
   updatedAt,
   error
 }) => (
@@ -474,12 +481,24 @@ const AisLayersCard: FC<AisLayersState> = ({
       on={projectionVisible}
       onChange={() => onToggleOverlay('projection')}
     />
+    <SectionLabel>Subsea cables</SectionLabel>
+    <Toggle
+      label="Power grid"
+      on={cablePowerVisible}
+      onChange={() => onToggleCable('power')}
+    />
+    <Toggle
+      label="Telecom"
+      on={cableTelecomVisible}
+      onChange={() => onToggleCable('telecom')}
+    />
     <Footnote>
       {error != null
         ? `Feed unavailable: ${error}`
         : updatedAt != null
           ? `Live · BarentsWatch · updated ${ago(updatedAt)}`
           : 'Live · BarentsWatch'}
+      {' · power © OpenStreetMap (ODbL) · telecom © TeleGeography (CC BY-NC-SA)'}
     </Footnote>
   </Card>
 )
