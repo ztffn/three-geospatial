@@ -75,8 +75,8 @@ const staticAssets: Array<{ from: string; to: string }> = [
     to: 'public/patrolship-compressed.glb'
   },
   {
-    from: path.join(storybookAssets, 'platform-compressed.glb'),
-    to: 'public/platform-compressed.glb'
+    from: path.join(storybookAssets, 'deepwater_platform_compressed.glb'),
+    to: 'public/deepwater_platform_compressed.glb'
   },
   // Offshore wind-turbine installation rig (InstallationRig.tsx, turbine-install
   // scenario) — 11 animation clips (anim1-10 install phases + operating_spin).

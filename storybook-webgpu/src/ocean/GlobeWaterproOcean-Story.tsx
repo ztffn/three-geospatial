@@ -2075,6 +2075,9 @@ export const Content: FC<{
     headingDeg?: number
     pitchDeg?: number
     nonce?: number
+    // Sea scenario without an explicit spawn: lift the eye to the ocean surface
+    // (the host can't compute seaLevelOffset). Explicit spawns opt out.
+    snapToSea?: boolean
   } | null
   // Live vessel positions for the globe-overview marker layers (red shadow
   // fleet, blue Coast Guard / Navy patrol). Host-supplied from AIS; the scene
@@ -2324,7 +2327,13 @@ export const Content: FC<{
         .addScaledVector(north, n)
         .addScaledVector(up, u)
     }
-    return { position, headingDeg, pitchDeg, nonce }
+    return {
+      position,
+      headingDeg,
+      pitchDeg,
+      nonce,
+      snapToSea: fpsSpawn.snapToSea ?? false
+    }
   }, [fpsSpawn])
 
   // Live deck frames of the rideable structures (buoyancy-animated groups)
@@ -2454,6 +2463,21 @@ export const Content: FC<{
       label: 'Ocean scale',
     },
   })
+
+  // Sea scenario without an explicit spawn: the anchor sits seaLevelOffset below
+  // the ocean surface, so the raw FPS eye would be underwater. Lift it radially
+  // to just above the surface. Declared here (after seaLevelOffset) so the
+  // earlier fpsSpawnPose memo stays free of the leva dependency.
+  const fpsSpawnPlaced = useMemo(() => {
+    const pose = fpsSpawnPose
+    if (pose?.position == null || !pose.snapToSea) return pose
+    const surfaceR = target
+      .clone()
+      .addScaledVector(enuBasis(target).up, oceanFrameControls.seaLevelOffset)
+      .length()
+    if (pose.position.length() < surfaceR) pose.position.setLength(surfaceR + 2)
+    return pose
+  }, [fpsSpawnPose, target, oceanFrameControls.seaLevelOffset])
 
   // Ocean-local frame, shared by OceanSurface (chunk parent transform) and the
   // ship buoyancy probes (world → wave-field XZ via its inverse). Re-anchors
@@ -3601,7 +3625,7 @@ export const Content: FC<{
       )}
       <FpsRig
         active={cameraMode === 'fps'}
-        spawn={fpsSpawnPose}
+        spawn={fpsSpawnPlaced}
         platforms={fpsPlatforms}
       />
       {shadowFleetVessels != null && shadowFleetVessels.length > 0 && (
@@ -3701,15 +3725,16 @@ export const Content: FC<{
       {/* Installation rig (turbine-install scenario), anchored offshore at the
           Utsira Nord preset, nudged half a tile off the ocean grid origin so it
           sits inside one water cell (not on the 4-cell seam). Behind the ocean
-          stage + its own Suspense like the ships. scale/waterline are
-          placeholders — tune per the GLB's origin. */}
+          stage + its own Suspense like the ships. heightOffset tracks the sea
+          surface (seaLevelOffset) so the model origin (≈ its waterline) sits on
+          the water, not under it. */}
       {!disableOcean && (
         <Suspense fallback={null}>
           <InstallationRig
             url="public/hregg_pivot.glb"
             anchor={rigAnchor}
             scale={1}
-            heightOffset={26}
+            heightOffset={oceanFrameControls.seaLevelOffset}
             eastOffset={RIG_TILE_OFFSET_M}
             northOffset={RIG_TILE_OFFSET_M}
             yawDeg={0}

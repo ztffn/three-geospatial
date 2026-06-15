@@ -136,6 +136,7 @@ function spawnFor(
   platform?: string
   headingDeg?: number
   pitchDeg?: number
+  snapToSea?: boolean
 } | null {
   const anchor =
     scenario.preset != null
@@ -146,20 +147,27 @@ function spawnFor(
     spawn?.longitude ?? viewpoint.longitude ?? anchor?.longitude
   const latitude = spawn?.latitude ?? viewpoint.latitude ?? anchor?.latitude
   if (longitude == null || latitude == null) return null
-  const offsetENU =
-    spawn?.offsetENU ?? (spawn == null ? viewpoint.aimOffsetENU : undefined)
+  // FPS spawn is a STANDING position, not camera framing. Never inherit the
+  // viewpoint's aimOffsetENU (a camera-aim offset whose up-component floats the
+  // player). With no explicit spawn, stand at the viewpoint's height (≈ terrain
+  // for land sites). Sea scenarios start at the anchor and are lifted to the
+  // ocean surface scene-side (snapToSea) — spawnFor can't see seaLevelOffset.
+  const offsetENU = spawn?.offsetENU
   return {
     longitude,
     latitude,
     height:
       spawn?.height ??
-      (offsetENU != null || spawn?.platform != null
+      (spawn?.platform != null
         ? anchor?.height
-        : (viewpoint.height ?? 20) + 2),
+        : (viewpoint.height ?? anchor?.height ?? 20) + 2),
     offsetENU,
     platform: spawn?.platform,
     headingDeg: spawn?.headingDeg ?? viewpoint.headingDeg,
-    pitchDeg: spawn?.pitchDeg
+    pitchDeg: spawn?.pitchDeg,
+    // Sea scenarios (preset) with no explicit spawn: lift to the ocean surface
+    // in-scene. Explicit spawns (incl. the deliberate underwater dive) opt out.
+    snapToSea: scenario.preset != null && spawn == null
   }
 }
 

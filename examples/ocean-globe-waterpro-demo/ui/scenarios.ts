@@ -176,21 +176,23 @@ export const SCENARIOS: Scenario[] = [
     label: 'Turbine Installation',
     preset: 'Utsira Nord',
     // East/North aim offsets match the rig's RIG_TILE_OFFSET_M (250 m) so the
-    // camera centres on the rig after it's nudged off the ocean grid seam.
+    // camera centres on the rig after it's nudged off the ocean grid seam. The
+    // up component aims well above the ~29 m sea surface so the orbit pivot
+    // frames the rig's deck/mast, not the waterline.
     viewpoints: [
       // Close on the rig, framing the mast/beam during the install sequence.
       {
         id: 'rig',
         label: 'Rig',
-        aimOffsetENU: [250, 250, 30],
+        aimOffsetENU: [250, 250, 55],
         distance: 320,
         pitchDeg: -8
       },
       {
         id: 'overview',
         label: 'Overview',
-        // Slightly different aim height than 'rig' so the switch re-flies.
-        aimOffsetENU: [250, 250, 33],
+        // Higher aim than 'rig' so the switch re-flies and frames the full mast.
+        aimOffsetENU: [250, 250, 75],
         distance: 1100,
         pitchDeg: -28
       }
@@ -273,7 +275,7 @@ export const SCENARIOS: Scenario[] = [
       }
     ]
   },
-  // Production platform in the open Norwegian Sea (platform-compressed.glb,
+  // Production platform in the open Norwegian Sea (deepwater_platform_compressed.glb,
   // anchored at the 'Norwegian Sea' scene preset; static structure).
   {
     id: 'platform',
@@ -286,7 +288,16 @@ export const SCENARIOS: Scenario[] = [
         aimOffsetENU: [0, 0, 25],
         distance: 400,
         pitchDeg: -10,
-        spawn: { platform: 'platform', offsetENU: [0, 0, 30] }
+        // Deterministic absolute spawn captured in-scene (camera 'Dump view'),
+        // converted ECEF → geodetic + compass heading/pitch. Avoids the deck
+        // ride/raycast that stranded the camera at the orbit position.
+        spawn: {
+          longitude: 13.199772,
+          latitude: 67.499986,
+          height: 55.06,
+          headingDeg: 165.5,
+          pitchDeg: -1.5
+        }
       },
       {
         id: 'overview',

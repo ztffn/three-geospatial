@@ -78,10 +78,11 @@ export const SHIP_DEFS: ShipDef[] = [
     northOffset: 0,
   },
   // Offshore platform in the Norwegian Sea (own scenario; static — no
-  // buoyancy, the caller passes motion disabled).
+  // buoyancy, the caller passes motion disabled). scale/waterline carried over
+  // from the prior platform model — verify they fit the deepwater model.
   {
     folder: 'Platform',
-    url: 'public/platform-compressed.glb',
+    url: 'public/deepwater_platform_compressed.glb',
     scale: 1,
     heightOffset: 26,
     eastOffset: 0,
