@@ -1,8 +1,11 @@
 # Self-hosted "Humatopia World Twin" deployment (twin.humatopia.ai).
 # Single container on the mediaserver host; image pulled from GHCR; ingress via
 # Cloudflare Tunnel (cloudflared on host) routing twin.humatopia.ai -> :13002.
-# No runtime secrets: the MET proxy needs only a User-Agent, and the browser
-# tokens are baked into the SPA at build time (provider-restricted). See DEPLOY-TWIN.md.
+# Runtime secrets: only the OPTIONAL BarentsWatch AIS client credentials (live
+# shadow-fleet marker layer), read from the host .env beside this file. Absent →
+# the AIS proxy 503s and the globe shows no vessel markers (never fabricated).
+# The MET proxy needs only a User-Agent; browser tokens are baked into the SPA
+# at build time (provider-restricted). See DEPLOY-TWIN.md.
 
 services:
   twin:
@@ -16,6 +19,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      # Optional BarentsWatch AIS credentials — substituted from the host .env
+      # beside this compose file (never committed). Empty default keeps the
+      # container healthy without them (markers simply stay empty).
+      BARENTSWATCH_CLIENT_ID: ${BARENTSWATCH_CLIENT_ID:-}
+      BARENTSWATCH_CLIENT_SECRET: ${BARENTSWATCH_CLIENT_SECRET:-}
     healthcheck:
       # Node-based (no wget/curl in the slim runtime image); global fetch on Node 22.
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
