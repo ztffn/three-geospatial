@@ -60,6 +60,9 @@ import {
 // pixel-width + dashing automatically (no manual resolution).
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { Line2 } from 'three/addons/lines/webgpu/Line2.js'
+// Disjoint fat lines for the subsea-cable network (one merged draw per layer).
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
+import { LineSegments2 } from 'three/addons/lines/webgpu/LineSegments2.js'
 
 import {
   getECIToECEFRotationMatrix,
@@ -1356,6 +1359,129 @@ function useDisposableLine(line: Line2 | null): void {
   )
 }
 
+// --- subsea cable network ----------------------------------------------------
+// OSM/ODbL submarine cables (power + telecom) for the North Sea overview, drawn
+// as merged LineSegments2 (one draw call per category) coloured by category and
+// (for power) voltage. Fetched once from the bundled snapshot, built on the sea
+// surface with a small lift; depthTest stays ON so the globe occludes the far
+// side (cables wrap the planet, unlike the local depthTest-off AIS overlay).
+interface CableRecord {
+  c: 'power' | 'telecom'
+  v?: number // volts (power only)
+  n?: string
+  p: number[] // flat lon,lat,…
+}
+const CABLE_LIFT_M = 120 // clears ocean/tiles without z-fight; sub-pixel at overview
+const CABLE_WIDTH = 2 // px (fat line; visible at the overview)
+const _cableColor = new Color()
+function colorForCable(cable: CableRecord, out: Color): Color {
+  if (cable.c === 'telecom') return out.setHex(0x46c8ff) // cool cyan = comms
+  const v = cable.v ?? 0
+  if (v >= 200_000) return out.setHex(0xffffff) // HVDC / transmission backbone
+  if (v >= 100_000) return out.setHex(0xffcc33) // export
+  return out.setHex(0xff7a3c) // array / collection (warm)
+}
+
+// One merged LineSegments2 for the cables of a category (null if none): ECEF
+// segments + per-vertex colour.
+function buildCableLayer(
+  cables: CableRecord[],
+  category: 'power' | 'telecom'
+): LineSegments2 | null {
+  const positions: number[] = []
+  const colors: number[] = []
+  for (const cable of cables) {
+    if (cable.c !== category) continue
+    const { r, g, b } = colorForCable(cable, _cableColor)
+    const p = cable.p
+    const pts: Vector3[] = []
+    for (let i = 0; i + 1 < p.length; i += 2) {
+      pts.push(
+        new Geodetic(radians(p[i]), radians(p[i + 1]), CABLE_LIFT_M).toECEF()
+      )
+    }
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const a = pts[k]
+      const c = pts[k + 1]
+      positions.push(a.x, a.y, a.z, c.x, c.y, c.z)
+      colors.push(r, g, b, r, g, b)
+    }
+  }
+  if (positions.length === 0) return null
+  // Fat (wide) lines so the network reads at the overview — affordable now that
+  // each cable is Douglas-Peucker-simplified upstream (~4.7k segments, not 35k).
+  // Opaque (no transparent overdraw) + vertex-coloured; depthTest on so the
+  // globe occludes the far side. One instanced draw call per category.
+  const geometry = new LineSegmentsGeometry()
+  geometry.setPositions(positions)
+  geometry.setColors(colors)
+  const material = new THREE.Line2NodeMaterial({
+    vertexColors: true,
+    linewidth: CABLE_WIDTH
+  })
+  const line = new LineSegments2(geometry, material)
+  line.frustumCulled = false
+  return line
+}
+
+// Fetch the bundled OSM cable snapshot once (same-origin /public asset).
+function useSubseaCables(): CableRecord[] | null {
+  const [cables, setCables] = useState<CableRecord[] | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch('public/subsea-cables.json')
+      .then(r => r.json())
+      .then((d: { cables: CableRecord[] }) => {
+        if (!cancelled) setCables(d.cables)
+      })
+      .catch(() => {
+        // No snapshot bundled → simply no cables (never fabricated).
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return cables
+}
+
+// Subsea cable layers, shown only at the globe overview. Geometry builds once
+// per fetched data; the visibility flag just adds/removes it from the scene.
+const SubseaCables: FC<{ showPower: boolean; showTelecom: boolean }> = ({
+  showPower,
+  showTelecom
+}) => {
+  const cables = useSubseaCables()
+  const layers = useMemo(
+    () =>
+      cables == null
+        ? null
+        : {
+            power: buildCableLayer(cables, 'power'),
+            telecom: buildCableLayer(cables, 'telecom')
+          },
+    [cables]
+  )
+  useEffect(
+    () => () => {
+      for (const l of [layers?.power, layers?.telecom]) {
+        if (l == null) continue
+        l.geometry.dispose()
+        ;(l.material as THREE.Material).dispose()
+      }
+    },
+    [layers]
+  )
+  if (layers == null) return null
+  return (
+    <>
+      {showPower && layers.power != null && <primitive object={layers.power} />}
+      {showTelecom && layers.telecom != null && (
+        <primitive object={layers.telecom} />
+      )}
+    </>
+  )
+}
+
 // Selected-vessel overlay: a NAIS-style forward dead-reckoning projection (amber
 // line + 30 min/1 h/3 h ticks labelled with distance run) and the vessel's
 // last-24h historic track (blue-white trail). Pure client geometry on the sea
@@ -1951,6 +2077,9 @@ export const Content: FC<{
   // Overlay visibility, toggled from the AIS panel (default on when omitted).
   showProjection?: boolean
   showTrack?: boolean
+  // Subsea cable layer visibility, toggled from the AIS panel (default on).
+  showPowerCables?: boolean
+  showTelecomCables?: boolean
   autoRotate?: boolean
   zoomDistance?: number
   // Live orbit distance reported back each frame when the camera is at rest, so
@@ -1986,6 +2115,8 @@ export const Content: FC<{
   trackPoints,
   showProjection,
   showTrack,
+  showPowerCables,
+  showTelecomCables,
   autoRotate,
   zoomDistance,
   onZoomChange,
@@ -3432,6 +3563,10 @@ export const Content: FC<{
           showTrack={showTrack}
         />
       )}
+      <SubseaCables
+        showPower={overview && (showPowerCables ?? true)}
+        showTelecom={overview && (showTelecomCables ?? true)}
+      />
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth
           pre-pass for shoreline-foam gating.

@@ -566,6 +566,16 @@ const App: FC = () => {
     setOverlayVisible(v => ({ ...v, [overlay]: !v[overlay] }))
   }, [])
 
+  // Subsea cable layers (OSM/ODbL), toggled from the same AIS panel. Default
+  // OFF — opt-in from the panel (keeps the overview uncluttered by default).
+  const [cableVisible, setCableVisible] = useState({
+    power: false,
+    telecom: false
+  })
+  const handleCableToggle = useCallback((layer: 'power' | 'telecom') => {
+    setCableVisible(v => ({ ...v, [layer]: !v[layer] }))
+  }, [])
+
   // Show the AIS-layers panel (instead of point weather) once pulled back to the
   // globe overview. The scene owns this LOD (it knows the true camera altitude)
   // and reports it via Content's onOverviewChange — the SAME boolean that drives
@@ -622,6 +632,8 @@ const App: FC = () => {
           trackPoints={trackPoints}
           showProjection={overlayVisible.projection}
           showTrack={overlayVisible.track}
+          showPowerCables={cableVisible.power}
+          showTelecomCables={cableVisible.telecom}
           farmCount={turbineCount}
           autoRotate={autoRotate}
           zoomDistance={zoom}
@@ -663,6 +675,9 @@ const App: FC = () => {
           trackVisible: overlayVisible.track,
           projectionVisible: overlayVisible.projection,
           onToggleOverlay: handleOverlayToggle,
+          cablePowerVisible: cableVisible.power,
+          cableTelecomVisible: cableVisible.telecom,
+          onToggleCable: handleCableToggle,
           updatedAt: aisUpdatedAt,
           error: aisError
         }}
