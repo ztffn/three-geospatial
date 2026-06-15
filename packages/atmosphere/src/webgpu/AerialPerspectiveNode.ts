@@ -6,6 +6,7 @@ import {
   mix,
   positionGeometry,
   remapClamp,
+  uniform,
   uv,
   vec3,
   vec4
@@ -44,6 +45,15 @@ export class AerialPerspectiveNode extends TempNode {
   transmittance = true
   inscatter = true
   moonScattering = false
+
+  /**
+   * Scales the in-scattered airlight added to the surface (the `inscatter`
+   * term), without affecting the sky/limb. Default 1 = unchanged. Drive below 1
+   * to clear the atmospheric veil over the surface — e.g. fading it down with
+   * camera altitude so the globe reads from orbit. A runtime uniform, so it
+   * does not enter `customCacheKey` and can be animated without a rebuild.
+   */
+  inscatterScale: Node = uniform(1)
 
   constructor(
     colorNode: Node<'vec4'>,
@@ -231,7 +241,7 @@ export class AerialPerspectiveNode extends TempNode {
         output = output.mul(transmittance)
       }
       if (this.inscatter) {
-        output = output.add(inscatter)
+        output = output.add(inscatter.mul(this.inscatterScale))
       }
       return output
     })()

@@ -82,6 +82,7 @@ import {
   Geodetic,
   PointOfView,
   radians,
+  remapClamped,
 } from '@takram/three-geospatial'
 import {
   cameraFar,
@@ -2336,7 +2337,25 @@ export const Content: FC<{
     showStars: { value: true },
     moonIntensity: { value: 25, min: 0, max: 100, step: 1 },
     starsIntensity: { value: 20, min: 0, max: 100, step: 1 },
+    // Orbital-clarity blend: as the camera climbs, fade the aerial-perspective
+    // inscatter (the additive airlight that washes the surface from far up) down
+    // toward `orbitalInscatter`, so the globe holds contrast against the
+    // atmosphere. Ground (≤ startKm) keeps full inscatter (=1); the sky/limb is
+    // unaffected (inscatter only feeds the surface branch). Drives
+    // AerialPerspectiveNode.inscatterScale per-frame below.
+    orbitalInscatter: { value: 0.2, min: 0, max: 1, step: 0.01 },
+    orbitalBlendStartKm: { value: 600, min: 0, max: 5000, step: 10 },
+    orbitalBlendEndKm: { value: 1800, min: 0, max: 30000, step: 50 },
+    // Shapes the fade across the band: applied as f^power. <1 front-loads it
+    // (clears fast right after startKm), 1 = linear, >1 eases in slowly.
+    orbitalBlendPower: { value: 0.2, min: 0.1, max: 3, step: 0.05 },
   })
+
+  // Aerial-perspective inscatter scale as a stable uniform so the orbital-clarity
+  // blend (useFrame below) can drive it per-frame without rebuilding the post
+  // pipeline. 1 = full ground haze; faded toward `orbitalInscatter` with
+  // altitude. Assigned onto the AerialPerspectiveNode in the post memo.
+  const inscatterScaleUniform = useMemo(() => uniform(1), [])
 
   // Function-form useControls so a preset selection can push values back into
   // the sliders via `setCloudControls`. Slider defaults match the 'fair' preset.
@@ -2499,6 +2518,21 @@ export const Content: FC<{
     )
     underwaterUniforms.underwaterT.value = uwScratch.t
     underwaterUniforms.cameraDepthBelow.value = Math.max(depthBelow, 0)
+
+    // Orbital-clarity blend: fade aerial-perspective inscatter from full (1) at
+    // ground to `orbitalInscatter` across [startKm, endKm] of altitude so the
+    // globe reads from space without the haze veil.
+    const f = remapClamped(
+      camAltitude / 1000,
+      atmosphereControls.orbitalBlendStartKm,
+      atmosphereControls.orbitalBlendEndKm
+    )
+    const s = Math.pow(f, atmosphereControls.orbitalBlendPower) // <1 = aggressive early ramp
+    inscatterScaleUniform.value = MathUtils.lerp(
+      1,
+      atmosphereControls.orbitalInscatter,
+      s
+    )
   })
 
   // Default values come from UNDERWATER_DEFAULTS (single source of truth in
@@ -3133,6 +3167,8 @@ export const Content: FC<{
       colorNode.mul(SCENE_RADIANCE_SCALE),
       depthNode
     )
+    // Altitude-driven inscatter fade (orbital clarity) — see the useFrame blend.
+    aerialNode.inscatterScale = inscatterScaleUniform
     const skyNode = (aerialNode as any).skyNode
     if (skyNode != null) {
       skyNode.showSun = atmosphereControls.showSun
@@ -3209,6 +3245,7 @@ export const Content: FC<{
     underwaterUniforms,
     viewToOceanUniform,
     underwaterTimeUniform,
+    inscatterScaleUniform,
   ])
 
   const atmosphereDate = useMemo(() => {
