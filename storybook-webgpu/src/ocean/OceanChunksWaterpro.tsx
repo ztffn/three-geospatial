@@ -37,6 +37,7 @@ import {
 import type { Node, UniformNode } from 'three/webgpu'
 
 import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
+import { smoothstep } from '@takram/three-geospatial'
 
 // @ts-expect-error JS module
 import OceanChunkManager from '../../../packages/ocean-ifft/src/ocean/ocean.js'
@@ -93,6 +94,14 @@ export interface VertexUniformsBag {
 }
 
 type OceanManager = any
+
+// Camera-altitude band (metres above the ocean plane) over which the finite
+// IFFT patch fades out. The local square reads as a flat sheet from far up, so
+// it dissolves as the camera climbs through the cloud layer (~4 km default).
+// Below START: full opacity; above END: gone. Drives the material's
+// `altitudeFade` uniform (see buildWaterproOceanMaterial).
+const SQUARE_FADE_START_ALT = 2500
+const SQUARE_FADE_END_ALT = 6000
 
 interface OceanChunksWaterproProps {
   /** Group that the ocean chunks attach to (positioned at sea level in ECEF). */
@@ -651,6 +660,7 @@ export default function OceanChunksWaterpro({
   const matrixECEFToWorld = useMemo(() => new Matrix4(), [])
   const worldSun = useMemo(() => new Vector3(), [])
   const cameraPosScratch = useMemo(() => new Vector3(), [])
+  const oceanOriginScratch = useMemo(() => new Vector3(), [])
   const clockRef = useRef({
     start: performance.now() / 1000,
     last: performance.now() / 1000,
@@ -669,6 +679,14 @@ export default function OceanChunksWaterpro({
 
     camera.getWorldPosition(cameraPosScratch)
     vertexUniforms.cameraPositionUniform.value.copy(cameraPosScratch)
+
+    // Fade the finite patch out as the camera climbs through the cloud layer.
+    // Altitude = camera geocentric radius − ocean-plane geocentric radius; full
+    // opacity below START, gone above END (smoothstep inverted to descend).
+    parent.getWorldPosition(oceanOriginScratch)
+    const altitude = cameraPosScratch.length() - oceanOriginScratch.length()
+    uniforms.altitudeFade.value =
+      1 - smoothstep(SQUARE_FADE_START_ALT, SQUARE_FADE_END_ALT, altitude)
 
     // Sun direction — ECEF → world. World frame matches the WaterproAtmosphere
     // story exactly. At chunk scale the ocean-local-vs-world rotation is

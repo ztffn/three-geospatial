@@ -113,6 +113,14 @@ export interface WaterproOceanUniforms {
   fadeStart: UniformNode<number>
   fadeEnd: UniformNode<number>
   fadePower: UniformNode<number>
+  /**
+   * Camera-altitude fade for the finite IFFT patch, [0,1]. 1 at sea level
+   * (full opacity), 0 high above — the local square reads as a flat sheet from
+   * far up, so it dissolves as the camera climbs through the cloud layer. Driven
+   * per-frame from camera altitude in OceanChunksWaterpro; multiplies surface
+   * alpha. The globe tiles below carry the ocean read once the patch is gone.
+   */
+  altitudeFade: UniformNode<number>
   // ─ Tip foam ────────────────────────────────────────────────────────────
   // Additional foam layer that fires on actual visible wave-tip height.
   // Gated by both a height threshold AND a sparse rarity mask so foam only
@@ -187,6 +195,7 @@ export function createWaterproOceanUniforms(): WaterproOceanUniforms {
     fadeStart: uniform(50.0),
     fadeEnd: uniform(200.0),
     fadePower: uniform(1.0),
+    altitudeFade: uniform(1.0),
     tipFoamEnabled: uniform(1.0),
     tipFoamIntensity: uniform(1.0),
     tipFoamHeightThreshold: uniform(0.6),
@@ -686,10 +695,18 @@ export function buildWaterproOceanMaterial(
   // a flagged water-occluder volume (ship hull interior, G=1 in the depth
   // pre-pass) sits in front of the surface — hides the water inside the hull.
   const mat = new MeshStandardNodeMaterial()
+  // Altitude fade: the finite patch blends out as the camera climbs (alpha =
+  // u.altitudeFade, driven per-frame). transparent enables the blend; a tiny
+  // alphaTest keeps the surface IN the linear-depth pre-pass (which skips
+  // pure-transparent, alphaTest-less surfaces — OceanChunksWaterpro line ~605),
+  // so shoreline foam survives at sea level, and discards the patch entirely
+  // once fully faded. depthWrite stays on so it still occludes correctly.
+  mat.transparent = true
+  mat.alphaTest = 0.001
   mat.positionNode = positionNode as any
   mat.colorNode = Fn(() => {
     Discard(occluderInFront.greaterThan(float(0.5)))
-    return vec4(finalColor, float(1))
+    return vec4(finalColor, u.altitudeFade)
   })()
   // Compile-ordering fence (see CLOUD-REFLECTION-DEBUG.md §"Resolution"). The
   // cloud-reflection math is byte-identical whether or not the thin vertical
