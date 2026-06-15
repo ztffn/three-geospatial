@@ -1343,7 +1343,7 @@ function lineFromEcef(
 
 // Dispose a built line's geometry + material when it is replaced or unmounted
 // (these rebuild on every selection, so otherwise they would leak).
-function useDisposableLine(line: Line2 | null): void {
+function useDisposableLine(line: Line2 | LineSegments2 | null): void {
   useEffect(
     () => () => {
       if (line == null) return
@@ -1374,6 +1374,11 @@ interface CableRecord {
 const CABLE_LIFT_M = 120 // clears ocean/tiles without z-fight; sub-pixel at overview
 const CABLE_WIDTH = 2 // px (fat line; visible at the overview)
 const _cableColor = new Color()
+// Scratch reused across every vertex so the geometry build allocates nothing
+// per point: one Geodetic, the current ECEF point, and the previous one.
+const _cableGeodetic = new Geodetic()
+const _cableEcef = new Vector3()
+const _cablePrevEcef = new Vector3()
 function colorForCable(cable: CableRecord, out: Color): Color {
   if (cable.c === 'telecom') return out.setHex(0x46c8ff) // cool cyan = comms
   const v = cable.v ?? 0
@@ -1382,29 +1387,33 @@ function colorForCable(cable: CableRecord, out: Color): Color {
   return out.setHex(0xff7a3c) // array / collection (warm)
 }
 
-// One merged LineSegments2 for the cables of a category (null if none): ECEF
-// segments + per-vertex colour.
-function buildCableLayer(
-  cables: CableRecord[],
-  category: 'power' | 'telecom'
-): LineSegments2 | null {
+// One merged LineSegments2 for the given cables (null if none): ECEF segments +
+// per-vertex colour. Each cable's polyline is walked once, emitting a segment
+// per consecutive pair by carrying the previous ECEF point.
+function buildCableLayer(cables: CableRecord[]): LineSegments2 | null {
   const positions: number[] = []
   const colors: number[] = []
   for (const cable of cables) {
-    if (cable.c !== category) continue
     const { r, g, b } = colorForCable(cable, _cableColor)
     const p = cable.p
-    const pts: Vector3[] = []
+    let hasPrev = false
     for (let i = 0; i + 1 < p.length; i += 2) {
-      pts.push(
-        new Geodetic(radians(p[i]), radians(p[i + 1]), CABLE_LIFT_M).toECEF()
-      )
-    }
-    for (let k = 0; k + 1 < pts.length; k++) {
-      const a = pts[k]
-      const c = pts[k + 1]
-      positions.push(a.x, a.y, a.z, c.x, c.y, c.z)
-      colors.push(r, g, b, r, g, b)
+      const cur = _cableGeodetic
+        .set(radians(p[i]), radians(p[i + 1]), CABLE_LIFT_M)
+        .toECEF(_cableEcef)
+      if (hasPrev) {
+        positions.push(
+          _cablePrevEcef.x,
+          _cablePrevEcef.y,
+          _cablePrevEcef.z,
+          cur.x,
+          cur.y,
+          cur.z
+        )
+        colors.push(r, g, b, r, g, b)
+      }
+      _cablePrevEcef.copy(cur)
+      hasPrev = true
     }
   }
   if (positions.length === 0) return null
@@ -1445,37 +1454,32 @@ function useSubseaCables(): CableRecord[] | null {
 }
 
 // Subsea cable layers, shown only at the globe overview. Geometry builds once
-// per fetched data; the visibility flag just adds/removes it from the scene.
-const SubseaCables: FC<{ showPower: boolean; showTelecom: boolean }> = ({
-  showPower,
-  showTelecom
-}) => {
+// per fetched data — partitioned into the two categories in a single pass — and
+// the visibility flags just add/remove the merged lines from the scene.
+const SubseaCables: FC<{
+  overview: boolean
+  showPower?: boolean
+  showTelecom?: boolean
+}> = ({ overview, showPower = true, showTelecom = true }) => {
   const cables = useSubseaCables()
-  const layers = useMemo(
-    () =>
-      cables == null
-        ? null
-        : {
-            power: buildCableLayer(cables, 'power'),
-            telecom: buildCableLayer(cables, 'telecom')
-          },
-    [cables]
-  )
-  useEffect(
-    () => () => {
-      for (const l of [layers?.power, layers?.telecom]) {
-        if (l == null) continue
-        l.geometry.dispose()
-        ;(l.material as THREE.Material).dispose()
-      }
-    },
-    [layers]
-  )
+  const layers = useMemo(() => {
+    if (cables == null) return null
+    const power: CableRecord[] = []
+    const telecom: CableRecord[] = []
+    for (const cable of cables) {
+      ;(cable.c === 'power' ? power : telecom).push(cable)
+    }
+    return { power: buildCableLayer(power), telecom: buildCableLayer(telecom) }
+  }, [cables])
+  useDisposableLine(layers?.power ?? null)
+  useDisposableLine(layers?.telecom ?? null)
   if (layers == null) return null
   return (
     <>
-      {showPower && layers.power != null && <primitive object={layers.power} />}
-      {showTelecom && layers.telecom != null && (
+      {overview && showPower && layers.power != null && (
+        <primitive object={layers.power} />
+      )}
+      {overview && showTelecom && layers.telecom != null && (
         <primitive object={layers.telecom} />
       )}
     </>
@@ -3564,8 +3568,9 @@ export const Content: FC<{
         />
       )}
       <SubseaCables
-        showPower={overview && (showPowerCables ?? true)}
-        showTelecom={overview && (showTelecomCables ?? true)}
+        overview={overview}
+        showPower={showPowerCables}
+        showTelecom={showTelecomCables}
       />
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth

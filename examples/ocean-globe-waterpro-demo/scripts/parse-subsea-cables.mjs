@@ -113,13 +113,21 @@ const flatten = pts => {
   return out
 }
 
-const powerRecord = way => {
-  const rec = { c: 'power', p: flatten(way.geometry.map(g => [g.lon, g.lat])) }
-  if (way.tags?.name != null) rec.n = way.tags.name
-  const v = firstInt(way.tags?.voltage)
-  if (v != null) rec.v = v
+// One compact output record: category + flattened polyline, optional name/volts.
+const makeRecord = (category, pts, name, volts) => {
+  const rec = { c: category, p: flatten(pts) }
+  if (name != null) rec.n = name
+  if (volts != null) rec.v = volts
   return rec
 }
+
+const powerRecord = way =>
+  makeRecord(
+    'power',
+    way.geometry.map(g => [g.lon, g.lat]),
+    way.tags?.name ?? null,
+    firstInt(way.tags?.voltage)
+  )
 
 const inside = (line, [s, w, n, e]) =>
   line.every(([lon, lat]) => lon >= w && lon <= e && lat >= s && lat <= n)
@@ -149,9 +157,7 @@ async function fetchTelecom() {
     const name = feature.properties?.name ?? null
     for (const line of geom.coordinates) {
       if (line.length < 2 || !inside(line, TELECOM_BBOX)) continue
-      const rec = { c: 'telecom', p: flatten(line) }
-      if (name != null) rec.n = name
-      records.push(rec)
+      records.push(makeRecord('telecom', line, name, null))
     }
   }
   return records
