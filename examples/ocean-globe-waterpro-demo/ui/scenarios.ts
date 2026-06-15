@@ -251,6 +251,21 @@ export const SCENARIOS: Scenario[] = [
         aimOffsetENU: [0, 0, 12],
         distance: 1200,
         pitchDeg: -25
+      },
+      {
+        id: 'barentswatch',
+        label: 'BarentsWatch',
+        // Top-down regional survey (captured in-scene): ~2,884 km up over
+        // central Norway, near-vertical pitch, with the whole coast in frame so
+        // the live shadow-fleet AIS markers (shown above 30 km) read across the
+        // Barents/Norwegian seas. Camera-only aim — the ship/ocean stay at Bodø.
+        // headingDeg 90 = NORTH UP: PointOfView measures heading from local
+        // EAST (h = east·cosθ + north·sinθ), so θ=90° points the screen-up
+        // vector (which tracks h at top-down) to true north.
+        aimOffsetENU: [-252907, -324030, 103687],
+        distance: 2884030,
+        headingDeg: 90,
+        pitchDeg: -82.5
       }
     ]
   },
