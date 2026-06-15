@@ -1,0 +1,20 @@
+# Keep the build context lean and secret-free for the twin.humatopia.ai image.
+# CRITICAL: .env must never enter the context — a dev token in it would be
+# inlined into the public bundle (the Dockerfile sources tokens from build-args).
+.env
+.env.*
+**/node_modules
+**/dist
+**/storybook-static
+**/.cache
+.git
+.nx
+tmp
+test-output
+# Large uncompressed source assets — only the *_compressed.glb files are copied
+# into the build by the Vite staticDirsPlugin allowlist.
+storybook-webgpu/assets/*.blend
+storybook-webgpu/assets/*.blend1
+storybook-webgpu/assets/turbine-demo.glb
+storybook-webgpu/assets/turbine-demo2.glb
+storybook-webgpu/assets/turbine-demo3.glb

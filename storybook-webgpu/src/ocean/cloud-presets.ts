@@ -48,13 +48,13 @@ export const CLOUD_PRESETS: Record<CloudPresetName, CloudPresetFields> = {
   // Scattered white fair-weather cumulus (the default look).
   fair: {
     altitude: 4000,
-    coverage: 0.5,
-    opacity: 0.85,
+    coverage: 0.71,
+    opacity: 0.24,
     tiles: 10,
     windSpeed: 0.004,
     dayColor: '#ffffff',
     nightAmbient: 0.03,
-    density: 0.1,
+    density: 0,
     intensity: 2.5,
   },
   // Broad grey deck, low contrast, high cover.

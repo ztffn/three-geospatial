@@ -106,3 +106,14 @@ export type {
   WaterproPresetWaterFields,
   WaterproPresetUniformBag,
 } from './presets.js'
+
+// Underwater post effect (absorption fog + procedural Voronoi caustics).
+export {
+  underwaterPostNode,
+  createUnderwaterUniforms,
+  UNDERWATER_DEFAULTS,
+} from './nodes/underwater.js'
+export type {
+  UnderwaterUniforms,
+  UnderwaterPostParams,
+} from './nodes/underwater.js'

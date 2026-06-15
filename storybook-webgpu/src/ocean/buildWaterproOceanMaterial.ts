@@ -12,9 +12,11 @@ import type { UniformNode } from 'three/webgpu'
 import {
   cameraPosition,
   cubeTexture,
+  Discard,
   dot,
   exp,
   float,
+  Fn,
   max,
   min,
   mix,
@@ -374,8 +376,13 @@ export function buildWaterproOceanMaterial(
   // Program 4 (water-color). Chunks supply oceanDepth / oceanPositionWorld
   // overrides because their custom WGSL positionNode breaks TSL's built-in
   // positionView / positionWorld; the plane lets the node use its TSL defaults.
-  const { waterColor, waterColumnDepth, isObjectInFront, isDynamic } =
-    waterColorNode({
+  const {
+    waterColor,
+    waterColumnDepth,
+    isObjectInFront,
+    isDynamic,
+    occluderInFront,
+  } = waterColorNode({
       depthTexture,
       depthTextureEnabled,
       waterDepth: u.waterDepth,
@@ -656,6 +663,12 @@ export function buildWaterproOceanMaterial(
   // cloudSun = 1 when no cloud or no shadow closure → unchanged.
   const finalColor = withTipFoam.mul(cloudSun)
 
+  // NOTE: an underwater surface branch (Snell window / TIR + sun glow,
+  // selected by a camera-side uniform) was tried here and REMOVED — the
+  // original material seen from below reads better in this demo, and swapping
+  // the whole surface on submersion strobed at the boundary. The underwater
+  // look is handled entirely by the post effect (waterpro/nodes/underwater.ts).
+
   // emissiveNode composition. Foam mask = 1 - (combined foam + tip foam),
   // clamped — reflection / SSS are zeroed out where any foam covers the
   // surface so they don't bleed through a white-cap.
@@ -669,10 +682,15 @@ export function buildWaterproOceanMaterial(
     .mul(cloudSun)
   const totalEmissive = reflectionEmissive.add(sssEmissive)
 
-  // Material.
+  // Material. colorNode is wrapped in an Fn so the fragment can DISCARD where
+  // a flagged water-occluder volume (ship hull interior, G=1 in the depth
+  // pre-pass) sits in front of the surface — hides the water inside the hull.
   const mat = new MeshStandardNodeMaterial()
   mat.positionNode = positionNode as any
-  mat.colorNode = vec4(finalColor, float(1))
+  mat.colorNode = Fn(() => {
+    Discard(occluderInFront.greaterThan(float(0.5)))
+    return vec4(finalColor, float(1))
+  })()
   // Compile-ordering fence (see CLOUD-REFLECTION-DEBUG.md §"Resolution"). The
   // cloud-reflection math is byte-identical whether or not the thin vertical
   // line shows (proven by a WGSL diff of the shipping shader vs the old debug

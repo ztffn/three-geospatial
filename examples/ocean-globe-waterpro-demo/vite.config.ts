@@ -6,13 +6,36 @@
 
 import react from '@vitejs/plugin-react'
 import fs from 'node:fs'
+import type { ServerResponse } from 'node:http'
 import path from 'node:path'
 import sirv from 'sirv'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 
 import { fetchMergedForecast } from '../../netlify/functions/_met-core'
+import {
+  fetchAisPositions,
+  fetchVesselTrack
+} from '../../netlify/functions/_ais-core'
+import { SHADOW_FLEET } from './ui/shadowFleet'
+
+const SHADOW_FLEET_IMOS = SHADOW_FLEET.map(v => v.imo)
 
 const repoRoot = path.resolve(__dirname, '../../')
+
+// Bridge the UNPREFIXED BarentsWatch secrets from the root .env into
+// process.env so the dev AIS proxy (which reads process.env, exactly like the
+// prod server) can authenticate. Vite only surfaces VITE_/STORYBOOK_ vars, and
+// only to the client bundle — these two stay server-side and never get inlined.
+// Skipped on Netlify, where env comes from the platform. Without this the dev
+// AIS endpoint 503s ("credentials missing") even though .env has the values.
+if (process.env.NETLIFY !== 'true') {
+  const rootEnv = loadEnv('development', repoRoot, '')
+  for (const key of ['BARENTSWATCH_CLIENT_ID', 'BARENTSWATCH_CLIENT_SECRET']) {
+    if (process.env[key] == null && rootEnv[key] != null) {
+      process.env[key] = rootEnv[key]
+    }
+  }
+}
 const storybookAssets = path.resolve(repoRoot, 'storybook-webgpu/assets')
 const oceanIfftResources = path.resolve(repoRoot, 'packages/ocean-ifft/resources')
 
@@ -29,6 +52,24 @@ const staticAssets: Array<{ from: string; to: string }> = [
   {
     from: path.join(storybookAssets, 'turbine-demo3_compressed.glb'),
     to: 'public/turbine-demo3_compressed.glb'
+  },
+  // Service vessels (ShipModel.tsx SHIP_DEFS) — buoyancy + hull occluders.
+  {
+    from: path.join(storybookAssets, 'ship-demo-compressed.glb'),
+    to: 'public/ship-demo-compressed.glb'
+  },
+  {
+    from: path.join(storybookAssets, 'ship-demo-small-compressed.glb'),
+    to: 'public/ship-demo-small-compressed.glb'
+  },
+  // Patrol ship (Bodø scenario) + offshore platform (Norwegian Sea scenario).
+  {
+    from: path.join(storybookAssets, 'patrolship-compressed.glb'),
+    to: 'public/patrolship-compressed.glb'
+  },
+  {
+    from: path.join(storybookAssets, 'platform-compressed.glb'),
+    to: 'public/platform-compressed.glb'
   },
   // Huma brand mark (top-left overlay in main.tsx): favicon + HumaDisplay
   // wordmark font. Served at /public/brand/* (dev via sirv, build via copy).
@@ -81,40 +122,71 @@ function staticDirsPlugin(): Plugin {
   }
 }
 
-// Dev-server mirror of the Netlify MET proxy function. In production the
-// serverless function at netlify/functions/met.mts answers this path; under
-// plain `vite` there are no functions, so emulate it with middleware that runs
-// the same fetchMergedForecast (server-side, so the MET User-Agent is set and
-// there's no CORS). Keeps the browser hitting one identical URL in dev + prod.
+// Write a JSON response (shared by both dev proxies below). Dev responses are
+// always no-store so the browser re-hits the live upstream each time.
+function sendJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown
+): void {
+  res.statusCode = status
+  res.setHeader('content-type', 'application/json')
+  res.setHeader('cache-control', 'no-store')
+  res.end(JSON.stringify(body))
+}
+
+// Dev-server mirror of the MET proxy. In production the self-hosted server
+// answers this path; under plain `vite` there are no functions, so emulate it
+// with middleware that runs the same fetchMergedForecast (server-side, so the
+// MET User-Agent is set and there's no CORS). One identical URL in dev + prod.
 function metDevProxyPlugin(): Plugin {
   return {
     name: 'met-dev-proxy',
     configureServer(server) {
+      server.middlewares.use('/.netlify/functions/met', (req, res) => {
+        const url = new URL(req.url ?? '', 'http://localhost')
+        const lat = Number(url.searchParams.get('lat'))
+        const lon = Number(url.searchParams.get('lon'))
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          sendJson(res, 400, { error: 'lat and lon required' })
+          return
+        }
+        fetchMergedForecast(lat, lon)
+          .then(forecast => sendJson(res, 200, forecast))
+          .catch((err: Error) => sendJson(res, 502, { error: err.message }))
+      })
+    }
+  }
+}
+
+// Dev mirror of the BarentsWatch AIS proxy. Same same-origin path the client
+// polls in prod; runs the token exchange + latest-positions fetch server-side
+// (secret stays off the bundle). 503 when credentials are absent so the client
+// simply shows no markers — never fabricated positions.
+function aisDevProxyPlugin(): Plugin {
+  return {
+    name: 'ais-dev-proxy',
+    configureServer(server) {
       server.middlewares.use(
-        '/.netlify/functions/met',
-        (req, res, next) => {
+        '/.netlify/functions/ais-shadow-fleet',
+        (_req, res) => {
+          fetchAisPositions(SHADOW_FLEET_IMOS)
+            .then(data => sendJson(res, 200, data))
+            .catch((err: Error) => sendJson(res, 503, { error: err.message }))
+        }
+      )
+      server.middlewares.use(
+        '/.netlify/functions/ais-track',
+        (req, res) => {
           const url = new URL(req.url ?? '', 'http://localhost')
-          const lat = Number(url.searchParams.get('lat'))
-          const lon = Number(url.searchParams.get('lon'))
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-            res.statusCode = 400
-            res.setHeader('content-type', 'application/json')
-            res.end(JSON.stringify({ error: 'lat and lon required' }))
+          const mmsi = Number(url.searchParams.get('mmsi'))
+          if (!Number.isFinite(mmsi) || mmsi <= 0) {
+            sendJson(res, 400, { error: 'missing or invalid mmsi' })
             return
           }
-          fetchMergedForecast(lat, lon)
-            .then(forecast => {
-              res.statusCode = 200
-              res.setHeader('content-type', 'application/json')
-              res.setHeader('cache-control', 'no-store') // dev: always fresh
-              res.end(JSON.stringify(forecast))
-            })
-            .catch((err: Error) => {
-              res.statusCode = 502
-              res.setHeader('content-type', 'application/json')
-              res.end(JSON.stringify({ error: err.message }))
-            })
-          void next
+          fetchVesselTrack(mmsi)
+            .then(data => sendJson(res, 200, data))
+            .catch((err: Error) => sendJson(res, 503, { error: err.message }))
         }
       )
     }
@@ -294,6 +366,7 @@ export default defineConfig({
     ifftWorkerHardeningPlugin(),
     staticDirsPlugin(),
     metDevProxyPlugin(),
+    aisDevProxyPlugin(),
     secretGuardPlugin()
   ],
   // Bundled workers ship as ES modules — required by ocean-builder-threaded.js's

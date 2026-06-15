@@ -13,6 +13,9 @@ import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { Ellipsoid } from '@takram/three-geospatial'
 import type { CloudField } from './cloud-coverage'
 
+/** Coverage value below which a fragment is treated as a sky gap and discarded. */
+const COVERAGE_CLIP = 0.05
+
 interface CloudLayerProps {
   /** Shared cloud field (uniforms + coverage sampler). */
   field: CloudField
@@ -27,10 +30,9 @@ export const CloudLayer: FC<CloudLayerProps> = ({ field, altitude = 4000 }) => {
     const mat = new MeshBasicNodeMaterial()
     mat.transparent = true
     // Write depth so the aerial-perspective post-pass treats cloud pixels as
-    // geometry and doesn't paint the atmosphere sky over them. alphaTest
+    // geometry and doesn't paint the atmosphere sky over them. The alpha-test
     // discards the gaps between clouds so real sky shows there.
     mat.depthWrite = true
-    mat.alphaTest = 0.05
     mat.side = DoubleSide // visible from inside (ground) and outside (space)
 
     // sampleCloud → vec4(litAlbedo, edgedCoverage). Shell adds the emissive
@@ -39,6 +41,14 @@ export const CloudLayer: FC<CloudLayerProps> = ({ field, altitude = 4000 }) => {
     const s = field.sampleCloud(normalize(positionWorld)) as any
     mat.colorNode = s.rgb.mul(field.uniforms.intensity)
     mat.opacityNode = s.a.mul(field.uniforms.opacity)
+    // Gap-discard threshold in COVERAGE space. The discard tests the dimmed
+    // output alpha (edged·opacity); scaling the threshold by the SAME opacity
+    // keeps the clip at a constant coverage point (edged ≤ COVERAGE_CLIP) no
+    // matter how low global opacity goes. A fixed scalar alphaTest would instead
+    // move the clip up the soft smoothstep ramp as opacity drops — hard-cutting
+    // the fade into a crisp rim. At opacity 0 this discards everything, so the
+    // shell writes no stray depth. Uniform-driven node → no per-frame rebuild.
+    mat.alphaTestNode = field.uniforms.opacity.mul(COVERAGE_CLIP)
     return mat
   }, [field])
 
