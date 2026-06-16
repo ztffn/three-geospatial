@@ -49,6 +49,9 @@ export interface ShipDef {
   heightOffset: number
   eastOffset: number
   northOffset: number
+  // Initial yaw (°) for the leva default; omitted → 0. Lets a static structure
+  // bake its captured orientation (e.g. the land site).
+  yawDeg?: number
 }
 
 export const SHIP_DEFS: ShipDef[] = [
@@ -87,6 +90,19 @@ export const SHIP_DEFS: ShipDef[] = [
     heightOffset: 26,
     eastOffset: 0,
     northOffset: 0,
+  },
+  // Waste-handling facility on/near Karmøy island (waste-handling scenario;
+  // static — no buoyancy). On LAND; offsets/height/yaw captured in-scene via the
+  // leva 'Waste site' folder and baked here (the scene doesn't raycast ground
+  // height — the offset is applied along the ECEF up). Tune further there.
+  {
+    folder: 'Waste site',
+    url: 'public/site_compressed.glb',
+    scale: 1,
+    heightOffset: 67.4,
+    eastOffset: -50,
+    northOffset: 40,
+    yawDeg: -30,
   },
 ]
 
@@ -136,7 +152,13 @@ export function useShip(
       step: 5,
       label: 'North (m)',
     },
-    yawDeg: { value: 0, min: -180, max: 180, step: 1, label: 'Yaw (°)' },
+    yawDeg: {
+      value: def.yawDeg ?? 0,
+      min: -180,
+      max: 180,
+      step: 1,
+      label: 'Yaw (°)',
+    },
   })
   const worldPos = useMemo(() => {
     const { east, north, up } = enuBasis(anchor)

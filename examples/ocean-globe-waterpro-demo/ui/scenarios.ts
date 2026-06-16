@@ -154,16 +154,6 @@ export const SCENARIOS: Scenario[] = [
         distance: 35,
         headingDeg: 270,
         pitchDeg: 8
-      },
-      // Ship 0 at the site anchor (ENU offsets ~0, waterline ~26 m). FPS: stand
-      // ON the deck (spawn raycasts to the deck surface and rides the heave).
-      {
-        id: 'ship',
-        label: 'Ship',
-        aimOffsetENU: [0, -10, 20],
-        distance: 300,
-        pitchDeg: -15,
-        spawn: { platform: 'ship', offsetENU: [0, 0, 10], headingDeg: 345 }
       }
     ]
   },
@@ -214,13 +204,15 @@ export const SCENARIOS: Scenario[] = [
       // Underwater subview — aim below the surface near the cable fan; positive
       // pitch puts the camera deeper than the aim, looking up through the water
       // column. FPS spawns above the dive spot looking down — descend with C.
+      // (Recaptured in-scene via camera 'Dump view', ECEF → Karmøy-anchor ENU.)
       {
         id: 'underwater',
         label: 'Underwater',
-        aimOffsetENU: [30, 0, -8],
-        distance: 50,
-        pitchDeg: 8,
-        spawn: { offsetENU: [77, -8.8, 21.3], headingDeg: 279.2, pitchDeg: -10.5 }
+        aimOffsetENU: [19.8, -2.7, 18.8],
+        distance: 80.5,
+        headingDeg: 274.1,
+        pitchDeg: -2.8,
+        spawn: { offsetENU: [100.1, -8.5, 22.7], headingDeg: 274.1, pitchDeg: -2.8 }
       },
       // Mosaic — tight close-up on the wax-cube cargo.
       {
@@ -233,51 +225,46 @@ export const SCENARIOS: Scenario[] = [
       }
     ]
   },
+  // Waste-handling facility on/near Karmøy island. Anchored at the 'Waste
+  // Handling' preset, where site_compressed.glb sits (static land model, placed
+  // via the 'Waste site' leva folder). Camera-only aims at the kiln, so the site
+  // stays pinned. Aims + FPS spawn captured in-scene (camera 'Dump view', ECEF →
+  // anchor ENU). The shared FPV spawn (~kiln-top height, free-fly) is repeated on
+  // every viewpoint so entering FPS lands at the site, not the sea-level derive.
   {
     id: 'waste-handling',
     label: 'Waste Handling',
+    preset: 'Waste Handling',
     viewpoints: [
-      // TODO real site — placeholder: Klemetsrud waste-to-energy plant, Oslo.
       {
         id: 'overview',
         label: 'Overview',
-        longitude: 10.8087,
-        latitude: 59.8328,
-        height: 200,
-        distance: 1200,
-        pitchDeg: -35
+        aimOffsetENU: [-24.4, -27.5, 45.9],
+        distance: 219,
+        headingDeg: 108,
+        pitchDeg: -25,
+        spawn: { offsetENU: [-39.6, -5.2, 69.6], headingDeg: 145.8, pitchDeg: -41.3 }
       },
+      // Captured close-up on the kiln (Kiln_top), looking down.
       {
-        id: 'plant',
-        label: 'Plant',
-        longitude: 10.8065,
-        latitude: 59.8341,
-        height: 190,
-        distance: 300
-      }
-    ]
-  },
-  {
-    id: 'sewer-system',
-    label: 'Sewer System',
-    viewpoints: [
-      // TODO real site — placeholder: VEAS treatment plant, Slemmestad.
-      {
-        id: 'overview',
-        label: 'Overview',
-        longitude: 10.4936,
-        latitude: 59.7833,
-        height: 60,
-        distance: 1000,
-        pitchDeg: -30
+        id: 'mosaic',
+        label: 'Mosaic',
+        aimOffsetENU: [-24.4, -27.5, 45.9],
+        distance: 55,
+        headingDeg: 108,
+        pitchDeg: -40.2,
+        spawn: { offsetENU: [-39.6, -5.2, 69.6], headingDeg: 145.8, pitchDeg: -41.3 }
       },
+      // Orbit pivots on the Carbio unit (picked in-scene: Carbio_right) rather
+      // than the kiln; same captured angle/distance.
       {
-        id: 'outfall',
-        label: 'Outfall',
-        longitude: 10.505,
-        latitude: 59.787,
-        height: 20,
-        distance: 350
+        id: 'carbio',
+        label: 'Carbio',
+        aimOffsetENU: [-38.1, -11.1, 68.8],
+        distance: 44.3,
+        headingDeg: 159.4,
+        pitchDeg: -47.8,
+        spawn: { offsetENU: [-39.6, -5.2, 69.6], headingDeg: 145.8, pitchDeg: -41.3 }
       }
     ]
   },
@@ -311,31 +298,6 @@ export const SCENARIOS: Scenario[] = [
       }
     ]
   },
-  {
-    id: 'forestry',
-    label: 'Forestry',
-    viewpoints: [
-      // TODO real sites — placeholders: Mjøsa-area forest + Moelv sawmill.
-      {
-        id: 'harvester',
-        label: 'Mobile',
-        longitude: 10.75,
-        latitude: 60.96,
-        height: 300,
-        distance: 500,
-        pitchDeg: -30
-      },
-      {
-        id: 'sawmill',
-        label: 'Sawmill',
-        longitude: 10.69,
-        latitude: 60.93,
-        height: 140,
-        distance: 600,
-        headingDeg: 135
-      }
-    ]
-  },
   // Patrol ship at sea outside Bodø (patrolship-compressed.glb, anchored at
   // the 'Bodø' scene preset; buoyant — rides the waves).
   {
@@ -361,6 +323,17 @@ export const SCENARIOS: Scenario[] = [
         distance: 250,
         pitchDeg: -10,
         spawn: { platform: 'patrolship', offsetENU: [0, 0, 10] }
+      },
+      // Near-surface hull view (captured in-scene, ECEF → Bodø-anchor ENU). Aim
+      // nudged off 'ship' so the switch re-flies; FPS spawns off the port side.
+      {
+        id: 'underwater',
+        label: 'Underwater',
+        aimOffsetENU: [0, 0, 8],
+        distance: 87.8,
+        headingDeg: 75.1,
+        pitchDeg: -7,
+        spawn: { offsetENU: [-84.3, -22.4, 20.8], headingDeg: 75.1, pitchDeg: -7 }
       },
       {
         id: 'overview',
@@ -395,55 +368,33 @@ export const SCENARIOS: Scenario[] = [
     label: 'Platform',
     preset: 'Norwegian Sea',
     viewpoints: [
+      // Default establishing view (captured in-scene, ECEF → anchor ENU).
+      {
+        id: 'overview',
+        label: 'Overview',
+        aimOffsetENU: [0, 0, 27],
+        distance: 248.6,
+        headingDeg: 289.8,
+        pitchDeg: -25
+      },
+      // Close on the deck/superstructure (captured). FPS spawns on the platform.
       {
         id: 'platform',
         label: 'Platform',
-        aimOffsetENU: [0, 0, 25],
-        distance: 400,
-        pitchDeg: -10,
-        // Deterministic absolute spawn captured in-scene (camera 'Dump view'),
-        // converted ECEF → geodetic + compass heading/pitch. Avoids the deck
-        // ride/raycast that stranded the camera at the orbit position.
-        spawn: {
-          longitude: 13.199772,
-          latitude: 67.499986,
-          height: 55.06,
-          headingDeg: 165.5,
-          pitchDeg: -1.5
-        }
+        aimOffsetENU: [-3.5, -0.1, 33.1],
+        distance: 57.9,
+        headingDeg: 258.7,
+        pitchDeg: -22.4,
+        spawn: { offsetENU: [49, 10.4, 55.1], headingDeg: 258.7, pitchDeg: -22.4 }
       },
+      // Underwater at the platform base — aim below the surface, camera deeper
+      // looking up the columns. Heuristic (no in-scene capture) — recapture to refine.
       {
-        id: 'overview',
-        label: 'Overview',
-        // Slightly different aim height than 'platform' so the switch re-flies.
-        aimOffsetENU: [0, 0, 27],
-        distance: 1500,
-        pitchDeg: -25
-      }
-    ]
-  },
-  {
-    id: 'skibladnir',
-    label: 'Skibladnir',
-    viewpoints: [
-      // TODO real site — placeholder: Lake Mjøsa off Gjøvik.
-      {
-        id: 'overview',
-        label: 'Overview',
-        longitude: 10.7,
-        latitude: 60.795,
-        height: 130,
-        distance: 800,
-        pitchDeg: -25
-      },
-      {
-        id: 'deck',
-        label: 'Deck',
-        longitude: 10.702,
-        latitude: 60.796,
-        height: 128,
-        distance: 150,
-        pitchDeg: -10
+        id: 'underwater',
+        label: 'Underwater',
+        aimOffsetENU: [0, 0, -8],
+        distance: 50,
+        pitchDeg: 8
       }
     ]
   }

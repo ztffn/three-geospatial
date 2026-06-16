@@ -199,6 +199,9 @@ export const locationPresets = {
   // Offshore wind installation site for the rig (turbine-install scenario).
   // PROVISIONAL placeholder in the Utsira Nord zone, W of Karmøy — set per site.
   'Utsira Nord': { longitude: 4.55, latitude: 59.3, height: 20 },
+  // Waste-handling site on/near Karmøy island (site_compressed.glb). Captured
+  // ~where the camera was; height/placement tuned in-scene via the leva folder.
+  'Waste Handling': { longitude: 5.300927, latitude: 59.402448, height: 20 },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -613,6 +616,12 @@ const CameraRig: FC<{
       // out arc (gentle still zeroes the bump below). No flyDistance → hold the
       // current distance. The slider channel is untouched, so no ease races this.
       const toDist = flyDistance ?? fromDist
+      // The mid-fly pull-out arc (bump) is a globe-scale dolly-out for cross-
+      // planet LOCATION jumps so the camera clears the surface. It must NOT fire
+      // on a same-site aim hop (a scenario sub-viewpoint, `aim` set): `sep` is
+      // measured to the location target, not the aim, so even a tiny separation
+      // produced a hundreds-of-metres out-and-back — very visible at the metre-
+      // scale close-ups (Nacelle/Hregg). Aim-flies ease straight to the framing.
       fly.current = {
         t: 0,
         dur: 1.6 + (sep / Math.PI) * 1.8,
@@ -620,7 +629,8 @@ const CameraRig: FC<{
         toAim: startAim,
         fromDist,
         toDist,
-        bump: gentleRecenter ? 0 : (sep / Math.PI) * 1.2e7 // ~globe scale for antipodal
+        bump:
+          gentleRecenter || aim != null ? 0 : (sep / Math.PI) * 1.2e7 // ~globe scale for antipodal
       }
     }
     lastTarget.current = target.clone()
@@ -2735,10 +2745,18 @@ export const Content: FC<{
     locationPresets['Utsira Nord'].latitude,
     locationPresets['Utsira Nord'].height
   )
+  // Waste-handling facility on/near Karmøy island (waste-handling scenario;
+  // static land structure — placement tuned in the 'Waste site' leva folder).
+  const wasteAnchor = useTargetECEF(
+    locationPresets['Waste Handling'].longitude,
+    locationPresets['Waste Handling'].latitude,
+    locationPresets['Waste Handling'].height
+  )
   const ship0 = useShip(SHIP_DEFS[0], shipAnchor, orbitControlsRef)
   const ship1 = useShip(SHIP_DEFS[1], shipAnchor, orbitControlsRef)
   const ship2 = useShip(SHIP_DEFS[2], patrolAnchor, orbitControlsRef)
   const ship3 = useShip(SHIP_DEFS[3], platformAnchor, orbitControlsRef)
+  const ship4 = useShip(SHIP_DEFS[4], wasteAnchor, orbitControlsRef)
   // platformId keys the FPS deck-spawn/ride registry; buoyant=false pins the
   // structure to its rest pose (platforms don't heave).
   const ships: Array<{
@@ -2777,6 +2795,13 @@ export const Content: FC<{
       controls: ship3.controls,
       anchor: platformAnchor,
       platformId: 'platform',
+      buoyant: false,
+      waterOcclusion: false
+    },
+    {
+      url: SHIP_DEFS[4].url,
+      controls: ship4.controls,
+      anchor: wasteAnchor,
       buoyant: false,
       waterOcclusion: false
     },
