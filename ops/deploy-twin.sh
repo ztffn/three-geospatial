@@ -65,6 +65,10 @@ echo "→ writing runtime env (image pin + AIS creds) and recreating huma-twin"
 # args), and the file is chmod 600.
 ssh "${SSH_USER}@${SSH_HOST}" sudo bash <<EOF
 set -euo pipefail
+# Sync the compose file from the shipped archive so the VPS copy can't drift from
+# the repo. A stale copy (missing the BARENTSWATCH env entries) silently dropped
+# the live AIS layer regardless of .env — the deploy never re-synced it before.
+cp ${BUILD_DIR}/ops/docker-compose.twin.yml ${COMPOSE_DIR}/docker-compose.twin.yml
 cd ${COMPOSE_DIR}
 cat > .env <<'ENVEOF'
 TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA}
