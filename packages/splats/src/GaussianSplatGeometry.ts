@@ -174,8 +174,10 @@ export class GaussianSplatGeometry extends InstancedBufferGeometry {
     this.setAttribute('quadOffset', quadAttribute)
     this.setIndex(QUAD_INDICES)
 
-    // Per-instance ordering, rewritten each sort.
-    const splatIndices = new Uint32Array(count)
+    // Per-instance ordering, rewritten each sort. Stored as float to match the
+    // `in float splatIndex` vertex attribute (integers are exact in f32 up to
+    // 2^24, far beyond the ~4.2M-splat texture capacity).
+    const splatIndices = new Float32Array(count)
     for (let i = 0; i < count; ++i) {
       splatIndices[i] = i
     }
@@ -192,7 +194,7 @@ export class GaussianSplatGeometry extends InstancedBufferGeometry {
 
   /** Uploads a new draw order produced by the sorter. */
   setSortedIndices(indices: Uint32Array): void {
-    const array = this.splatIndexAttribute.array as Uint32Array
+    const array = this.splatIndexAttribute.array as Float32Array
     array.set(indices.subarray(0, this.count))
     this.splatIndexAttribute.needsUpdate = true
   }
