@@ -120,6 +120,7 @@ import {
   type ShipMotionControls,
 } from './ShipModel'
 import { InstallationRig } from './InstallationRig'
+import { TwinFishSchools } from './TwinFishSchool'
 import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
 import { CABLE_BAKE } from './cable-bake'
 import { CloudLayer } from './CloudLayer'
@@ -4010,6 +4011,14 @@ export const Content: FC<{
           />
         </Suspense>
       )}
+      {/* Drop-in fish: one underwater school per scenario site. The component
+          owns the "Fish" leva folder and the per-site placement. */}
+      <TwinFishSchools
+        anchors={[shipAnchor, patrolAnchor, platformAnchor, rigAnchor]}
+        seaLevelOffset={oceanFrameControls.seaLevelOffset}
+        seabedDepth={cableControls.seabedDepth}
+        ready={!disableOcean}
+      />
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}
