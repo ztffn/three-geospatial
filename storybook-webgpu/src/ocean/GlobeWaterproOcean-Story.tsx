@@ -3142,7 +3142,13 @@ export const Content: FC<{
     // 'end' to keep rain visible from higher up (it silently hides everything when
     // the camera is above the band, which can make every slider look dead).
     fadeStartKm: { value: 1.5, min: 0, max: 40, step: 0.5, label: 'Fade start (km)' },
-    fadeEndKm: { value: 6, min: 0.5, max: 80, step: 0.5, label: 'Fade end (km)' }
+    fadeEndKm: { value: 6, min: 0.5, max: 80, step: 0.5, label: 'Fade end (km)' },
+    // Underwater: suspended specks (slow rise + sideways drift), always present
+    // when submerged regardless of rain above. Driven by the underwater detector.
+    underwaterIntensity: { value: 0.45, min: 0, max: 1, step: 0.01, label: 'UW density' },
+    uwRise: { value: 0.12, min: 0, max: 2, step: 0.01, label: 'UW rise (m/s)' },
+    uwSize: { value: 0.05, min: 0.01, max: 0.5, step: 0.01, label: 'UW speck size (m)' },
+    uwOpacity: { value: 0.06, min: 0, max: 1, step: 0.01, label: 'UW opacity' }
   })
   // Effective intensity from live MET precip (mm/h). Meteorological bands: light
   // <2.5, moderate 2.5–10, heavy 10–50, violent >50. A sqrt curve keeps light
@@ -3668,7 +3674,10 @@ export const Content: FC<{
       )}
       {/* Detachable precipitation plugin — remove this element to drop the whole
           rain/snow effect. Engine lives in storybook-webgpu/src/weather. */}
-      {precipControls.enabled && precipIntensity > 0.001 && (
+      {/* Mounted whenever enabled (not gated on rain intensity): there are always
+          suspended particles underwater, even in clear weather. Above water with
+          no rain the visible budget collapses to ~nothing. */}
+      {precipControls.enabled && (
         <Precipitation
           scene={overlayScene}
           intensity={precipIntensity}
@@ -3685,6 +3694,12 @@ export const Content: FC<{
           fallSpeedSnow={precipControls.fallSpeedSnow}
           fadeStartAlt={precipControls.fadeStartKm * 1000}
           fadeEndAlt={precipControls.fadeEndKm * 1000}
+          submerged={() => underwaterUniforms.underwaterT.value}
+          underwaterIntensity={precipControls.underwaterIntensity}
+          uwRise={precipControls.uwRise}
+          uwSize={precipControls.uwSize}
+          uwOpacity={precipControls.uwOpacity}
+          seaLevelRadius={target.length()}
         />
       )}
       <OrbitControls

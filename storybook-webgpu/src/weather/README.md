@@ -41,6 +41,14 @@ Rain and snow are one system; the `mode` uniform (0 rain / 1 snow) blends fall
 speed, sway, scale, shape alpha, and colour. Intensity scales the visible drop
 budget and the drawn instance count; the altitude fade zeroes opacity from orbit.
 
+**Underwater** is a second blend axis: a `uw` (0→1) factor — fed from the host's
+existing submerged detector via the `submerged` getter prop — morphs the same
+drops into slow-rising (`uwRise`), sideways-drifting, small square suspended
+specks (not air bubbles). Surface wind fades out underwater; vertical velocity
+flips from `-fallSpeed` to `+uwRise`. Underwater particles are **always present**
+(baseline `underwaterIntensity`, independent of rain above), so the host mounts
+the system whenever enabled and trims the visible budget when nothing shows.
+
 ### Deviation from the plan (deliberate)
 
 The plan specified a WebGPU compute path. This ships the **analytic GPU-instancing**

@@ -58,6 +58,12 @@ export interface PrecipitationValues {
   flakeSize: number
   fallSpeedRain: number
   fallSpeedSnow: number
+  /** Underwater morph: 0 = above water (rain/snow), 1 = submerged (suspended specks). */
+  uw: number
+  /** Underwater particle rise speed (m/s, slow upward) + speck size + opacity. */
+  uwRise: number
+  uwSize: number
+  uwOpacity: number
 }
 
 export interface PrecipitationSystem {
@@ -97,6 +103,13 @@ export function createPrecipitationSystem(opts?: {
     fallSpeedSnow: uniform(1.2),
     rainColor: uniform(new Color(0.72, 0.78, 0.9)),
     snowColor: uniform(new Color(1, 1, 1)),
+    // Underwater morph: uw 0→1 (camera submerged) turns the same drops into slow-
+    // rising, sideways-drifting suspended specks — not air bubbles. uwRise is a
+    // gentle upward speed (m/s); uwSize a small square speck; uwOpacity its alpha.
+    uw: uniform(0),
+    uwRise: uniform(0.12),
+    uwSize: uniform(0.05),
+    uwOpacity: uniform(0.06),
     maxCount: uniform(maxCount)
   }
 
@@ -114,24 +127,42 @@ export function createPrecipitationSystem(opts?: {
   const fallSpeed = mix(u.fallSpeedRain, u.fallSpeedSnow, u.mode) as any
   const dropW = mix(u.dropWidth, u.flakeSize, u.mode) as any
   const dropL = mix(u.dropLength, u.flakeSize, u.mode) as any
+  // Underwater (uw 0→1) morphs the SAME drops into slow suspended specks — small
+  // squares, no streak — so the drop size collapses to uwSize as you submerge.
+  const dropWf = mix(dropW, u.uwSize, u.uw) as any
+  const dropLf = mix(dropL, u.uwSize, u.uw) as any
 
   // LOCAL frame, set on the group each frame: +X = east, +Y = north, +Z = UP
-  // (right-handed). Drops fall along −Z toward the planet; wind drifts X/Y.
-  // Fall: loop top→bottom via mod(time); r3 de-syncs the column reset.
-  const fallDist = time.mul(fallSpeed).add(r3.mul(u.height)) as any
-  const upPos = (u.height as any).mul(0.5).sub(mod(fallDist, u.height)) // +Z
+  // (right-handed). Signed vertical velocity: air FALLS (−fallSpeed), underwater
+  // RISES slowly (+uwRise). Loop the drop through the box via mod(time); r3
+  // de-syncs the phase. mod handles the negative (downward) march cleanly.
+  const vy = mix((fallSpeed).negate(), u.uwRise, u.uw) as any
+  const upPos = mod(r3.mul(u.height).add(vy.mul(time)), u.height).sub(
+    (u.height as any).mul(0.5)
+  ) // +Z
+
+  // Surface wind drives the drops in air; underwater it fades out (uw→1 ⇒ 0) so
+  // submerged specks drift only on the gentle sway below, not at surface wind speed.
+  const windE = (u.windEast as any).mul((u.uw as any).oneMinus())
+  const windN = (u.windNorth as any).mul((u.uw as any).oneMinus())
 
   // Horizontal scatter + continuous wind drift (east=X, north=Y), wrapped back
   // into the box so the field is seamless however far the wind carries it.
   const e0 = r1.sub(0.5).mul(u.area)
   const n0 = r2.sub(0.5).mul(u.area)
-  const driftE = mod(e0.add((u.windEast as any).mul(time)).add(half), u.area).sub(half)
-  const driftN = mod(n0.add((u.windNorth as any).mul(time)).add(half), u.area).sub(half)
+  const driftE = mod(e0.add(windE.mul(time)).add(half), u.area).sub(half)
+  const driftN = mod(n0.add(windN.mul(time)).add(half), u.area).sub(half)
 
-  // Snow sways laterally; rain doesn't (swayAmp scales with mode → 0 for rain).
+  // Lateral sway: snow flutters (scales with mode); underwater specks drift
+  // gently sideways (scales with uw) for a suspended, current-borne look.
   const swayAmp = (u.flakeSize as any).mul(6).mul(u.mode)
-  const ex = driftE.add(sin(time.mul(1.6).add(r4.mul(6.2832))).mul(swayAmp))
-  const ny = driftN.add(cos(time.mul(1.3).add(r4.mul(6.2832))).mul(swayAmp))
+  const uwSway = float(1.5).mul(u.uw)
+  const ex = driftE
+    .add(sin(time.mul(1.6).add(r4.mul(6.2832))).mul(swayAmp))
+    .add(sin(time.mul(0.4).add(r4.mul(6.2832))).mul(uwSway))
+  const ny = driftN
+    .add(cos(time.mul(1.3).add(r4.mul(6.2832))).mul(swayAmp))
+    .add(cos(time.mul(0.35).add(r4.mul(6.2832))).mul(uwSway))
   const center = vec3(ex, ny, upPos)
 
   // Visibility budget: only the first intensity·maxCount drops draw.
@@ -144,14 +175,12 @@ export function createPrecipitationSystem(opts?: {
   // streak FORESHORTENS to a dot when you look straight up/down the rain (the
   // failure of a fixed-size camera-facing sprite). The WIDTH turns to face the
   // camera (perpendicular to both the velocity and the view ray).
-  const velLocal = normalize(
-    vec3(u.windEast, u.windNorth, (fallSpeed).negate())
-  ) as any
+  const velLocal = normalize(vec3(windE, windN, vy)) as any
   const toCam = normalize((center as any).negate()) as any
   // +epsilon keeps the cross finite for a drop sitting exactly on the view axis.
   const widthAxis = normalize(cross(velLocal, toCam).add(vec3(1e-4, 0, 0))) as any
   const g = positionGeometry as any // plane verts: x,y ∈ [−0.5, 0.5]
-  const offset = widthAxis.mul(g.x.mul(dropW)).add(velLocal.mul(g.y.mul(dropL)))
+  const offset = widthAxis.mul(g.x.mul(dropWf)).add(velLocal.mul(g.y.mul(dropLf)))
   const vert = (center as any).add(offset.mul(vis))
 
   const mat = new MeshBasicNodeMaterial()
@@ -174,8 +203,12 @@ export function createPrecipitationSystem(opts?: {
     smoothstep(float(0.5), float(0.0), abs(a.y))
   )
   const snowAlpha = smoothstep(float(0.5), float(0.0), length(a))
-  const shapeAlpha = mix(rainAlpha, snowAlpha, u.mode) as any
-  mat.opacityNode = shapeAlpha.mul(u.opacity).mul(u.fade).mul(vis)
+  // Underwater specks read as soft round dots, so blend the shape toward the
+  // radial (snow) alpha as you submerge, and swap rain opacity for uwOpacity.
+  const airShape = mix(rainAlpha, snowAlpha, u.mode) as any
+  const shapeAlpha = mix(airShape, snowAlpha, u.uw) as any
+  const effOpacity = mix(u.opacity, u.uwOpacity, u.uw) as any
+  mat.opacityNode = shapeAlpha.mul(effOpacity).mul(u.fade).mul(vis)
   mat.colorNode = mix(u.rainColor, u.snowColor, u.mode) as any
 
   const geometry = new PlaneGeometry(1, 1)
@@ -234,6 +267,10 @@ export function createPrecipitationSystem(opts?: {
     u.flakeSize.value = v.flakeSize
     u.fallSpeedRain.value = v.fallSpeedRain
     u.fallSpeedSnow.value = v.fallSpeedSnow
+    u.uw.value = v.uw
+    u.uwRise.value = v.uwRise
+    u.uwSize.value = v.uwSize
+    u.uwOpacity.value = v.uwOpacity
     // Trim the drawn instance range to the visible budget — light rain pays for
     // few drops, the shader still hard-gates the boundary instance.
     mesh.count = Math.max(1, Math.min(maxCount, Math.ceil(maxCount * v.intensity)))
