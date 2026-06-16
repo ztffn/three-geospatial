@@ -19,7 +19,6 @@ import {
   time,
   uniform,
   vec2,
-  vec3,
   vec4
 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
@@ -34,7 +33,7 @@ export const LENS_DROPS_DEFAULTS = {
    *  gates each frame. At 0 the node is a pixel-exact passthrough of the scene. */
   strength: 1,
   /** Per-grid drop spawn probability scale [0,1] — how many cells host a drop. */
-  density: 0.8,
+  density: 0.42,
   /** Refraction gain: magnification of the scene seen through a drop. */
   refract: 1.2,
   /** Wet-glass base defocus radius, in framebuffer texels. */
@@ -42,7 +41,7 @@ export const LENS_DROPS_DEFAULTS = {
   /** How strongly a drop replaces the wet base with the refracted view [0,1]. */
   dropOpacity: 0.9,
   /** Edge highlight (bright rim) intensity — subtle readability cue. */
-  rim: 0.15,
+  rim: 0.24,
   /** MAX vertical tail elongation reached as a drop ages: a drop starts round
    *  (1) and grows toward this as it fades, so beads elongate into running
    *  streaks. Tails can cross one cell upward (vertical neighbour sampling). */
@@ -92,16 +91,22 @@ export interface LensDrops {
   dispose: () => void
 }
 
-// Three procedural grids at different scales/seeds. Each cell hosts at most one
-// drop; the overlapping layers supply size variety and break up the lattice.
-// (cells = grid divisions over the vertical screen extent; x is aspect-corrected
-// so cells stay square on screen.) Streak tails run UPWARD past the cell top, so
-// each fragment also samples the drop one cell BELOW (whose tail reaches up into
-// it) — one extra eval per layer, no wider neighbour search.
+// Procedural grids at different scales/seeds. Each cell hosts at most one drop;
+// the overlapping layers supply size variety and break up the lattice. (cells =
+// grid divisions over the vertical screen extent; x is aspect-corrected so cells
+// stay square on screen.) Streak tails run UPWARD past the cell top, so each
+// fragment also samples the drop one cell BELOW (whose tail reaches up into it) —
+// one extra eval per layer, no wider neighbour search.
+//
+// The fine grids (9/15/24) are the general wet-lens drops shown in rain. The
+// coarse grid is `surfaceOnly`: fewer cells = bigger on-screen drops, gated to the
+// SURFACING signal (`wetFilm`) so the large blobs only appear as water sheets off
+// the lens on resurfacing — not in plain rain.
 const LAYERS = [
-  { cells: 9, seed: 0.0 },
-  { cells: 15, seed: 41.0 },
-  { cells: 24, seed: 87.0 }
+  { cells: 5, seed: 5.0, surfaceOnly: true },
+  { cells: 9, seed: 0.0, surfaceOnly: false },
+  { cells: 15, seed: 41.0, surfaceOnly: false },
+  { cells: 24, seed: 87.0, surfaceOnly: false }
 ]
 
 export function createLensDrops(): LensDrops {
@@ -208,12 +213,16 @@ export function createLensDrops(): LensDrops {
         return { mask, dispUv, nz }
       }
 
+      // surfaceOnly layers (the large blobs) are gated to the surfacing wetness so
+      // they show only on resurfacing, not in rain; fine layers are ungated.
+      const layerGate = L.surfaceOnly ? (u.wetFilm as any).saturate() : float(1)
       // Own cell + the cell below (its tail can hang up into this fragment). Drops
       // are sparse, so the two rarely overlap; max() picks the covering one.
       for (const dd of [evalDrop(0), evalDrop(-1)]) {
-        off = off.add(dd.dispUv.mul(dd.mask))
-        cover = max(cover, dd.mask)
-        rim = rim.add(pow(float(1).sub(dd.nz), float(3)).mul(dd.mask))
+        const m = dd.mask.mul(layerGate)
+        off = off.add(dd.dispUv.mul(m))
+        cover = max(cover, m)
+        rim = rim.add(pow(float(1).sub(dd.nz), float(3)).mul(m))
       }
     }
 
@@ -230,15 +239,13 @@ export function createLensDrops(): LensDrops {
 
     // Sample the magnified view toward the drop centre, clamped to the frame.
     const refrCol = tex.sample(suv.sub(off).saturate())
-    const coverage = (cover as any).saturate().mul(u.dropOpacity)
+    const coverage = cover.saturate().mul(u.dropOpacity)
     // The wet-glass base defocus reads as a continuous water FILM on the lens, so
     // it's gated by `wetFilm` (the surfacing component only): on resurfacing the
     // whole frame softens, but plain RAIN keeps a sharp scene between drops — the
     // individual drops still refract the sharp composite either way.
     const baseCol = mix(baseTap.rgb, blurCol.rgb, (u.wetFilm as any).saturate())
-    const lensRgb = mix(baseCol, refrCol.rgb, coverage).add(
-      (rim as any).mul(u.rim)
-    )
+    const lensRgb = mix(baseCol, refrCol.rgb, coverage).add(rim.mul(u.rim))
 
     // Master gate → exact passthrough of the untouched composite when strength≈0.
     const gate = (u.strength as any).saturate()

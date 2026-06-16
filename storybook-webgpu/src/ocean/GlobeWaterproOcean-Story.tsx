@@ -83,6 +83,7 @@ import {
   PointOfView,
   radians,
   remapClamped,
+  smoothstep,
 } from '@takram/three-geospatial'
 import {
   cameraFar,
@@ -3172,7 +3173,9 @@ export const Content: FC<{
     blur: { value: LENS_DROPS_DEFAULTS.blur, min: 0, max: 6, step: 0.1, label: 'Wet blur (px)' },
     dropOpacity: { value: LENS_DROPS_DEFAULTS.dropOpacity, min: 0, max: 1, step: 0.01, label: 'Drop opacity' },
     rim: { value: LENS_DROPS_DEFAULTS.rim, min: 0, max: 1, step: 0.01, label: 'Edge highlight' },
-    streak: { value: LENS_DROPS_DEFAULTS.streak, min: 1, max: 8, step: 0.1, label: 'Streak max (1=round)' },
+    // Max 7: beyond ~7 the longest tail (radius·streak) exceeds one cell and the
+    // one-row vertical neighbour sampler can no longer cover it → tail clips.
+    streak: { value: LENS_DROPS_DEFAULTS.streak, min: 1, max: 7, step: 0.1, label: 'Streak max (1=round)' },
     linger: { value: LENS_DROPS_DEFAULTS.linger, min: 0.3, max: 4, step: 0.1, label: 'Linger (lifespan)' },
     lifeJitter: { value: LENS_DROPS_DEFAULTS.lifeJitter, min: 0, max: 1, step: 0.01, label: 'Disappear randomness' },
     // Seconds the lens stays wet after breaching the surface (water sheeting off
@@ -3242,14 +3245,18 @@ export const Content: FC<{
       const outOfWater = 1 - sub
       // Light rain should already wet the lens — saturate well below heavy rain.
       const rain = MathUtils.clamp(precipIntensity / 0.05, 0, 1)
-      // Same altitude band as the rain plugin (shared near-surface gate). camera
-      // position is world-space at scene root, as the underwater detector assumes.
+      // Same altitude band as the rain plugin (shared near-surface gate), via the
+      // canonical smoothstep helper so the fade curve can't drift from an inline
+      // copy. camera position is world-space at scene root, as the underwater
+      // detector assumes.
       const alt = camera.position.length() - target.length()
-      const a0 = precipControls.fadeStartKm * 1000
-      const a1 = precipControls.fadeEndKm * 1000
-      const tt = a1 > a0 ? (alt - a0) / (a1 - a0) : 0
-      const c = MathUtils.clamp(tt, 0, 1)
-      const altFade = 1 - c * c * (3 - 2 * c)
+      const altFade =
+        1 -
+        smoothstep(
+          precipControls.fadeStartKm * 1000,
+          precipControls.fadeEndKm * 1000,
+          alt
+        )
       const above = outOfWater * altFade
       // Either trigger shows drops; outOfWater keeps it off until the breach (so the
       // lingering surface wetness can't show while still submerged). The blur film
@@ -3952,6 +3959,7 @@ export const Content: FC<{
       <TwinFishSchools
         anchors={[shipAnchor, patrolAnchor, platformAnchor, rigAnchor]}
         seaLevelOffset={oceanFrameControls.seaLevelOffset}
+        seabedDepth={cableControls.seabedDepth}
         ready={!disableOcean}
       />
       <TilesRenderer key={terrainAssetId}>
