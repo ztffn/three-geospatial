@@ -826,7 +826,7 @@ const App: FC = () => {
       {/* Debug controls: kept, but collapsed by default and out of the way
           (top-right; the conditions HUD stacks below it). */}
       <Leva collapsed />
-      <Splash visible={phase !== 'ready'} />
+      <Splash visible={phase !== 'ready'} phase={phase} />
     </>
   )
 }
@@ -903,10 +903,17 @@ const BrandMark: FC = () => (
 )
 
 // Minimal cover: full-bleed dark backdrop matching the canvas clear color, a
-// small spinner, and a single line of status. Fades out (500 ms) once the
-// loader reports ready. No spinning while ready — display:none after the
-// fade so the spinner doesn't burn cycles in the background.
-const Splash: FC<{ visible: boolean }> = ({ visible }) => {
+// small spinner, and one muted monospace status line that mirrors the console
+// milestones (what the loader is doing this phase). Fades out (500 ms) once the
+// loader reports ready. No spinning while ready — display:none after the fade
+// so the spinner doesn't burn cycles in the background.
+const PHASE_STATUS: Record<Phase, string> = {
+  atmosphere: 'Precomputing atmosphere…',
+  ocean: 'Building ocean…',
+  ready: 'Ready'
+}
+
+const Splash: FC<{ visible: boolean; phase: Phase }> = ({ visible, phase }) => {
   const [mounted, setMounted] = useState(true)
   useEffect(() => {
     if (visible) return
@@ -921,8 +928,10 @@ const Splash: FC<{ visible: boolean }> = ({ visible }) => {
         inset: 0,
         background: '#101820',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
+        gap: 14,
         opacity: visible ? 1 : 0,
         transition: 'opacity 500ms ease-out',
         pointerEvents: visible ? 'auto' : 'none',
@@ -939,6 +948,17 @@ const Splash: FC<{ visible: boolean }> = ({ visible }) => {
           animation: 'gwp-spin 0.9s linear infinite'
         }}
       />
+      <div
+        style={{
+          fontFamily:
+            "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+          fontSize: 11,
+          letterSpacing: '0.08em',
+          color: 'rgba(207, 216, 227, 0.55)'
+        }}
+      >
+        {PHASE_STATUS[phase]}
+      </div>
       <style>{`@keyframes gwp-spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
