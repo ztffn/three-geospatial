@@ -82,6 +82,25 @@ STORYBOOK_GOOGLE_MAP_API_KEY=your_key_here
 STORYBOOK_ION_API_TOKEN=your_token_here
 ```
 
+## Deploying the Digital Twin
+
+The twin (`examples/ocean-globe-waterpro-demo`) serves **twin.humatopia.ai** on
+the OVH VPS. The authoritative, battle-tested runbook is **`DEPLOY-TWIN.md`**
+(repo root) — read it before any deploy; it front-loads host facts, token
+recovery, the exact command, and every gotcha. In short:
+
+- `pnpm deploy:twin` ships `git archive HEAD` to the VPS, builds the amd64 image
+  there, recreates the `huma-twin` container, and health-checks `:13002`.
+  **Commit first — the working tree does not deploy.**
+- Browser tokens (`TWIN_ION_TOKEN`, `TWIN_GMAPS_KEY`) are public-by-design
+  (provider-restricted), recovered per `DEPLOY-TWIN.md` — never committed.
+- Host/SSH facts: `huma-infra/runbooks/HOSTS.md` (OVH VPS; the old mediaserver is
+  dead). NEVER deploy a local `pnpm build` — it bakes secrets and the secret-guard
+  blocks it; the deploy image build runs on-platform with `NETLIFY=true`.
+- New runtime assets (GLB/texture/font) must be added to the `staticAssets` copy
+  list in `examples/ocean-globe-waterpro-demo/vite.config.ts`, or they 404 in
+  prod (dev serves them via `sirv`; the build copies only that list).
+
 ## Code Organization Patterns
 
 ### Package Structure
