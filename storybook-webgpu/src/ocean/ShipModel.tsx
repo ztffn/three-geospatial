@@ -57,19 +57,21 @@ export interface ShipDef {
 export const SHIP_DEFS: ShipDef[] = [
   {
     folder: 'Ship',
-    url: 'public/ship-demo-compressed.glb',
-    scale: 2,
-    heightOffset: 26,
+    url: 'public/ship_large_compressed.glb',
+    scale: 0.35,
+    heightOffset: 26.9,
     eastOffset: 0,
     northOffset: 0,
+    yawDeg: -104,
   },
   {
     folder: 'Ship 2',
-    url: 'public/ship-demo-small-compressed.glb',
-    scale: 0.8,
+    url: 'public/ship_supply_compressed.glb',
+    scale: 0.35,
     heightOffset: 28.3,
     eastOffset: -10,
     northOffset: -20,
+    yawDeg: 94,
   },
   // Patrol ship outside Bodø (own scenario; anchored at the Bodø preset).
   {
@@ -282,6 +284,31 @@ export const ShipModel: FC<{
     return { size, center, minY: box.min.y, longIsZ: size.z >= size.x }
   }, [scene])
 
+  // A GLB may carry its own occluder: a closed low-poly hull-interior volume
+  // named 'WaterOccluder' (authored in Blender) that follows the hull taper
+  // better than the fitted box. Flag it for the depth pre-pass (G=1) and hide it
+  // from the color pass; when present, the box below is skipped.
+  const hasGlbOccluder = useMemo(() => {
+    let found = false
+    scene.traverse(obj => {
+      if (!/occluder/i.test(obj.name)) return
+      // Flag the MESHES in the named subtree (the export often nests the mesh
+      // under a group named 'WaterOccluder' — a child-of-a-child). Key off the
+      // mesh, not the group: the pre-pass reads the key on the mesh AND walks
+      // ancestor visibility, so the group must stay VISIBLE while each occluder
+      // mesh is keyed + visible=false (the pre-pass flips it on just for the
+      // depth pass; the color pass skips it). Hiding the group instead made the
+      // ancestor walk drop the mesh — which is why occlusion did nothing.
+      obj.traverse(o => {
+        if ((o as Mesh).isMesh !== true) return
+        o.userData[WATER_OCCLUDER_KEY] = true
+        o.visible = false
+        found = true
+      })
+    })
+    return found
+  }, [scene])
+
   // World-frame probe rig: longest bbox axis = hull length.
   const probes = useMemo(() => {
     const axisLong = hull.longIsZ ? frame.forward : frame.starboard
@@ -411,7 +438,7 @@ export const ShipModel: FC<{
   return (
     <group ref={groupRef} scale={scale}>
       <primitive object={scene} />
-      {waterOcclusion && motion.hullOcclusion && (
+      {waterOcclusion && motion.hullOcclusion && !hasGlbOccluder && (
         <primitive object={occluder} />
       )}
     </group>

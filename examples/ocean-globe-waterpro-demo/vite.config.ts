@@ -62,12 +62,12 @@ const staticAssets: Array<{ from: string; to: string }> = [
   },
   // Service vessels (ShipModel.tsx SHIP_DEFS) — buoyancy + hull occluders.
   {
-    from: path.join(storybookAssets, 'ship-demo-compressed.glb'),
-    to: 'public/ship-demo-compressed.glb'
+    from: path.join(storybookAssets, 'ship_large_compressed.glb'),
+    to: 'public/ship_large_compressed.glb'
   },
   {
-    from: path.join(storybookAssets, 'ship-demo-small-compressed.glb'),
-    to: 'public/ship-demo-small-compressed.glb'
+    from: path.join(storybookAssets, 'ship_supply_compressed.glb'),
+    to: 'public/ship_supply_compressed.glb'
   },
   // Patrol ship (Bodø scenario) + offshore platform (Norwegian Sea scenario).
   {
