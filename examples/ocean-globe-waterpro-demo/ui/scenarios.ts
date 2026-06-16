@@ -245,16 +245,6 @@ export const SCENARIOS: Scenario[] = [
         pitchDeg: -25,
         spawn: { offsetENU: [-39.6, -5.2, 69.6], headingDeg: 145.8, pitchDeg: -41.3 }
       },
-      // Captured close-up on the kiln (Kiln_top), looking down.
-      {
-        id: 'mosaic',
-        label: 'Mosaic',
-        aimOffsetENU: [-24.4, -27.5, 45.9],
-        distance: 55,
-        headingDeg: 108,
-        pitchDeg: -40.2,
-        spawn: { offsetENU: [-39.6, -5.2, 69.6], headingDeg: 145.8, pitchDeg: -41.3 }
-      },
       // Orbit pivots on the Carbio unit (picked in-scene: Carbio_right) rather
       // than the kiln; same captured angle/distance.
       {

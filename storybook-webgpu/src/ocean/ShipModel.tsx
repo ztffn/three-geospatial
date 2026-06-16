@@ -106,6 +106,17 @@ export const SHIP_DEFS: ShipDef[] = [
     northOffset: 40,
     yawDeg: -30,
   },
+  // Copy of Ship 0 (ship_large) moored beside the production platform (platform
+  // scenario; buoyant). Offset east of the platform — tune in the leva folder.
+  {
+    folder: 'Platform ship',
+    url: 'public/ship_large_compressed.glb',
+    scale: 0.35,
+    heightOffset: 26.9,
+    eastOffset: 120,
+    northOffset: 0,
+    yawDeg: -104,
+  },
 ]
 
 // One ship's debug rig: a leva folder (visibility, scale, waterline, east/north

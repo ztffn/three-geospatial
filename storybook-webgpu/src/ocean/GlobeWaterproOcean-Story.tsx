@@ -2757,6 +2757,7 @@ export const Content: FC<{
   const ship2 = useShip(SHIP_DEFS[2], patrolAnchor, orbitControlsRef)
   const ship3 = useShip(SHIP_DEFS[3], platformAnchor, orbitControlsRef)
   const ship4 = useShip(SHIP_DEFS[4], wasteAnchor, orbitControlsRef)
+  const ship5 = useShip(SHIP_DEFS[5], platformAnchor, orbitControlsRef)
   // platformId keys the FPS deck-spawn/ride registry; buoyant=false pins the
   // structure to its rest pose (platforms don't heave).
   const ships: Array<{
@@ -2804,6 +2805,13 @@ export const Content: FC<{
       anchor: wasteAnchor,
       buoyant: false,
       waterOcclusion: false
+    },
+    {
+      url: SHIP_DEFS[5].url,
+      controls: ship5.controls,
+      anchor: platformAnchor,
+      buoyant: true,
+      waterOcclusion: true
     },
   ]
 
@@ -3926,10 +3934,10 @@ export const Content: FC<{
           compute) and isolated in its own Suspense so loading can't blank the
           rest of the scene. */}
       {ships.map(
-        ({ url, controls, anchor, platformId, buoyant, waterOcclusion }) =>
+        ({ url, controls, anchor, platformId, buoyant, waterOcclusion }, i) =>
           controls.visible &&
           !disableOcean && (
-            <Suspense key={url} fallback={null}>
+            <Suspense key={i} fallback={null}>
               <ShipModel
                 url={url}
                 anchor={anchor}
