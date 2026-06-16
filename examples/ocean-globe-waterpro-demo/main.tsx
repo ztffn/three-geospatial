@@ -668,6 +668,8 @@ const App: FC = () => {
           windHeading={telemetry.yawHeading}
           windSpeed={sample?.windSpeed ?? null}
           clockMs={selected}
+          precip={sample?.precipitation ?? null}
+          airTemperature={sample?.airTemperature ?? null}
           flyTo={flyTo}
           cameraMode={cameraMode}
           fpsSpawn={fpsSpawn}

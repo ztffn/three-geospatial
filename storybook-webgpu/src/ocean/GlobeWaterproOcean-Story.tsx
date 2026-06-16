@@ -48,7 +48,7 @@ import {
   type Group,
   type Object3D,
 } from 'three'
-import { pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
+import { convertToTexture, pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
 import * as THREE from 'three/webgpu'
 import {
   MeshLambertNodeMaterial,
@@ -83,6 +83,7 @@ import {
   PointOfView,
   radians,
   remapClamped,
+  smoothstep,
 } from '@takram/three-geospatial'
 import {
   cameraFar,
@@ -136,6 +137,9 @@ import type { Node, UniformNode } from 'three/webgpu'
 import type { StoryFC } from '../components/createStory'
 import { WebGPUCanvas } from '../components/WebGPUCanvas'
 import { useGLTF } from '../hooks/useGLTF'
+import { Precipitation } from '../weather/Precipitation'
+import { PRECIP_DEFAULTS } from '../weather/createPrecipitationSystem'
+import { createLensDrops, LENS_DROPS_DEFAULTS } from '../weather/lensDropsNode'
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
@@ -2028,6 +2032,13 @@ export const Content: FC<{
   // forecast scrubber time. When set, it overrides the leva day/time sliders so
   // the lighting tracks the scrubbed forecast hour. Undefined in Storybook.
   clockMs?: number | null
+  // Precipitation amount (mm for the hour) from the deploy's live MET feed.
+  // Drives rain/snow fall density. null/undefined → the leva 'Precipitation'
+  // panel governs (Storybook). 0/null draws nothing — never a synthesized shower.
+  precip?: number | null
+  // Air temperature (°C) from the deploy's live MET feed. Selects rain vs snow
+  // when the Precipitation panel's mode is 'auto'. null/undefined → leva governs.
+  airTemperature?: number | null
   // Surfaces the leva-controlled turbine farm size to the host page so the HUD
   // inspector can show a farm total. Additive; Storybook ignores it.
   onTurbineCountChange?: (count: number) => void
@@ -2128,6 +2139,8 @@ export const Content: FC<{
   windHeading,
   windSpeed,
   clockMs,
+  precip,
+  airTemperature,
   onTurbineCountChange,
   flyTo,
   cameraMode,
@@ -3109,6 +3122,161 @@ export const Content: FC<{
       )
     : 0
 
+  // Precipitation (rain/snow) — a detachable plugin (storybook-webgpu/src/weather).
+  // Live MET precip/temperature drive it in the deploy; this panel governs in
+  // Storybook. Intensity 0 (or null precip) mounts nothing — no synthesized rain.
+  const precipControls = useControls('Precipitation', {
+    enabled: { value: true },
+    source: { value: 'met', options: ['met', 'manual'] },
+    intensity: { value: 0.6, min: 0, max: 1, step: 0.01, label: 'Intensity (manual)' },
+    fullAtMm: { value: 50, min: 5, max: 150, step: 1, label: 'Whiteout at (mm/h)' },
+    mode: { value: 'auto', options: ['auto', 'rain', 'snow'] },
+    windFrom: { value: 225, min: 0, max: 360, step: 1, label: 'Wind from° (manual)' },
+    windSpeed: { value: 12, min: 0, max: 35, step: 0.5, label: 'Wind speed (manual)' },
+    // Defaults come from PRECIP_DEFAULTS (single source shared with the factory +
+    // wrapper); only the leva ranges/labels are local. Fade controls are in km.
+    opacity: { value: PRECIP_DEFAULTS.opacity, min: 0, max: 1, step: 0.01 },
+    area: { value: PRECIP_DEFAULTS.area, min: 10, max: 300, step: 5 },
+    height: { value: PRECIP_DEFAULTS.height, min: 10, max: 300, step: 5 },
+    dropLength: { value: PRECIP_DEFAULTS.dropLength, min: 0.2, max: 20, step: 0.1 },
+    dropWidth: { value: PRECIP_DEFAULTS.dropWidth, min: 0.01, max: 1, step: 0.01 },
+    flakeSize: { value: PRECIP_DEFAULTS.flakeSize, min: 0.02, max: 2, step: 0.01 },
+    fallSpeedRain: { value: PRECIP_DEFAULTS.fallSpeedRain, min: 2, max: 60, step: 0.5 },
+    fallSpeedSnow: { value: PRECIP_DEFAULTS.fallSpeedSnow, min: 0.3, max: 10, step: 0.1 },
+    // Altitude fade band (km): rain is full below 'start', gone above 'end'. Raise
+    // 'end' to keep rain visible from higher up (it silently hides everything when
+    // the camera is above the band, which can make every slider look dead).
+    fadeStartKm: { value: PRECIP_DEFAULTS.fadeStartAlt / 1000, min: 0, max: 40, step: 0.5, label: 'Fade start (km)' },
+    fadeEndKm: { value: PRECIP_DEFAULTS.fadeEndAlt / 1000, min: 0.5, max: 80, step: 0.5, label: 'Fade end (km)' },
+    // Underwater: suspended specks (slow rise + sideways drift), always present
+    // when submerged regardless of rain above. Driven by the underwater detector.
+    underwaterIntensity: { value: PRECIP_DEFAULTS.underwaterIntensity, min: 0, max: 1, step: 0.01, label: 'UW density' },
+    uwRise: { value: PRECIP_DEFAULTS.uwRise, min: 0, max: 2, step: 0.01, label: 'UW rise (m/s)' },
+    uwSize: { value: PRECIP_DEFAULTS.uwSize, min: 0.01, max: 0.5, step: 0.01, label: 'UW speck size (m)' },
+    uwOpacity: { value: PRECIP_DEFAULTS.uwOpacity, min: 0, max: 1, step: 0.01, label: 'UW opacity' }
+  })
+  // Wet-lens raindrop refraction — a screen-space POST effect (not scene geometry
+  // like the rain plugin). Defaults from LENS_DROPS_DEFAULTS (single source shared
+  // with the node); only ranges/labels are local. 'enabled' is the STRUCTURAL gate:
+  // off ⇒ the post pipeline stays the plain composite (no extra RTT/pass). When on,
+  // the per-frame 'strength' gate (raining × out-of-water × near-surface) fades it.
+  const lensControls = useControls('Lens Drops', {
+    enabled: { value: true },
+    // DEBUG: bypass the rain/out-of-water/altitude gates so the effect shows
+    // whenever the panel is on (the gates normally hide it from orbit / in clear
+    // weather). Off by default — flip on to tune the look from any view.
+    forceVisible: { value: false, label: 'Force visible (debug)' },
+    strength: { value: LENS_DROPS_DEFAULTS.strength, min: 0, max: 1, step: 0.01, label: 'Strength (max)' },
+    density: { value: LENS_DROPS_DEFAULTS.density, min: 0, max: 1, step: 0.01, label: 'Drop density' },
+    refract: { value: LENS_DROPS_DEFAULTS.refract, min: 0, max: 4, step: 0.05, label: 'Refraction' },
+    blur: { value: LENS_DROPS_DEFAULTS.blur, min: 0, max: 6, step: 0.1, label: 'Wet blur (px)' },
+    dropOpacity: { value: LENS_DROPS_DEFAULTS.dropOpacity, min: 0, max: 1, step: 0.01, label: 'Drop opacity' },
+    rim: { value: LENS_DROPS_DEFAULTS.rim, min: 0, max: 1, step: 0.01, label: 'Edge highlight' },
+    // Max 7: beyond ~7 the longest tail (radius·streak) exceeds one cell and the
+    // one-row vertical neighbour sampler can no longer cover it → tail clips.
+    streak: { value: LENS_DROPS_DEFAULTS.streak, min: 1, max: 7, step: 0.1, label: 'Streak max (1=round)' },
+    linger: { value: LENS_DROPS_DEFAULTS.linger, min: 0.3, max: 4, step: 0.1, label: 'Linger (lifespan)' },
+    lifeJitter: { value: LENS_DROPS_DEFAULTS.lifeJitter, min: 0, max: 1, step: 0.01, label: 'Disappear randomness' },
+    // Seconds the lens stays wet after breaching the surface (water sheeting off
+    // the camera). 0 disables the surfacing trigger, leaving rain as the only one.
+    surfaceWet: { value: 3, min: 0, max: 8, step: 0.1, label: 'Surface wet (s)' }
+  })
+  // Built once; the post memo wires its node graph and a useFrame pushes the gate.
+  const lensDrops = useMemo(() => createLensDrops(), [])
+  // Decaying "just surfaced" wetness [0,1]: pinned at 1 while submerged, then
+  // bleeds down over `surfaceWet` seconds on surfacing so water lingers on the lens.
+  const lensWetRef = useRef(0)
+
+  // Effective intensity from live MET precip (mm/h). Meteorological bands: light
+  // <2.5, moderate 2.5–10, heavy 10–50, violent >50. A sqrt curve keeps light
+  // rain visible while saturating ('whiteout') only near 'fullAtMm' (~50 mm/h),
+  // so a moderate 3 mm/h reads as ~25% density, not a wall of water. null → manual.
+  // 'manual' source makes the panel's own sliders authoritative even in the deploy
+  // (so they're testable); 'met' uses the live feed, falling back to the sliders
+  // when no MET value is present. One switch, reused for intensity + wind below.
+  const precipManual = precipControls.source === 'manual'
+  const metIntensity =
+    precip != null
+      ? MathUtils.clamp(
+          Math.sqrt(precip / Math.max(1e-3, precipControls.fullAtMm)),
+          0,
+          1
+        )
+      : null
+  const precipIntensity =
+    precipManual || metIntensity == null ? precipControls.intensity : metIntensity
+  // 0 = rain, 1 = snow. 'auto' maps air temperature across a 2→0 °C melt band.
+  const precipMode =
+    precipControls.mode === 'rain'
+      ? 0
+      : precipControls.mode === 'snow'
+        ? 1
+        : airTemperature == null
+          ? 0
+          : remapClamped(airTemperature, 2, 0)
+  const precipWindFrom = precipManual
+    ? precipControls.windFrom
+    : windHeading ?? precipControls.windFrom
+  const precipWindSpeed = precipManual
+    ? precipControls.windSpeed
+    : windSpeed ?? precipControls.windSpeed
+
+  // Wet-lens strength gate — recomputed every frame because underwaterT and the
+  // altitude change faster than React renders. Two triggers, both gated to
+  // above-water + near-surface: actual RAIN, and SURFACING (water sheeting off the
+  // lens as the camera breaches). Pushed straight into the node's uniforms, so the
+  // post memo never rebuilds on it.
+  useFrame((_, delta) => {
+    if (!lensControls.enabled) return
+    // Surfacing wetness: rise instantly to the submerged factor (so it's pinned at
+    // 1 underwater), then bleed off linearly over `surfaceWet` seconds once above
+    // water — water lingering on the lens after a breach, independent of rain.
+    const sub = underwaterUniforms.underwaterT.value
+    const fall = lensControls.surfaceWet > 0 ? delta / lensControls.surfaceWet : 1
+    lensWetRef.current = Math.max(sub, lensWetRef.current - fall)
+    // DEBUG bypass: forceVisible drives strength straight from the slider, ignoring
+    // weather/water/altitude, so the node is visible for tuning from any view.
+    let gate = 1
+    // Wet-film blur amount. Driven ONLY by the surfacing component (water sheeting
+    // off the lens), NOT by rain — plain rain keeps a sharp scene between drops.
+    let wetFilm = 1
+    if (!lensControls.forceVisible) {
+      const outOfWater = 1 - sub
+      // Light rain should already wet the lens — saturate well below heavy rain.
+      const rain = MathUtils.clamp(precipIntensity / 0.05, 0, 1)
+      // Same altitude band as the rain plugin (shared near-surface gate), via the
+      // canonical smoothstep helper so the fade curve can't drift from an inline
+      // copy. camera position is world-space at scene root, as the underwater
+      // detector assumes.
+      const alt = camera.position.length() - target.length()
+      const altFade =
+        1 -
+        smoothstep(
+          precipControls.fadeStartKm * 1000,
+          precipControls.fadeEndKm * 1000,
+          alt
+        )
+      const above = outOfWater * altFade
+      // Either trigger shows drops; outOfWater keeps it off until the breach (so the
+      // lingering surface wetness can't show while still submerged). The blur film
+      // tracks ONLY the surfacing wetness, so rain alone draws no base blur.
+      gate = Math.max(rain, lensWetRef.current) * above
+      wetFilm = lensWetRef.current * above
+    }
+    lensDrops.sync({
+      strength: lensControls.strength * gate,
+      density: lensControls.density,
+      refract: lensControls.refract,
+      blur: lensControls.blur,
+      dropOpacity: lensControls.dropOpacity,
+      rim: lensControls.rim,
+      streak: lensControls.streak,
+      linger: lensControls.linger,
+      lifeJitter: lensControls.lifeJitter,
+      wetFilm
+    })
+  })
+
   const tipFoamControls = useControls('Tip Foam', {
     enabled: { value: true },
     intensity: { value: 1.0, min: 0, max: 5, step: 0.05 },
@@ -3274,11 +3442,20 @@ export const Content: FC<{
       depthBuffer: false,
     })
 
-    const result = new PostProcessing(renderer)
-    result.outputNode = toneMappingNode
+    const composite = toneMappingNode
       .add(dithering)
       .mul(overlayPassNode.a.oneMinus())
       .add(overlayPassNode)
+
+    const result = new PostProcessing(renderer)
+    // Wet-lens refraction offset-samples the FINAL composite, so the composite
+    // must first be materialized into a texture (convertToTexture → an RTTNode):
+    // a single-pass node graph can't read its own in-flight result. Gated on the
+    // leva toggle so clear-weather frames skip the extra RTT + pass entirely; the
+    // smooth per-frame `strength` uniform handles the rain/water/altitude fade.
+    result.outputNode = lensControls.enabled
+      ? lensDrops.apply(convertToTexture(composite))
+      : composite
     return { postProcessing: result, skyNode }
   }, [
     atmosphereControls.exposure,
@@ -3296,6 +3473,8 @@ export const Content: FC<{
     viewToOceanUniform,
     underwaterTimeUniform,
     inscatterScaleUniform,
+    lensDrops,
+    lensControls.enabled,
   ])
 
   const atmosphereDate = useMemo(() => {
@@ -3594,6 +3773,36 @@ export const Content: FC<{
       <atmosphereLight />
       {cloudControls.enabled && (
         <CloudLayer field={cloudField} altitude={cloudControls.altitude} />
+      )}
+      {/* Detachable precipitation plugin — remove this element to drop the whole
+          rain/snow effect. Engine lives in storybook-webgpu/src/weather. */}
+      {/* Mounted whenever enabled (not gated on rain intensity): there are always
+          suspended particles underwater, even in clear weather. Above water with
+          no rain the visible budget collapses to ~nothing. */}
+      {precipControls.enabled && (
+        <Precipitation
+          scene={overlayScene}
+          intensity={precipIntensity}
+          mode={precipMode}
+          windSpeedMps={precipWindSpeed}
+          windFromDeg={precipWindFrom}
+          opacity={precipControls.opacity}
+          area={precipControls.area}
+          height={precipControls.height}
+          dropLength={precipControls.dropLength}
+          dropWidth={precipControls.dropWidth}
+          flakeSize={precipControls.flakeSize}
+          fallSpeedRain={precipControls.fallSpeedRain}
+          fallSpeedSnow={precipControls.fallSpeedSnow}
+          fadeStartAlt={precipControls.fadeStartKm * 1000}
+          fadeEndAlt={precipControls.fadeEndKm * 1000}
+          submerged={() => underwaterUniforms.underwaterT.value}
+          underwaterIntensity={precipControls.underwaterIntensity}
+          uwRise={precipControls.uwRise}
+          uwSize={precipControls.uwSize}
+          uwOpacity={precipControls.uwOpacity}
+          seaLevelRadius={target.length()}
+        />
       )}
       <OrbitControls
         makeDefault
