@@ -3172,6 +3172,9 @@ export const Content: FC<{
     blur: { value: LENS_DROPS_DEFAULTS.blur, min: 0, max: 6, step: 0.1, label: 'Wet blur (px)' },
     dropOpacity: { value: LENS_DROPS_DEFAULTS.dropOpacity, min: 0, max: 1, step: 0.01, label: 'Drop opacity' },
     rim: { value: LENS_DROPS_DEFAULTS.rim, min: 0, max: 1, step: 0.01, label: 'Edge highlight' },
+    streak: { value: LENS_DROPS_DEFAULTS.streak, min: 1, max: 8, step: 0.1, label: 'Streak max (1=round)' },
+    linger: { value: LENS_DROPS_DEFAULTS.linger, min: 0.3, max: 4, step: 0.1, label: 'Linger (lifespan)' },
+    lifeJitter: { value: LENS_DROPS_DEFAULTS.lifeJitter, min: 0, max: 1, step: 0.01, label: 'Disappear randomness' },
     // Seconds the lens stays wet after breaching the surface (water sheeting off
     // the camera). 0 disables the surfacing trigger, leaving rain as the only one.
     surfaceWet: { value: 1.5, min: 0, max: 5, step: 0.1, label: 'Surface wet (s)' }
@@ -3232,6 +3235,9 @@ export const Content: FC<{
     // DEBUG bypass: forceVisible drives strength straight from the slider, ignoring
     // weather/water/altitude, so the node is visible for tuning from any view.
     let gate = 1
+    // Wet-film blur amount. Driven ONLY by the surfacing component (water sheeting
+    // off the lens), NOT by rain — plain rain keeps a sharp scene between drops.
+    let wetFilm = 1
     if (!lensControls.forceVisible) {
       const outOfWater = 1 - sub
       // Light rain should already wet the lens — saturate well below heavy rain.
@@ -3244,9 +3250,12 @@ export const Content: FC<{
       const tt = a1 > a0 ? (alt - a0) / (a1 - a0) : 0
       const c = MathUtils.clamp(tt, 0, 1)
       const altFade = 1 - c * c * (3 - 2 * c)
-      // Either trigger drives it; outOfWater keeps it off until the breach (so the
-      // lingering surface wetness can't show while still submerged).
-      gate = Math.max(rain, lensWetRef.current) * outOfWater * altFade
+      const above = outOfWater * altFade
+      // Either trigger shows drops; outOfWater keeps it off until the breach (so the
+      // lingering surface wetness can't show while still submerged). The blur film
+      // tracks ONLY the surfacing wetness, so rain alone draws no base blur.
+      gate = Math.max(rain, lensWetRef.current) * above
+      wetFilm = lensWetRef.current * above
     }
     lensDrops.sync({
       strength: lensControls.strength * gate,
@@ -3254,7 +3263,11 @@ export const Content: FC<{
       refract: lensControls.refract,
       blur: lensControls.blur,
       dropOpacity: lensControls.dropOpacity,
-      rim: lensControls.rim
+      rim: lensControls.rim,
+      streak: lensControls.streak,
+      linger: lensControls.linger,
+      lifeJitter: lensControls.lifeJitter,
+      wetFilm
     })
   })
 
