@@ -48,7 +48,7 @@ import {
   type Group,
   type Object3D,
 } from 'three'
-import { pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
+import { convertToTexture, pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
 import * as THREE from 'three/webgpu'
 import {
   MeshLambertNodeMaterial,
@@ -118,6 +118,7 @@ import {
   type ShipMotionControls,
 } from './ShipModel'
 import { InstallationRig } from './InstallationRig'
+import { TwinFishSchools } from './TwinFishSchool'
 import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
 import { CABLE_BAKE } from './cable-bake'
 import { CloudLayer } from './CloudLayer'
@@ -138,6 +139,7 @@ import { WebGPUCanvas } from '../components/WebGPUCanvas'
 import { useGLTF } from '../hooks/useGLTF'
 import { Precipitation } from '../weather/Precipitation'
 import { PRECIP_DEFAULTS } from '../weather/createPrecipitationSystem'
+import { createLensDrops, LENS_DROPS_DEFAULTS } from '../weather/lensDropsNode'
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
@@ -3153,6 +3155,33 @@ export const Content: FC<{
     uwSize: { value: PRECIP_DEFAULTS.uwSize, min: 0.01, max: 0.5, step: 0.01, label: 'UW speck size (m)' },
     uwOpacity: { value: PRECIP_DEFAULTS.uwOpacity, min: 0, max: 1, step: 0.01, label: 'UW opacity' }
   })
+  // Wet-lens raindrop refraction — a screen-space POST effect (not scene geometry
+  // like the rain plugin). Defaults from LENS_DROPS_DEFAULTS (single source shared
+  // with the node); only ranges/labels are local. 'enabled' is the STRUCTURAL gate:
+  // off ⇒ the post pipeline stays the plain composite (no extra RTT/pass). When on,
+  // the per-frame 'strength' gate (raining × out-of-water × near-surface) fades it.
+  const lensControls = useControls('Lens Drops', {
+    enabled: { value: true },
+    // DEBUG: bypass the rain/out-of-water/altitude gates so the effect shows
+    // whenever the panel is on (the gates normally hide it from orbit / in clear
+    // weather). Off by default — flip on to tune the look from any view.
+    forceVisible: { value: false, label: 'Force visible (debug)' },
+    strength: { value: LENS_DROPS_DEFAULTS.strength, min: 0, max: 1, step: 0.01, label: 'Strength (max)' },
+    density: { value: LENS_DROPS_DEFAULTS.density, min: 0, max: 1, step: 0.01, label: 'Drop density' },
+    refract: { value: LENS_DROPS_DEFAULTS.refract, min: 0, max: 4, step: 0.05, label: 'Refraction' },
+    blur: { value: LENS_DROPS_DEFAULTS.blur, min: 0, max: 6, step: 0.1, label: 'Wet blur (px)' },
+    dropOpacity: { value: LENS_DROPS_DEFAULTS.dropOpacity, min: 0, max: 1, step: 0.01, label: 'Drop opacity' },
+    rim: { value: LENS_DROPS_DEFAULTS.rim, min: 0, max: 1, step: 0.01, label: 'Edge highlight' },
+    // Seconds the lens stays wet after breaching the surface (water sheeting off
+    // the camera). 0 disables the surfacing trigger, leaving rain as the only one.
+    surfaceWet: { value: 1.5, min: 0, max: 5, step: 0.1, label: 'Surface wet (s)' }
+  })
+  // Built once; the post memo wires its node graph and a useFrame pushes the gate.
+  const lensDrops = useMemo(() => createLensDrops(), [])
+  // Decaying "just surfaced" wetness [0,1]: pinned at 1 while submerged, then
+  // bleeds down over `surfaceWet` seconds on surfacing so water lingers on the lens.
+  const lensWetRef = useRef(0)
+
   // Effective intensity from live MET precip (mm/h). Meteorological bands: light
   // <2.5, moderate 2.5–10, heavy 10–50, violent >50. A sqrt curve keeps light
   // rain visible while saturating ('whiteout') only near 'fullAtMm' (~50 mm/h),
@@ -3186,6 +3215,48 @@ export const Content: FC<{
   const precipWindSpeed = precipManual
     ? precipControls.windSpeed
     : windSpeed ?? precipControls.windSpeed
+
+  // Wet-lens strength gate — recomputed every frame because underwaterT and the
+  // altitude change faster than React renders. Two triggers, both gated to
+  // above-water + near-surface: actual RAIN, and SURFACING (water sheeting off the
+  // lens as the camera breaches). Pushed straight into the node's uniforms, so the
+  // post memo never rebuilds on it.
+  useFrame((_, delta) => {
+    if (!lensControls.enabled) return
+    // Surfacing wetness: rise instantly to the submerged factor (so it's pinned at
+    // 1 underwater), then bleed off linearly over `surfaceWet` seconds once above
+    // water — water lingering on the lens after a breach, independent of rain.
+    const sub = underwaterUniforms.underwaterT.value
+    const fall = lensControls.surfaceWet > 0 ? delta / lensControls.surfaceWet : 1
+    lensWetRef.current = Math.max(sub, lensWetRef.current - fall)
+    // DEBUG bypass: forceVisible drives strength straight from the slider, ignoring
+    // weather/water/altitude, so the node is visible for tuning from any view.
+    let gate = 1
+    if (!lensControls.forceVisible) {
+      const outOfWater = 1 - sub
+      // Light rain should already wet the lens — saturate well below heavy rain.
+      const rain = MathUtils.clamp(precipIntensity / 0.05, 0, 1)
+      // Same altitude band as the rain plugin (shared near-surface gate). camera
+      // position is world-space at scene root, as the underwater detector assumes.
+      const alt = camera.position.length() - target.length()
+      const a0 = precipControls.fadeStartKm * 1000
+      const a1 = precipControls.fadeEndKm * 1000
+      const tt = a1 > a0 ? (alt - a0) / (a1 - a0) : 0
+      const c = MathUtils.clamp(tt, 0, 1)
+      const altFade = 1 - c * c * (3 - 2 * c)
+      // Either trigger drives it; outOfWater keeps it off until the breach (so the
+      // lingering surface wetness can't show while still submerged).
+      gate = Math.max(rain, lensWetRef.current) * outOfWater * altFade
+    }
+    lensDrops.sync({
+      strength: lensControls.strength * gate,
+      density: lensControls.density,
+      refract: lensControls.refract,
+      blur: lensControls.blur,
+      dropOpacity: lensControls.dropOpacity,
+      rim: lensControls.rim
+    })
+  })
 
   const tipFoamControls = useControls('Tip Foam', {
     enabled: { value: true },
@@ -3352,11 +3423,20 @@ export const Content: FC<{
       depthBuffer: false,
     })
 
-    const result = new PostProcessing(renderer)
-    result.outputNode = toneMappingNode
+    const composite = toneMappingNode
       .add(dithering)
       .mul(overlayPassNode.a.oneMinus())
       .add(overlayPassNode)
+
+    const result = new PostProcessing(renderer)
+    // Wet-lens refraction offset-samples the FINAL composite, so the composite
+    // must first be materialized into a texture (convertToTexture → an RTTNode):
+    // a single-pass node graph can't read its own in-flight result. Gated on the
+    // leva toggle so clear-weather frames skip the extra RTT + pass entirely; the
+    // smooth per-frame `strength` uniform handles the rain/water/altitude fade.
+    result.outputNode = lensControls.enabled
+      ? lensDrops.apply(convertToTexture(composite))
+      : composite
     return { postProcessing: result, skyNode }
   }, [
     atmosphereControls.exposure,
@@ -3374,6 +3454,8 @@ export const Content: FC<{
     viewToOceanUniform,
     underwaterTimeUniform,
     inscatterScaleUniform,
+    lensDrops,
+    lensControls.enabled,
   ])
 
   const atmosphereDate = useMemo(() => {
@@ -3852,6 +3934,13 @@ export const Content: FC<{
           />
         </Suspense>
       )}
+      {/* Drop-in fish: one underwater school per scenario site. The component
+          owns the "Fish" leva folder and the per-site placement. */}
+      <TwinFishSchools
+        anchors={[shipAnchor, patrolAnchor, platformAnchor, rigAnchor]}
+        seaLevelOffset={oceanFrameControls.seaLevelOffset}
+        ready={!disableOcean}
+      />
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}
