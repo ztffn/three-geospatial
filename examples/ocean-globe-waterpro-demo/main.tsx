@@ -338,7 +338,7 @@ const App: FC = () => {
   // Karmøy with the farm up, so that scenario starts active.
   const [activeScenario, setActiveScenario] = useState<string | null>('karmoy')
   const [activeViewpoint, setActiveViewpoint] = useState<string | null>(
-    'turbine'
+    'overview'
   )
 
   // Camera mode (orbit / first-person) + the FPS spawn pose. The nonce forces
@@ -715,6 +715,9 @@ const App: FC = () => {
         selected={selected}
         onScrub={setScrubbed}
         ais={SCENARIOS.find(s => s.id === activeScenario)?.ais ?? null}
+        bunkering={
+          SCENARIOS.find(s => s.id === activeScenario)?.bunkering ?? null
+        }
         selectedVessel={selectedVessel}
         onCloseVessel={() => setSelectedId(null)}
         installControls={

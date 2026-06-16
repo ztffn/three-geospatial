@@ -9,7 +9,12 @@ import { useState, type FC } from 'react'
 
 import type { MetSample } from './useMetForecast'
 import type { TurbineTelemetry, TurbineStatus } from './turbineModel'
-import type { AisReadings, Scenario, Viewpoint } from './scenarios'
+import type {
+  AisReadings,
+  BunkeringReadings,
+  Scenario,
+  Viewpoint
+} from './scenarios'
 import type { VesselPosition } from '../../../netlify/functions/_ais-core'
 import {
   PHASE_CLIPS,
@@ -615,6 +620,152 @@ const AisCard: FC<{ ais: AisReadings }> = ({ ais }) => (
     <Footnote>AIS · static demo values</Footnote>
   </Card>
 )
+
+// --- bunkering inspector -----------------------------------------------------
+// Generic labelled fill bar (fuel / battery): label + value readout above a
+// proportional bar. `fill` is clamped to 0..1.
+const MeterBar: FC<{
+  label: string
+  fill: number
+  value: string
+  color?: string
+}> = ({ label, fill, value, color = ACCENT }) => (
+  <div
+    style={{
+      padding: '6px 0',
+      borderTop: '1px solid rgba(255,255,255,0.06)'
+    }}
+  >
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'baseline',
+        marginBottom: 5
+      }}
+    >
+      <span
+        style={{
+          fontFamily: SANS,
+          fontSize: 10,
+          letterSpacing: '0.14em',
+          textTransform: 'uppercase',
+          color: MUTED
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontFamily: MONO,
+          fontSize: 12,
+          fontVariantNumeric: 'tabular-nums',
+          color: TEXT
+        }}
+      >
+        {value}
+      </span>
+    </div>
+    <div
+      style={{
+        position: 'relative',
+        height: 8,
+        background: 'rgba(255,255,255,0.08)',
+        border: PANEL_BORDER
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: `${Math.min(Math.max(fill, 0), 1) * 100}%`,
+          background: color,
+          transition: 'width .2s linear'
+        }}
+      />
+    </div>
+  </div>
+)
+
+// Two-vessel readout for the bunkering scenario: the wax carrier's solid-cube
+// cargo transfer (cube count + crane rate) and the substation vessel's battery
+// + grid export. Transfer/battery figures are static demo values (footnoted);
+// the collected power is the LIVE modelled farm output (count × per-turbine),
+// so it reacts to the forecast wind / time scrubber. Export = collected − the
+// battery draw, floored at 0.
+const BunkeringPanel: FC<{
+  readings: BunkeringReadings
+  telemetry: TurbineTelemetry
+  count: number
+}> = ({ readings, telemetry, count }) => {
+  const collectedMW =
+    telemetry.powerMW == null ? null : telemetry.powerMW * count
+  const exportMW =
+    collectedMW == null
+      ? null
+      : Math.max(0, collectedMW - readings.batteryChargeMW)
+  return (
+    <Card
+      pos={{ top: 76, left: 16 }}
+      width={248}
+      title="Bunkering"
+      headerRight={
+        <span
+          style={{
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            color: GOOD
+          }}
+        >
+          Transfer
+        </span>
+      }
+    >
+      <SectionLabel>Wax carrier</SectionLabel>
+      <MeterBar
+        label="Cargo"
+        fill={
+          readings.cubesTotal > 0
+            ? readings.cubesTransferred / readings.cubesTotal
+            : 0
+        }
+        value={`${Math.round(readings.cubesTransferred)} / ${Math.round(
+          readings.cubesTotal
+        )} cubes`}
+      />
+      <Row label="Transfer">{fmt(readings.transferRateCubesH, 'cubes/h', 0)}</Row>
+      <Row label="Cube">{`${readings.cubeVolumeM3} m³ · ${readings.cubeMassT} t`}</Row>
+      <Row label="Product">{readings.product}</Row>
+      <SectionLabel>Substation vessel</SectionLabel>
+      <Row label={`Collected · ${count}×`}>
+        {collectedMW == null ? '—' : `${collectedMW.toFixed(1)} MW`}
+      </Row>
+      <MeterBar
+        label="Battery"
+        fill={readings.batterySoc}
+        value={`${Math.round(readings.batterySoc * 100)}% · ${fmt(
+          readings.batteryCapacityMWh,
+          'MWh',
+          0
+        )}`}
+        color={GOOD}
+      />
+      <Row label="Charging">{fmt(readings.batteryChargeMW, 'MW', 1)}</Row>
+      <Row label="Export">
+        {exportMW == null ? '—' : `${exportMW.toFixed(1)} MW`}
+      </Row>
+      <Row label="DC bus">{fmt(readings.busKv, 'kV', 0)}</Row>
+      <Footnote>
+        Transfer &amp; battery: static demo · collected power modelled from
+        forecast wind
+      </Footnote>
+    </Card>
+  )
+}
 
 // --- time scrubber -----------------------------------------------------------
 const HOUR = 3600 * 1000
@@ -1469,6 +1620,8 @@ export const DigitalTwinUI: FC<{
   // AIS readings of the active scenario's vessel; replaces the turbine
   // inspector when present.
   ais?: AisReadings | null
+  // Two-vessel metrics for the bunkering scenario; takes the inspector slot.
+  bunkering?: BunkeringReadings | null
   // Clicked shadow-fleet vessel (globe markers) → full callout. null = closed.
   selectedVessel?: SelectedVessel | null
   onCloseVessel?: () => void
@@ -1493,20 +1646,27 @@ export const DigitalTwinUI: FC<{
   cameraControls,
   scenarioControls,
   ais,
+  bunkering,
   selectedVessel,
   onCloseVessel,
   aisLayers,
   installControls
 }) => {
   // The top-left inspector slot shows, in priority: the clicked shadow-fleet
-  // vessel callout → the scenario's AIS card → the installation panel (rig
-  // scenario) → the turbine inspector.
+  // vessel callout → the scenario's AIS card → the bunkering two-vessel panel →
+  // the installation panel (rig scenario) → the turbine inspector.
   return (
   <>
     {selectedVessel != null && onCloseVessel != null ? (
       <VesselCallout vessel={selectedVessel} onClose={onCloseVessel} />
     ) : ais != null ? (
       <AisCard ais={ais} />
+    ) : bunkering != null ? (
+      <BunkeringPanel
+        readings={bunkering}
+        telemetry={telemetry}
+        count={turbineCount}
+      />
     ) : installControls != null ? (
       <InstallationPanel {...installControls} />
     ) : (

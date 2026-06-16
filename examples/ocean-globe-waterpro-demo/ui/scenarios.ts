@@ -15,13 +15,13 @@ export interface Viewpoint {
   height?: number
   // OR a camera-only aim offset (m, [east, north, up]) from the scenario's
   // anchor. Keeps the location target untouched, so the turbine farm and the
-  // baked cables pinned to it do NOT re-centre (ship / underwater viewpoints).
+  // baked cables pinned to it do NOT re-centre (ship / bunkering viewpoints).
   aimOffsetENU?: [number, number, number]
   // Landing orbit distance (m). Omitted → keep the current zoom.
   distance?: number
   // Camera compass heading / pitch at landing. Omitted → scene defaults
   // (heading 180, pitch -20). Positive pitch lands the camera BELOW the aim
-  // looking up — used for the underwater viewpoint.
+  // looking up (e.g. a near-surface aim looking up through the water column).
   headingDeg?: number
   pitchDeg?: number
   // First-person spawn for THIS viewpoint (FPS camera mode). Omitted → derived
@@ -59,6 +59,27 @@ export interface AisReadings {
   draughtM: number
 }
 
+// Static demo metrics for the bunkering scenario's two-vessel inspector
+// (labelled as such in the panel). The bunker tanker's fuel transfer + the
+// substation vessel's battery/charging. `collectedMW` is NOT here — the panel
+// shows it live from the modelled farm output (count × per-turbine).
+export interface BunkeringReadings {
+  // Caera wax carrier → receiving vessel. The wax ships and stores as stable
+  // solid cubes (crane-transferred) — it is only melted later, at the customer
+  // site, to feed the hydrocracker.
+  product: string
+  cubesTransferred: number
+  cubesTotal: number
+  transferRateCubesH: number // crane transfer rate
+  cubeVolumeM3: number // per-cube volume
+  cubeMassT: number // per-cube mass
+  // Substation vessel (Ship 1): battery + grid export.
+  batterySoc: number // state of charge, 0..1
+  batteryChargeMW: number
+  batteryCapacityMWh: number
+  busKv: number
+}
+
 export interface Scenario {
   id: string
   label: string
@@ -69,6 +90,8 @@ export interface Scenario {
   turbines?: number
   // Static AIS readings for vessel scenarios; replaces the turbine inspector.
   ais?: AisReadings
+  // Static demo two-vessel metrics for the bunkering scenario inspector.
+  bunkering?: BunkeringReadings
   // Setting toggles shown when this scenario is active; ids resolve against
   // the registry the host passes in ScenarioControlsState.settings.
   settings?: string[]
@@ -84,18 +107,56 @@ export const SCENARIOS: Scenario[] = [
     turbines: 15,
     settings: ['rotorSpin', 'cover'],
     viewpoints: [
-      // No aim → the rig's default destination, the hero turbine nacelle.
-      // FPS: hub-level beside a grid turbine NE of the anchor (pose captured
-      // in-scene via the camera dump; converted ECEF → anchor-ENU).
+      // Default landing / overview — no aim, so the rig flies to its default
+      // destination (the hero turbine nacelle) at 400 m. FPS: hub-level beside a
+      // grid turbine NE of the anchor (pose captured in-scene, ECEF→anchor-ENU).
       {
-        id: 'turbine',
-        label: 'Turbine',
+        id: 'overview',
+        label: 'Overview',
         distance: 400,
         spawn: { offsetENU: [461.6, 462.0, 82.0], headingDeg: 43, pitchDeg: 0.5 }
       },
-      // Ship 0 sits at the site anchor (ENU offsets ~0, waterline ~26 m).
-      // FPS: stand ON the deck (spawn raycasts down to the deck surface and
-      // rides the hull's heave/tilt); offset is from the live ship origin.
+      // Progressive close-ups of the grid turbine NE of the anchor (captured
+      // in-scene via camera 'Dump view', ECEF → Karmøy-anchor ENU; camera-only
+      // aim at the nacelle ~82 m up, so the farm and cables stay pinned).
+      {
+        id: 'nacelle',
+        label: 'Nacelle',
+        aimOffsetENU: [463.9, 463.9, 82.1],
+        distance: 16.8,
+        headingDeg: 286.6,
+        pitchDeg: -4.9
+      },
+      {
+        id: 'hregg',
+        label: 'Hregg',
+        aimOffsetENU: [464.1, 463.5, 82.1],
+        distance: 4.2,
+        headingDeg: 238.6,
+        pitchDeg: -2.6
+      },
+      {
+        id: 'hregg-close',
+        label: 'Hregg Close',
+        aimOffsetENU: [464.1, 463.5, 82.1],
+        distance: 2.2,
+        headingDeg: 270.3,
+        pitchDeg: -8.2
+      },
+      // Underwater at the base of the same grid turbine — aim below the surface
+      // at the turbine's E/N (~8 m down, on the monopile foundation); positive
+      // pitch puts the camera deeper than the aim, looking up the column toward
+      // the surface. Heuristic placement (no in-scene capture) — nudge to taste.
+      {
+        id: 'underwater',
+        label: 'Underwater',
+        aimOffsetENU: [464, 463, -8],
+        distance: 35,
+        headingDeg: 270,
+        pitchDeg: 8
+      },
+      // Ship 0 at the site anchor (ENU offsets ~0, waterline ~26 m). FPS: stand
+      // ON the deck (spawn raycasts to the deck surface and rides the heave).
       {
         id: 'ship',
         label: 'Ship',
@@ -103,13 +164,56 @@ export const SCENARIOS: Scenario[] = [
         distance: 300,
         pitchDeg: -15,
         spawn: { platform: 'ship', offsetENU: [0, 0, 10], headingDeg: 345 }
+      }
+    ]
+  },
+  // Ship-to-ship bunkering at the Karmøy site: the former Karmøy 'underwater'
+  // viewpoint lifted out into its own scenario button. Keeps the Karmøy preset
+  // and turbine count so the farm and the inter-array cables that bake into the
+  // substation vessel (Ship 1) stay identical — but NOT the rotor-spin/cover
+  // toggles, which belong to the wind-farm scenario, not bunkering.
+  {
+    id: 'bunkering',
+    label: 'Bunkering',
+    preset: 'Karmøy',
+    turbines: 15,
+    bunkering: {
+      product: 'Caera wax',
+      cubesTransferred: 312,
+      cubesTotal: 500,
+      transferRateCubesH: 24,
+      cubeVolumeM3: 1,
+      cubeMassT: 0.9,
+      batterySoc: 0.68,
+      batteryChargeMW: 5.4,
+      batteryCapacityMWh: 20,
+      busKv: 66
+    },
+    viewpoints: [
+      // Default landing — establishing view of the two vessels alongside
+      // (all bunkering poses captured in-scene via camera 'Dump view',
+      // ECEF → Karmøy-anchor ENU; camera-only aim, ships/cables stay put).
+      {
+        id: 'overview',
+        label: 'Overview',
+        aimOffsetENU: [-13.3, -0.8, 30.5],
+        distance: 95.1,
+        headingDeg: 317.2,
+        pitchDeg: -7.1
       },
-      // Aim below the surface near the cable fan; positive pitch puts the
-      // camera deeper than the aim, looking up through the water column.
-      // Shallow aim/pitch/distance keep the landing well above the ~35 m
-      // seabed (camera depth ≈ 8 + 50·sin(8°) ≈ 15 m).
-      // FPS: above the dive spot looking down at it (captured via camera
-      // dump) — descend with C to go under.
+      // The transfer itself — looking down steeply onto the crane lift.
+      {
+        id: 'transfer',
+        label: 'Transfer',
+        aimOffsetENU: [-9.7, -14.3, 16.9],
+        distance: 82,
+        headingDeg: 310.1,
+        pitchDeg: -50.9,
+        spawn: { offsetENU: [77, -8.8, 21.3], headingDeg: 279.2, pitchDeg: -10.5 }
+      },
+      // Underwater subview — aim below the surface near the cable fan; positive
+      // pitch puts the camera deeper than the aim, looking up through the water
+      // column. FPS spawns above the dive spot looking down — descend with C.
       {
         id: 'underwater',
         label: 'Underwater',
@@ -117,6 +221,15 @@ export const SCENARIOS: Scenario[] = [
         distance: 50,
         pitchDeg: 8,
         spawn: { offsetENU: [77, -8.8, 21.3], headingDeg: 279.2, pitchDeg: -10.5 }
+      },
+      // Mosaic — tight close-up on the wax-cube cargo.
+      {
+        id: 'mosaic',
+        label: 'Mosaic',
+        aimOffsetENU: [0.4, 1, 25.8],
+        distance: 20.8,
+        headingDeg: 123.5,
+        pitchDeg: -20.7
       }
     ]
   },
