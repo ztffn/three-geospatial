@@ -136,6 +136,7 @@ import type { Node, UniformNode } from 'three/webgpu'
 import type { StoryFC } from '../components/createStory'
 import { WebGPUCanvas } from '../components/WebGPUCanvas'
 import { useGLTF } from '../hooks/useGLTF'
+import { Precipitation } from '../weather/Precipitation'
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
@@ -2028,6 +2029,13 @@ export const Content: FC<{
   // forecast scrubber time. When set, it overrides the leva day/time sliders so
   // the lighting tracks the scrubbed forecast hour. Undefined in Storybook.
   clockMs?: number | null
+  // Precipitation amount (mm for the hour) from the deploy's live MET feed.
+  // Drives rain/snow fall density. null/undefined → the leva 'Precipitation'
+  // panel governs (Storybook). 0/null draws nothing — never a synthesized shower.
+  precip?: number | null
+  // Air temperature (°C) from the deploy's live MET feed. Selects rain vs snow
+  // when the Precipitation panel's mode is 'auto'. null/undefined → leva governs.
+  airTemperature?: number | null
   // Surfaces the leva-controlled turbine farm size to the host page so the HUD
   // inspector can show a farm total. Additive; Storybook ignores it.
   onTurbineCountChange?: (count: number) => void
@@ -2128,6 +2136,8 @@ export const Content: FC<{
   windHeading,
   windSpeed,
   clockMs,
+  precip,
+  airTemperature,
   onTurbineCountChange,
   flyTo,
   cameraMode,
@@ -3109,6 +3119,67 @@ export const Content: FC<{
       )
     : 0
 
+  // Precipitation (rain/snow) — a detachable plugin (storybook-webgpu/src/weather).
+  // Live MET precip/temperature drive it in the deploy; this panel governs in
+  // Storybook. Intensity 0 (or null precip) mounts nothing — no synthesized rain.
+  const precipControls = useControls('Precipitation', {
+    enabled: { value: true },
+    source: { value: 'met', options: ['met', 'manual'] },
+    intensity: { value: 0.6, min: 0, max: 1, step: 0.01, label: 'Intensity (manual)' },
+    fullAtMm: { value: 50, min: 5, max: 150, step: 1, label: 'Whiteout at (mm/h)' },
+    mode: { value: 'auto', options: ['auto', 'rain', 'snow'] },
+    windFrom: { value: 225, min: 0, max: 360, step: 1, label: 'Wind from° (manual)' },
+    windSpeed: { value: 12, min: 0, max: 35, step: 0.5, label: 'Wind speed (manual)' },
+    opacity: { value: 0.05, min: 0, max: 1, step: 0.01 },
+    area: { value: 35, min: 10, max: 300, step: 5 },
+    height: { value: 45, min: 10, max: 300, step: 5 },
+    dropLength: { value: 0.9, min: 0.2, max: 20, step: 0.1 },
+    dropWidth: { value: 0.04, min: 0.01, max: 1, step: 0.01 },
+    flakeSize: { value: 0.25, min: 0.02, max: 2, step: 0.01 },
+    fallSpeedRain: { value: 9, min: 2, max: 60, step: 0.5 }, // ~raindrop terminal velocity
+    fallSpeedSnow: { value: 1.2, min: 0.3, max: 10, step: 0.1 },
+    // Altitude fade band (km): rain is full below 'start', gone above 'end'. Raise
+    // 'end' to keep rain visible from higher up (it silently hides everything when
+    // the camera is above the band, which can make every slider look dead).
+    fadeStartKm: { value: 1.5, min: 0, max: 40, step: 0.5, label: 'Fade start (km)' },
+    fadeEndKm: { value: 6, min: 0.5, max: 80, step: 0.5, label: 'Fade end (km)' }
+  })
+  // Effective intensity from live MET precip (mm/h). Meteorological bands: light
+  // <2.5, moderate 2.5–10, heavy 10–50, violent >50. A sqrt curve keeps light
+  // rain visible while saturating ('whiteout') only near 'fullAtMm' (~50 mm/h),
+  // so a moderate 3 mm/h reads as ~25% density, not a wall of water. null → manual.
+  const metIntensity =
+    precip != null
+      ? MathUtils.clamp(
+          Math.sqrt(precip / Math.max(1e-3, precipControls.fullAtMm)),
+          0,
+          1
+        )
+      : null
+  const precipIntensity =
+    precipControls.source === 'manual' || metIntensity == null
+      ? precipControls.intensity
+      : metIntensity
+  // 0 = rain, 1 = snow. 'auto' maps air temperature across a 0–2 °C melt band.
+  const precipMode =
+    precipControls.mode === 'rain'
+      ? 0
+      : precipControls.mode === 'snow'
+        ? 1
+        : airTemperature == null
+          ? 0
+          : MathUtils.clamp((2 - airTemperature) / 2, 0, 1)
+  // Wind: 'manual' source makes the panel's own sliders authoritative even in the
+  // deploy (so they're testable); 'met' uses the live feed, falling back to the
+  // sliders only when no MET value is present. Independent of the Wind→Waves panel.
+  const precipManual = precipControls.source === 'manual'
+  const precipWindFrom = precipManual
+    ? precipControls.windFrom
+    : windHeading ?? precipControls.windFrom
+  const precipWindSpeed = precipManual
+    ? precipControls.windSpeed
+    : windSpeed ?? precipControls.windSpeed
+
   const tipFoamControls = useControls('Tip Foam', {
     enabled: { value: true },
     intensity: { value: 1.0, min: 0, max: 5, step: 0.05 },
@@ -3594,6 +3665,27 @@ export const Content: FC<{
       <atmosphereLight />
       {cloudControls.enabled && (
         <CloudLayer field={cloudField} altitude={cloudControls.altitude} />
+      )}
+      {/* Detachable precipitation plugin — remove this element to drop the whole
+          rain/snow effect. Engine lives in storybook-webgpu/src/weather. */}
+      {precipControls.enabled && precipIntensity > 0.001 && (
+        <Precipitation
+          scene={overlayScene}
+          intensity={precipIntensity}
+          mode={precipMode}
+          windSpeedMps={precipWindSpeed}
+          windFromDeg={precipWindFrom}
+          opacity={precipControls.opacity}
+          area={precipControls.area}
+          height={precipControls.height}
+          dropLength={precipControls.dropLength}
+          dropWidth={precipControls.dropWidth}
+          flakeSize={precipControls.flakeSize}
+          fallSpeedRain={precipControls.fallSpeedRain}
+          fallSpeedSnow={precipControls.fallSpeedSnow}
+          fadeStartAlt={precipControls.fadeStartKm * 1000}
+          fadeEndAlt={precipControls.fadeEndKm * 1000}
+        />
       )}
       <OrbitControls
         makeDefault
