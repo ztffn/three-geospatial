@@ -1,6 +1,7 @@
 # Design Spec: `packages/splats` — `@takram/three-geospatial-splats`
 
-> Status: Pre-implementation design. Do not implement until this spec is reviewed and approved.
+> Status: **Phase 1 (WebGL standalone) implemented and verified.** WebGPU TSL path and 3D Tiles
+> tiled-LOD streaming are designed but **deferred to a later stage** (build-vs-reuse decided — see §0.1).
 
 ---
 
@@ -17,6 +18,75 @@ Render 3D Gaussian Splats (3DGS) within the three-geospatial monorepo, integrate
 - `blending = PRE_MULTIPLIED_ALPHA_BLEND`
 - `cull.enabled = false` — screen-aligned quads have no meaningful backface
 - Dedicated render pass AFTER opaque geometry (`renderOrder = 2`), BEFORE translucent
+
+---
+
+## 0.1 Build-vs-Reuse Decision & Verified Architecture (2026-06-16)
+
+### Stack clarification (important)
+This project renders with **Three.js + `3d-tiles-renderer@0.4.23`**. It does **NOT** use CesiumJS — there
+is no `cesium` dependency. "Cesium" appears here in two unrelated roles:
+- **Cesium ion** — a *data platform* (hosts/streams 3D Tiles, runs photogrammetry→splat reconstruction).
+  We may consume its data via `3d-tiles-renderer`'s `CesiumIonAuthPlugin`.
+- **CesiumJS** — a full rendering *engine*. Its gaussian-splat support is engine-internal code
+  (`GaussianSplat3DTileContent`, its shaders, its `Pass`/draw-command system) and **cannot be imported into
+  Three.js**. We follow its *approach* as a reference, not its code.
+
+### Build-vs-reuse verdict: build the WebGPU path in-house
+Hard constraint: splats must composite into the WebGPU globe — i.e. render with the Three.js
+**WebGPURenderer** (`three/webgpu`, node/TSL), as an `Object3D` in our existing scene, depth-composited
+against opaque geometry, with 3D Tiles LOD streaming. Researched (2026-06) against every maintained option;
+**none satisfy all four constraints**:
+- WebGPU-capable splat renderers are **proprietary** (Three.js Blocks `GaussianSplatsMaterial` — paid/obfuscated)
+  or **nonexistent** (no official three.js WebGPU splat example exists).
+- The options that do geospatial 3D Tiles + `KHR_gaussian_splatting` streaming
+  (`3d-tiles-rendererjs-3dgs-plugin`) or integrate cleanly as an `Object3D` with depth (Spark) are
+  **WebGL2-only with raw GLSL** and will not run under `three/webgpu`.
+
+The WebGPU + 3D-Tiles axes have zero open-source overlap as of mid-2026, so the WebGPU/TSL splat material
+must be built here. Phase 1 WebGL (this package) is implemented and verified working.
+
+### Reusable pieces (so the build is informed, not from-scratch)
+- **`@spz-loader/core`** (Apache-2.0, pure WASM) — SPZ decode. **Caveat: decodes DC color only, no spherical
+  harmonics yet**; SH (Cesium evaluates it on GPU) would need our own decode or a loader extension.
+- **`3d-tiles-rendererjs-3dgs-plugin`** (WilliamLiu-1997, Apache-2.0) — the reference for wiring
+  `KHR_gaussian_splatting` + `KHR_gaussian_splatting_compression_spz_2` tiles into the *same* `3d-tiles-renderer`
+  we use, plus camera-rebasing and a companion PLY→3DTiles converter. (Draws via WebGL Spark — swap that for our
+  WebGPU/TSL mesh; the streaming glue transfers.)
+- **Spark (`@sparkjsdev/spark`) and mkkellogg/GaussianSplats3D** (both MIT) — canonical EWA-projection +
+  radix-sort math to port into TSL.
+- Our working WebGL `GaussianSplatMaterial` — the math we port to a TSL `vertexNode`.
+
+### Verified CesiumJS architecture (refines this spec — see §11 resolutions)
+- **Shared aggregator, NOT per-tile.** One primitive aggregates all visible tiles' splats into one
+  globally-sorted instanced draw. Per-tile independent rendering composites WRONG at tile boundaries (alpha
+  order is global). The current per-`GaussianSplatMesh` model (§6/§7.2) is correct for a single PLY but must be
+  replaced by an aggregator for tiled LOD.
+- **Atomic snapshot swap** gated on selection stability (rebuild after 2 unchanged selected-tile frames;
+  30-frame forced-progress escape). Old snapshot renders until the new one is ready. **No cross-LOD fade.**
+- **Global radix sort** across the aggregated buffer; re-sort on camera Δpos ≥ 1.0 world unit OR Δangle ≥ 0.5°,
+  AND ≥3 frames since last sort. Cesium uses a WASM worker; we target a WebGPU compute sort.
+- **SH on GPU** in the vertex shader; view dir evaluated in the GLB training frame via an inverse-model-rotation
+  uniform.
+- **Precision: ENU local frame** — bake positions into an ENU frame at the tileset bounding-sphere center; draw
+  modelMatrix = that frame (keeps view·model float32-small at ECEF scale). Essential for globe integration.
+
+### Data format decision
+- **Tiled-LOD globe → SPZ inside glTF `KHR_gaussian_splatting_compression_spz_2`.** This is the streaming
+  standard (ion, Cesium, the WilliamLiu plugin). Our `KhrGaussianSplattingExtension.ts` currently targets the
+  older `_compression_spz` name and the draft attribute names (`_SCALE`, `_ROTATION`); update to `_spz_2` and the
+  ratified `KHR_gaussian_splatting:*` attribute names (legacy underscore names accepted as fallback) before any
+  tiled test, or it will not read real ion datasets.
+- **Standalone single captures → optionally also accept SOG (PlayCanvas) / PLY.** SOG (Spatially Ordered
+  Gaussians): WebP-based, Morton-ordered/GPU-ready, **browser-native decode (no WASM)**, ~95% compression. It is
+  **not** a 3D-Tiles streaming format (no LOD/glTF path) — it is an excellent single-asset format and aligns well
+  with WebGPU. Use it for standalone scenes, not the streamed globe.
+
+### Architecture note: splats vs. mesh "fighting"
+Architecture A (overlay splats on a separate mesh tileset of the same place) = double-geometry ghosting.
+Architecture B (Cesium's, and ours: the tile's glTF payload *is* splats; no mesh is loaded where splats exist)
+= no conflict. The depth recipe in §0 handles mesh-occludes-splats; the double-geometry case is avoided
+architecturally, not in the shader.
 
 ---
 
@@ -632,22 +702,26 @@ With atmosphere and globe base layer as background (existing `Globe` component u
 These must be resolved by prototyping before or during implementation. No assumptions have been made about their answers.
 
 1. **`positionNode` clip-space control in TSL.** The covariance expansion must happen in clip space, not local/world space. Whether overriding `positionNode` on `NodeMaterial` gives clip-space control, or whether a full `vertexNode` override (or WGSL injection) is needed, must be tested. This is the single highest-risk unknown.
+   **RESOLVED (2026-06-16, see §0.1):** CesiumJS does the covariance expansion in a full custom vertex shader (manual clip-space quad via `gl_VertexID` corner + screen-space eigen axes). Plan on a full TSL `vertexNode`, not `positionNode`.
 
 2. **Depth read during the same render pass (WebGL).** Reading the opaque depth buffer while rendering the splat pass requires that the opaque pass has already completed and its depth texture is available. Confirm that `renderOrder = 2` within a single `WebGLRenderer.render()` call is sufficient, vs. needing a full second render target and pass.
 
 3. **`GLTFExtensionsPlugin.register()` API at v0.4.23.** Verify the exact method to register a GLTF extension into `GLTFExtensionsPlugin`. The `Globe.tsx` usage only shows constructor options (`{ dracoLoader }`), not extension registration. Check `3d-tiles-renderer@0.4.23` source for this API.
 
 4. **`TilesFadePlugin` + `GaussianSplatNodeMaterial` `outputNode` conflict.** `TilesFadePlugin` overwrites `material.outputNode` in `wrapFadeNodeMaterial.ts`. If `GaussianSplatNodeMaterial` also sets `outputNode`, the two will conflict. Need a node-chaining strategy rather than assignment.
+   **LARGELY MOOT (2026-06-16, see §0.1):** CesiumJS does not cross-fade LODs — it swaps snapshots atomically. If we follow the snapshot model we should not wrap splats in `TilesFadePlugin` at all, sidestepping the conflict.
 
 5. **`InstancedMesh` with dummy `instanceMatrix`.** Three.js `InstancedMesh` may apply frustum culling or sorting based on `instanceMatrix`. Using identity matrices for all instances while encoding actual positions in custom attributes may trigger unexpected behavior. A plain `Mesh` with `InstancedBufferGeometry` and a manual draw call might be cleaner.
 
 6. **TAA ghosting on re-sort events.** Severity is unknown until tested at realistic splat counts and camera speeds. Mitigation strategy TBD.
 
 7. **SPZ npm package availability.** Check `npm info spz` and `npm info @niantic/spz` before committing to Option B WASM.
+   **RESOLVED (2026-06-16, see §0.1):** use `@spz-loader/core` (Apache-2.0, pure WASM, renderer-agnostic). Caveat: decodes DC color only — no spherical harmonics yet.
 
 8. **`KHR_gaussian_splatting` spec stability.** Attribute names (`_SCALE`, `_ROTATION`, etc.) are from the draft spec. Cross-reference against actual tiled splat data before finalising the parser — real datasets may differ.
 
 9. **SH evaluation: GPU vs CPU.** Passing per-fragment view direction as a `varying vec3` and evaluating SH in the fragment shader adds complexity. For degree-3 SH (45 floats/splat), CPU evaluation + per-splat `varying vec3 color` is simpler. Tradeoff: CPU evaluation needs re-upload when view changes; GPU evaluation avoids upload but adds shader complexity.
+   **RESOLVED (2026-06-16, see §0.1):** CesiumJS evaluates SH on the GPU in the vertex shader, with an inverse-model-rotation uniform so the view direction is in the GLB training frame. Follow that. (Note: `@spz-loader/core` does not decode SH yet — gating fidelity until addressed.)
 
 10. **Sort update index buffer GPU stall (WebGL).** Updating `geometry.index.needsUpdate = true` every sort triggers a full buffer re-upload. Measure the stall at 100k, 500k, 1M splats. May require a `StreamDrawUsage` hint on the index buffer.
 
