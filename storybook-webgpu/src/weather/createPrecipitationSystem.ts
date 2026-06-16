@@ -76,6 +76,30 @@ export interface PrecipitationSystem {
   dispose: () => void
 }
 
+/**
+ * Default tunables — the SINGLE source of truth. The factory seeds its uniforms
+ * from these, the wrapper falls back to them, and the story's leva panel uses them
+ * as control defaults, so the three layers can't drift apart (they had: opacity
+ * 0.5 vs 0.05, underwaterIntensity 0.4 vs 0.45).
+ */
+export const PRECIP_DEFAULTS = {
+  opacity: 0.05,
+  area: 35,
+  height: 45,
+  dropLength: 0.9,
+  dropWidth: 0.04,
+  flakeSize: 0.25,
+  fallSpeedRain: 9,
+  fallSpeedSnow: 1.2,
+  uwRise: 0.12,
+  uwSize: 0.05,
+  uwOpacity: 0.06,
+  underwaterIntensity: 0.45,
+  fadeStartAlt: 1500,
+  fadeEndAlt: 6000,
+  maxCount: 30000
+}
+
 const POLE = new Vector3(0, 0, 1) // ECEF north pole axis (matches the scene's +Z)
 
 export function createPrecipitationSystem(opts?: {
@@ -83,9 +107,10 @@ export function createPrecipitationSystem(opts?: {
 }): PrecipitationSystem {
   const maxCount = opts?.maxCount ?? 30000
 
+  const d = PRECIP_DEFAULTS
   const u = {
     intensity: uniform(0),
-    opacity: uniform(0.5),
+    opacity: uniform(d.opacity),
     mode: uniform(0),
     fade: uniform(1),
     // Wind as TWO SCALARS, not a vec2 — the WebGPU uniform path re-uploads scalar
@@ -94,22 +119,22 @@ export function createPrecipitationSystem(opts?: {
     // (0,0) and wind had no visible effect. Scalars reassign like `intensity`.
     windEast: uniform(0), // ENU east component, m/s
     windNorth: uniform(0), // ENU north component, m/s
-    area: uniform(35),
-    height: uniform(45),
-    dropLength: uniform(0.9),
-    dropWidth: uniform(0.04),
-    flakeSize: uniform(0.25),
-    fallSpeedRain: uniform(9), // ~raindrop terminal velocity (m/s)
-    fallSpeedSnow: uniform(1.2),
+    area: uniform(d.area),
+    height: uniform(d.height),
+    dropLength: uniform(d.dropLength),
+    dropWidth: uniform(d.dropWidth),
+    flakeSize: uniform(d.flakeSize),
+    fallSpeedRain: uniform(d.fallSpeedRain), // ~raindrop terminal velocity (m/s)
+    fallSpeedSnow: uniform(d.fallSpeedSnow),
     rainColor: uniform(new Color(0.72, 0.78, 0.9)),
     snowColor: uniform(new Color(1, 1, 1)),
     // Underwater morph: uw 0→1 (camera submerged) turns the same drops into slow-
     // rising, sideways-drifting suspended specks — not air bubbles. uwRise is a
     // gentle upward speed (m/s); uwSize a small square speck; uwOpacity its alpha.
     uw: uniform(0),
-    uwRise: uniform(0.12),
-    uwSize: uniform(0.05),
-    uwOpacity: uniform(0.06),
+    uwRise: uniform(d.uwRise),
+    uwSize: uniform(d.uwSize),
+    uwOpacity: uniform(d.uwOpacity),
     maxCount: uniform(maxCount)
   }
 
