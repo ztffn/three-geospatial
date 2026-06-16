@@ -103,10 +103,14 @@ export interface LensDrops {
 // SURFACING signal (`wetFilm`) so the large blobs only appear as water sheets off
 // the lens on resurfacing — not in plain rain.
 const LAYERS = [
-  { cells: 5, seed: 5.0, surfaceOnly: true },
-  { cells: 9, seed: 0.0, surfaceOnly: false },
-  { cells: 15, seed: 41.0, surfaceOnly: false },
-  { cells: 24, seed: 87.0, surfaceOnly: false }
+  // Resurface blobs: coarse grid (big on screen), radius boosted (rScale) and
+  // streak suppressed (streakScale) so they read as fat round beads sheeting off,
+  // not thin rivulets. radiusMax·streakMax stays < 1 cell for the neighbour sampler
+  // (0.13·1.6 · 7·0.45 ≈ 0.65 cell).
+  { cells: 4, seed: 5.0, surfaceOnly: true, rScale: 1.6, streakScale: 0.45 },
+  { cells: 9, seed: 0.0, surfaceOnly: false, rScale: 1, streakScale: 1 },
+  { cells: 15, seed: 41.0, surfaceOnly: false, rScale: 1, streakScale: 1 },
+  { cells: 24, seed: 87.0, surfaceOnly: false, rScale: 1, streakScale: 1 }
 ]
 
 export function createLensDrops(): LensDrops {
@@ -150,30 +154,41 @@ export function createLensDrops(): LensDrops {
       // coverage mask, the uv refraction displacement, and the fake-normal nz.
       const evalDrop = (oy: number): { mask: any; dispUv: any; nz: any } => {
         const cy = cell.y.add(float(oy))
-        // Per-cell deterministic randoms — the same seed-offset idiom as the rain
-        // plugin. r5 drives the per-drop rate jitter (desynced disappearance).
+        // Stable per-cell randoms drive only the lifecycle TIMING (phase + rate) so
+        // the cadence is steady. The APPEARANCE randoms (position/size/present) are
+        // re-rolled each cycle from the cycle index, so a faded-out drop is replaced
+        // by a NEW one at a new spot — not the same drop pulsing in place. The
+        // re-roll lands while the drop is invisible (fade is 0 at the cycle wrap),
+        // so it's seamless.
         const id = cell.x.add(cy.mul(113.0)).add(L.seed)
-        const r1 = hash(id) as any
-        const r2 = hash(id.add(13.17)) as any
-        const r3 = hash(id.add(31.41)) as any
-        const r4 = hash(id.add(57.93)) as any
-        const r5 = hash(id.add(73.1)) as any
+        const phase = hash(id) as any
+        const rJit = hash(id.add(73.1)) as any
 
-        // Present? Spawn probability scales with the density uniform.
-        const present = r4.lessThan(u.density.mul(0.35)).select(float(1), float(0))
         // Per-drop cycle rate: a base rate eased by `linger` (longer life) and
-        // randomized per drop by `lifeJitter` (r5) so drops fall out of sync and
-        // vanish at staggered times rather than on one shared rhythm.
+        // randomized per drop by `lifeJitter` so drops fall out of sync and vanish
+        // at staggered times rather than on one shared rhythm.
         const rate = float(0.04)
           .div(u.linger)
           .mul(
             mix(
               float(1).sub((u.lifeJitter as any).mul(0.6)),
               float(1).add((u.lifeJitter as any).mul(0.6)),
-              r5
+              rJit
             )
           )
-        const life = (time as any).mul(rate).add(r1).fract()
+        const t = (time as any).mul(rate).add(phase)
+        const life = t.fract()
+        // Re-roll position/size/presence per cycle (the cycle index seeds them), so
+        // each cycle is a fresh drop somewhere new rather than the same one pulsing.
+        const cid = id.add(t.floor().mul(101.7))
+        const a1 = hash(cid) as any
+        const a2 = hash(cid.add(13.17)) as any
+        const a3 = hash(cid.add(31.41)) as any
+        const a4 = hash(cid.add(57.93)) as any
+
+        // Present? Spawn probability scales with the density uniform; re-rolled each
+        // cycle so a cell hosts a drop some cycles and not others.
+        const present = a4.lessThan(u.density.mul(0.35)).select(float(1), float(0))
         // Linger: visible for most of the cycle, fading out only in the last ~12%.
         const fade = smoothstep(float(0), float(0.1), life).mul(
           smoothstep(float(1), float(0.88), life)
@@ -182,16 +197,16 @@ export function createLensDrops(): LensDrops {
         // Fragment position in THIS cell's local frame (shift by the row offset).
         const fl = vec2(f.x, f.y.sub(float(oy))) as any
         const center = vec2(
-          r1.sub(0.5).mul(0.5),
-          r2.sub(0.5).mul(0.5).sub(sink)
+          a1.sub(0.5).mul(0.5),
+          a2.sub(0.5).mul(0.5).sub(sink)
         ) as any
-        const radius = mix(float(0.07), float(0.13), r3) // small head; tail = radius·streak
+        const radius = mix(float(0.07), float(0.13), a3).mul(L.rScale) // head; tail = radius·streak
         const dvec = fl.sub(center)
         // Streak grows from round (1) toward the max as the drop ages — a bead
         // that elongates into a running streak as it fades. The tail is the part
         // ABOVE the head (dvec.y > 0, where the drop fell from), compressed by the
         // current streak so the shape stretches upward.
-        const effStreak = mix(float(1), u.streak, life)
+        const effStreak = mix(float(1), u.streak.mul(L.streakScale), life)
         const tail = max(dvec.y, float(0)).div(effStreak)
         const headSide = min(dvec.y, float(0))
         const shaped = vec2(dvec.x, tail.add(headSide)) as any
@@ -245,7 +260,12 @@ export function createLensDrops(): LensDrops {
     // whole frame softens, but plain RAIN keeps a sharp scene between drops — the
     // individual drops still refract the sharp composite either way.
     const baseCol = mix(baseTap.rgb, blurCol.rgb, (u.wetFilm as any).saturate())
-    const lensRgb = mix(baseCol, refrCol.rgb, coverage).add(rim.mul(u.rim))
+    // Outline is boosted on resurfacing (×wetFilm) so the sheeting blobs read with
+    // a stronger rim than the subtler rain drops.
+    const rimAmt = (u.rim as any).mul(
+      float(1).add((u.wetFilm as any).saturate().mul(1.8))
+    )
+    const lensRgb = mix(baseCol, refrCol.rgb, coverage).add(rim.mul(rimAmt))
 
     // Master gate → exact passthrough of the untouched composite when strength≈0.
     const gate = (u.strength as any).saturate()

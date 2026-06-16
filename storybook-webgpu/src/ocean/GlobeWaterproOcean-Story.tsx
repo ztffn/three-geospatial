@@ -3180,7 +3180,7 @@ export const Content: FC<{
     lifeJitter: { value: LENS_DROPS_DEFAULTS.lifeJitter, min: 0, max: 1, step: 0.01, label: 'Disappear randomness' },
     // Seconds the lens stays wet after breaching the surface (water sheeting off
     // the camera). 0 disables the surfacing trigger, leaving rain as the only one.
-    surfaceWet: { value: 1.5, min: 0, max: 5, step: 0.1, label: 'Surface wet (s)' }
+    surfaceWet: { value: 3, min: 0, max: 8, step: 0.1, label: 'Surface wet (s)' }
   })
   // Built once; the post memo wires its node graph and a useFrame pushes the gate.
   const lensDrops = useMemo(() => createLensDrops(), [])
