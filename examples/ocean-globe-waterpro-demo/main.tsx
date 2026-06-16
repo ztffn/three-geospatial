@@ -35,7 +35,7 @@ if (typeof window !== 'undefined') {
     clearTimeout(id)) as typeof window.cancelIdleCallback
 }
 
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import { Leva } from 'leva'
 import {
   useCallback,
@@ -267,6 +267,45 @@ const ReadinessProbe: FC<{
       cancelled = true
     }
   }, [refs, phase, onAtmosphereReady, onOceanReady])
+  return null
+}
+
+// Forces the renderer to the true window size after first layout and on every
+// resize / fullscreen transition. R3F's own ResizeObserver can latch a stale
+// size when the canvas mounts small and the window goes fullscreen late (the
+// Electron wrapper) — leaving the backbuffer + depth attachment at the 300x150
+// canvas default while the color attachment is retina-fullscreen, which trips
+// the WebGPU "depthBuffer size does not match color attachment" validation and
+// blacks out the scene. The canvas is position:fixed inset:0, so window.inner*
+// IS the canvas size; re-applying setSize/setDpr on the events that matter
+// (rAF after mount, window 'resize' — Electron OS-fullscreen fires this, not
+// document 'fullscreenchange' — and 'fullscreenchange' for the browser path)
+// repairs the whole size pipeline: backbuffer (gl.setSize), the pass node
+// (renderer.getSize), and size-keyed depth targets (useThree().size).
+const ResizeSync: FC = () => {
+  const setSize = useThree(state => state.setSize)
+  const setDpr = useThree(state => state.setDpr)
+  useEffect(() => {
+    const apply = (): void => {
+      // Match R3F's own default clamp ([1, 2]) — never uncap DPR, or DPR-3
+      // displays would render at 2.25x the pixels (perf regression).
+      setDpr([1, 2])
+      setSize(window.innerWidth, window.innerHeight)
+      // TEMP diagnostic — remove once the Electron fullscreen resize is verified.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[resize-sync] ${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio}`
+      )
+    }
+    const raf = requestAnimationFrame(apply)
+    window.addEventListener('resize', apply)
+    document.addEventListener('fullscreenchange', apply)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', apply)
+      document.removeEventListener('fullscreenchange', apply)
+    }
+  }, [setSize, setDpr])
   return null
 }
 
@@ -646,6 +685,10 @@ const App: FC = () => {
       <Canvas
         camera={{ fov: 45, near: 0.1, far: 1e8 }}
         style={{ position: 'fixed', inset: 0, background: '#101820' }}
+        // Apply resize immediately (no debounce) so the renderer tracks late
+        // fullscreen transitions without a stale-size window; ResizeSync below
+        // is the belt to this suspenders.
+        resize={{ debounce: 0 }}
         gl={async props => {
           const renderer = new WebGPURenderer({
             ...(props as any),
@@ -700,6 +743,7 @@ const App: FC = () => {
           onAtmosphereReady={handleAtmosphereReady}
           onOceanReady={handleOceanReady}
         />
+        <ResizeSync />
       </Canvas>
       <BrandMark />
       <DigitalTwinUI
