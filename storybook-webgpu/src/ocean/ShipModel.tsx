@@ -100,7 +100,7 @@ export const SHIP_DEFS: ShipDef[] = [
   // height — the offset is applied along the ECEF up). Tune further there.
   {
     folder: 'Waste site',
-    url: 'public/site_compressed.glb',
+    url: 'public/site_compressed_new.glb',
     scale: 1,
     heightOffset: 67.4,
     eastOffset: -50,

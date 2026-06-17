@@ -16,13 +16,14 @@ import { enuBasis } from './enu'
 // Tuned in the standalone fish/FishSchool story (Export settings). Units are
 // metres here (the twin's world scale), so radii read as a real school footprint.
 const LARGE_SCHOOL = {
-  textureUrl: '/public/fish/largefish-cutout.png',
-  normalUrl: '/public/fish/largefish-normal.png',
+  textureUrl: '/public/fish/largefish-atlas-7.png',
+  normalUrl: '/public/fish/largefish-atlas-7-nrm.png',
+  textureFrames: 7,
   maxCount: 64,
   count: 5,
   fishLength: 12,
-  // Cropped cell aspect (bandH/cellW ≈ 0.518) so the framed fish isn't stretched.
-  fishHeight: 6.2,
+  // 7-column atlas; cell aspect (imgH/cellW ≈ 0.409) so the framed fish isn't stretched.
+  fishHeight: 4.9,
   fishWidthSegments: 12,
   radiusX: 220,
   radiusZ: 160,
@@ -44,13 +45,14 @@ const LARGE_SCHOOL = {
 } as const
 
 const SMALL_SCHOOL = {
-  textureUrl: '/public/fish/smallfish-cutout.png',
-  normalUrl: '/public/fish/smallfish-normal.png',
+  textureUrl: '/public/fish/smallfish-atlas-7.png',
+  normalUrl: '/public/fish/smallfish-atlas-7-nrm.png',
+  textureFrames: 7,
   maxCount: 512,
   count: 275,
   fishLength: 4,
-  // Cropped cell aspect (bandH/cellW ≈ 0.434) so the framed fish isn't stretched.
-  fishHeight: 1.74,
+  // 7-column atlas; cell aspect (imgH/cellW ≈ 0.362) so the framed fish isn't stretched.
+  fishHeight: 1.45,
   fishWidthSegments: 8,
   radiusX: 240,
   radiusZ: 180,
@@ -83,6 +85,10 @@ interface SiteFishSchoolProps {
   /** Known seabed depth below the surface (the cables' value) — a hard clamp so
    *  the band never reaches the floor even if bandDepth is set deeper. */
   seabedDepth: number
+  /** Per-site cap on the band bottom (metres below surface) for shallow sites
+   *  where the global bandDepth would bury the school in the seabed. Omitted →
+   *  no extra cap. */
+  maxDepth?: number
   brightness: number
   normalLift: number
   seed: number
@@ -98,6 +104,7 @@ const SiteFishSchool: FC<SiteFishSchoolProps> = ({
   seaLevelOffset,
   bandDepth,
   seabedDepth,
+  maxDepth,
   brightness,
   normalLift,
   seed,
@@ -114,10 +121,12 @@ const SiteFishSchool: FC<SiteFishSchoolProps> = ({
     }
   }, [anchor, seaLevelOffset])
 
-  // Band bottom = the requested depth, never past the known seabed.
+  // Band bottom = the requested depth, never past the known seabed, and never
+  // past a per-site shallow cap (maxDepth) where the global band would sink the
+  // school into the seabed.
   const bottom = Math.max(
     TOP_MARGIN + 2,
-    Math.min(bandDepth, seabedDepth - BOTTOM_MARGIN)
+    Math.min(bandDepth, maxDepth ?? Infinity, seabedDepth - BOTTOM_MARGIN)
   )
   // FishSchool renders its volume raised to [0, 2·depth] above its origin, so a
   // half-height of (bottom − TOP_MARGIN)/2 with the origin dropped to `bottom`
@@ -149,9 +158,18 @@ const SiteFishSchool: FC<SiteFishSchoolProps> = ({
   )
 }
 
+export interface FishSite {
+  /** ECEF anchor for this site's underwater school. */
+  anchor: Vector3
+  /** Optional shallow-site cap on the band bottom (metres below surface). Use
+   *  at sites whose seabed is shallower than the global band, so the school
+   *  stays in the water column instead of sinking into the floor. */
+  maxDepth?: number
+}
+
 export interface TwinFishSchoolsProps {
-  /** ECEF anchors, one underwater school per entry (the scenario sites). */
-  anchors: Vector3[]
+  /** One underwater school per entry (the scenario sites). */
+  sites: FishSite[]
   /** Sea-surface height above each anchor, metres (the ocean seaLevelOffset). */
   seaLevelOffset: number
   /** Known seabed depth below the surface (the cables' seabedDepth) — clamps the
@@ -162,11 +180,11 @@ export interface TwinFishSchoolsProps {
 }
 
 // Drop-in: owns the "Fish" leva folder (enable + emissive + debug) and renders
-// one school per anchor. The vertical band is derived from `seabedDepth` (no
-// manual depth knob). Always mounted (so the leva folder is stable); gates the
-// actual fish on `enabled && ready` internally.
+// one school per site. The vertical band is derived from `seabedDepth` (no
+// manual depth knob) and capped per-site by `maxDepth` at shallow sites. Always
+// mounted (so the leva folder is stable); gates the fish on `enabled && ready`.
 export const TwinFishSchools: FC<TwinFishSchoolsProps> = ({
-  anchors,
+  sites,
   seaLevelOffset,
   seabedDepth,
   ready = true
@@ -191,13 +209,14 @@ export const TwinFishSchools: FC<TwinFishSchoolsProps> = ({
 
   return (
     <>
-      {anchors.map((anchor, index) => (
-        <Suspense key={anchor.x} fallback={null}>
+      {sites.map((site, index) => (
+        <Suspense key={index} fallback={null}>
           <SiteFishSchool
-            anchor={anchor}
+            anchor={site.anchor}
             seaLevelOffset={seaLevelOffset}
             bandDepth={fish.depth}
             seabedDepth={seabedDepth}
+            maxDepth={site.maxDepth}
             brightness={fish.brightness}
             normalLift={fish.normalLift}
             seed={index * 100}

@@ -93,9 +93,22 @@ const staticAssets: Array<{ from: string; to: string }> = [
   // Waste-handling facility (waste-handling scenario; static land model on/near
   // Karmøy island).
   {
-    from: path.join(storybookAssets, 'site_compressed.glb'),
-    to: 'public/site_compressed.glb'
+    from: path.join(storybookAssets, 'site_compressed_new.glb'),
+    to: 'public/site_compressed_new.glb'
   },
+  // Underwater fish schools (TwinFishSchool.tsx) — 7-column albedo atlas + its
+  // OpenGL tangent-space normal map (same canvas/framing), one pair per school
+  // size. Served at /public/fish/* (dev via sirv, build via copy).
+  ...['smallfish', 'largefish'].flatMap(name => [
+    {
+      from: path.join(storybookAssets, `fish/${name}-atlas-7.png`),
+      to: `public/fish/${name}-atlas-7.png`
+    },
+    {
+      from: path.join(storybookAssets, `fish/${name}-atlas-7-nrm.png`),
+      to: `public/fish/${name}-atlas-7-nrm.png`
+    }
+  ]),
   // Huma brand mark (top-left overlay in main.tsx): favicon + HumaDisplay
   // wordmark font. Served at /public/brand/* (dev via sirv, build via copy).
   {

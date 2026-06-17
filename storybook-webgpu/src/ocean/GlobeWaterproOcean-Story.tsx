@@ -201,7 +201,7 @@ export const locationPresets = {
   // Offshore wind installation site for the rig (turbine-install scenario).
   // PROVISIONAL placeholder in the Utsira Nord zone, W of Karmøy — set per site.
   'Utsira Nord': { longitude: 4.55, latitude: 59.3, height: 20 },
-  // Waste-handling site on/near Karmøy island (site_compressed.glb). Captured
+  // Waste-handling site on/near Karmøy island (site_compressed_new.glb). Captured
   // ~where the camera was; height/placement tuned in-scene via the leva folder.
   'Waste Handling': { longitude: 5.300927, latitude: 59.402448, height: 20 },
 } satisfies Record<
@@ -618,12 +618,20 @@ const CameraRig: FC<{
       // out arc (gentle still zeroes the bump below). No flyDistance → hold the
       // current distance. The slider channel is untouched, so no ease races this.
       const toDist = flyDistance ?? fromDist
-      // The mid-fly pull-out arc (bump) is a globe-scale dolly-out for cross-
-      // planet LOCATION jumps so the camera clears the surface. It must NOT fire
-      // on a same-site aim hop (a scenario sub-viewpoint, `aim` set): `sep` is
-      // measured to the location target, not the aim, so even a tiny separation
-      // produced a hundreds-of-metres out-and-back — very visible at the metre-
-      // scale close-ups (Nacelle/Hregg). Aim-flies ease straight to the framing.
+      // The mid-fly pull-out arc (bump) is a globe-scale dolly-out so the camera
+      // climbs over the cloud layer and back down on a LOCATION jump, instead of
+      // skimming the surface (clipping terrain/sea, driving OrbitControls into a
+      // near-radial pole — "spazzing out underwater") across hundreds of km.
+      //
+      // It must fire on ANY location jump, including ones that also carry an aim
+      // (e.g. RV North Star: a far-site preset with an aimOffsetENU). The gate is
+      // location-change, NOT aim-presence: keying off `aim != null` wrongly killed
+      // the arc for those far aim-flies. It must still NOT fire on a same-site aim
+      // hop (scenario sub-viewpoint, location unchanged): there `sep` is measured
+      // to the location target — not the aim — so even a tiny aim nudge produced a
+      // hundreds-of-metres out-and-back, very visible at the metre-scale close-ups
+      // (Nacelle/Hregg). Those ease straight to the framing.
+      const locationChanged = !lastTarget.current.equals(target)
       fly.current = {
         t: 0,
         dur: 1.6 + (sep / Math.PI) * 1.8,
@@ -632,7 +640,9 @@ const CameraRig: FC<{
         fromDist,
         toDist,
         bump:
-          gentleRecenter || aim != null ? 0 : (sep / Math.PI) * 1.2e7 // ~globe scale for antipodal
+          gentleRecenter || (aim != null && !locationChanged)
+            ? 0
+            : (sep / Math.PI) * 1.2e7 // ~globe scale for antipodal
       }
     }
     lastTarget.current = target.clone()
@@ -4012,9 +4022,16 @@ export const Content: FC<{
         </Suspense>
       )}
       {/* Drop-in fish: one underwater school per scenario site. The component
-          owns the "Fish" leva folder and the per-site placement. */}
+          owns the "Fish" leva folder and the per-site placement. Karmøy
+          (shipAnchor) is shallow, so it gets a per-site maxDepth cap that keeps
+          its school in the water column instead of the seabed. */}
       <TwinFishSchools
-        anchors={[shipAnchor, patrolAnchor, platformAnchor, rigAnchor]}
+        sites={[
+          { anchor: shipAnchor, maxDepth: 12 },
+          { anchor: patrolAnchor },
+          { anchor: platformAnchor },
+          { anchor: rigAnchor }
+        ]}
         seaLevelOffset={oceanFrameControls.seaLevelOffset}
         seabedDepth={cableControls.seabedDepth}
         ready={!disableOcean}

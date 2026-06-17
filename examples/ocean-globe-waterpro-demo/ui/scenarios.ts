@@ -143,16 +143,17 @@ export const SCENARIOS: Scenario[] = [
         headingDeg: 270.3,
         pitchDeg: -8.2
       },
-      // Underwater at the base of the same grid turbine — aim below the surface
-      // at the turbine's E/N (~8 m down, on the monopile foundation); positive
-      // pitch puts the camera deeper than the aim, looking up the column toward
-      // the surface. Heuristic placement (no in-scene capture) — nudge to taste.
+      // Underwater at the base of the same grid turbine, looking up the monopile
+      // column toward the surface. Captured in-scene (camera 'Dump view', ECEF →
+      // Karmøy-anchor ENU): camera ~10 m below the surface, aim up the tower at
+      // the turbine's E/N (up-component above the surface, so the shot reads up
+      // through the waterline). Shallow site — its fish school is depth-capped.
       {
         id: 'underwater',
         label: 'Underwater',
-        aimOffsetENU: [464, 463, -8],
-        distance: 35,
-        headingDeg: 270,
+        aimOffsetENU: [459, 472, 51],
+        distance: 232,
+        headingDeg: 189.4,
         pitchDeg: 8
       }
     ]
@@ -226,7 +227,7 @@ export const SCENARIOS: Scenario[] = [
     ]
   },
   // Waste-handling facility on/near Karmøy island. Anchored at the 'Waste
-  // Handling' preset, where site_compressed.glb sits (static land model, placed
+  // Handling' preset, where site_compressed_new.glb sits (static land model, placed
   // via the 'Waste site' leva folder). Camera-only aims at the kiln, so the site
   // stays pinned. Aims + FPS spawn captured in-scene (camera 'Dump view', ECEF →
   // anchor ENU). The shared FPV spawn (~kiln-top height, free-fly) is repeated on
