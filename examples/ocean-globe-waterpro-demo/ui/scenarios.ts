@@ -288,7 +288,7 @@ export const SCENARIOS: Scenario[] = [
       }
     ]
   },
-  // Patrol ship at sea outside Bodø (patrolship-compressed.glb, anchored at
+  // Patrol ship at sea outside Bodø (patrolship_compressed.glb, anchored at
   // the 'Bodø' scene preset; buoyant — rides the waves).
   {
     id: 'patrol-ship',

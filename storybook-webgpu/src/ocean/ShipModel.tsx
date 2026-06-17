@@ -1,8 +1,9 @@
 // Ship rendering + buoyancy for the globe ocean scene: a GLB anchored on the
 // ENU tangent plane that rides the Gerstner waves (4-probe heave/roll/pitch
 // with exp-smoothed hull inertia) and carries an invisible hull water-occluder
-// box for the depth pre-pass. Also exports the per-ship leva rig (useShip) and
-// the ship definitions. Extracted from GlobeWaterproOcean-Story (wiring stays there).
+// box for the depth pre-pass. Also exports the per-ship leva rig (useShip), the
+// ship definitions, and WaxCubes (a leva-tunable raft of small floating cubes
+// built from the same ShipModel primitive). Wiring stays in the host story.
 
 import { useFrame } from '@react-three/fiber'
 import { button, useControls } from 'leva'
@@ -76,9 +77,9 @@ export const SHIP_DEFS: ShipDef[] = [
   // Patrol ship outside Bodø (own scenario; anchored at the Bodø preset).
   {
     folder: 'Patrol ship',
-    url: 'public/patrolship-compressed.glb',
+    url: 'public/patrolship_compressed.glb',
     scale: 1,
-    heightOffset: 26,
+    heightOffset: 29.8,
     eastOffset: 0,
     northOffset: 0,
   },
@@ -116,6 +117,18 @@ export const SHIP_DEFS: ShipDef[] = [
     eastOffset: 120,
     northOffset: 0,
     yawDeg: -104,
+  },
+  // Copy of Ship 1 (ship_supply) moored beside the patrol ship outside Bodø
+  // (patrol scenario; buoyant). Same scale/waterline as the Karmøy supply ship
+  // (same GLB). Offset beside the patrol ship — tune in the leva folder.
+  {
+    folder: 'Patrol supply ship',
+    url: 'public/ship_supply_compressed.glb',
+    scale: 0.35,
+    heightOffset: 28.6,
+    eastOffset: 40,
+    northOffset: -30,
+    yawDeg: 153,
   },
 ]
 
@@ -453,5 +466,116 @@ export const ShipModel: FC<{
         <primitive object={occluder} />
       )}
     </group>
+  )
+}
+
+// Deterministic scatter of wax blocks bobbing beside a host ship. Relative
+// east/north offsets (m) from the cluster base + a per-cube yaw so the raft
+// reads as loose floating cargo rather than a grid. The 'spread' leva slider
+// multiplies these, so one folder expands/contracts the whole raft.
+const WAX_CUBE_LAYOUT: ReadonlyArray<{ de: number; dn: number; yaw: number }> = [
+  { de: 0, dn: 0, yaw: 12 },
+  { de: 2.1, dn: 1.4, yaw: -38 },
+  { de: -1.9, dn: 1.7, yaw: 64 },
+  { de: 1.5, dn: -2.0, yaw: 148 },
+  { de: -2.2, dn: -1.6, yaw: -104 },
+  { de: 0.3, dn: 3.0, yaw: 30 },
+]
+
+// A raft of small wax-block GLBs floating beside a host ship, mounted as
+// ShipModel instances (the floating-GLB buoyancy primitive) at the offsets
+// above. One 'Wax cubes' leva folder moves/scales the whole cluster (base
+// east/north, waterline, scale, spread) + a fly-to button; each cube samples
+// the Gerstner field at its own spot, so they bob independently. No water
+// occluder (the cubes are too small for the box to read cleanly). They carry a
+// much shorter buoyancy response than the ships (cubeMotion below) so the light
+// blocks hug the wave surface instead of lagging it with ship-grade inertia.
+export const WaxCubes: FC<{
+  anchor: Vector3
+  oceanMatrixInverse: Matrix4
+  vu: VertexUniformsBag | null
+  gerstnerAmplitude: UniformNode<number> | null
+  motion: ShipMotionControls
+  orbitControlsRef: { current: any }
+}> = ({
+  anchor,
+  oceanMatrixInverse,
+  vu,
+  gerstnerAmplitude,
+  motion,
+  orbitControlsRef,
+}) => {
+  const controls = useControls('Wax cubes', {
+    visible: { value: true },
+    scale: { value: 0.35, min: 0.01, max: 5, step: 0.01 },
+    heightOffset: {
+      value: 28.3,
+      min: -100,
+      max: 100,
+      step: 0.1,
+      label: 'Waterline (m)',
+    },
+    eastOffset: { value: 34, min: -5000, max: 5000, step: 1, label: 'East (m)' },
+    northOffset: {
+      value: -23,
+      min: -5000,
+      max: 5000,
+      step: 1,
+      label: 'North (m)',
+    },
+    spread: { value: 1, min: 0.1, max: 10, step: 0.1, label: 'Spread' },
+  })
+  // Light blocks track the surface far faster than a ship hull: override the
+  // shared (ship-grade, ~1.5 s) buoyancy response with a short time constant so
+  // the cubes hug each wave instead of lagging it and popping over/under.
+  const cubeMotion = useMemo(() => ({ ...motion, response: 0.25 }), [motion])
+  // Cluster base ECEF position (changes identity on offset edits) — mirrored
+  // into a ref so the once-captured fly-to button reads it live.
+  const basePos = useMemo(() => {
+    const { east, north, up } = enuBasis(anchor)
+    return anchor
+      .clone()
+      .addScaledVector(east, controls.eastOffset)
+      .addScaledVector(north, controls.northOffset)
+      .addScaledVector(up, controls.heightOffset)
+  }, [anchor, controls.eastOffset, controls.northOffset, controls.heightOffset])
+  const baseRef = useRef(basePos)
+  baseRef.current = basePos
+  useControls('Wax cubes', {
+    'Fly to wax cubes': button(() => {
+      const oc = orbitControlsRef.current
+      if (oc?.target == null) return
+      const p = baseRef.current
+      const { east, north, up } = enuBasis(p)
+      oc.object.position
+        .copy(p)
+        .addScaledVector(up, 30)
+        .addScaledVector(east, 35)
+        .addScaledVector(north, -35)
+      oc.target.copy(p)
+      oc.update?.()
+    }),
+  })
+  if (!controls.visible) return null
+  return (
+    <>
+      {WAX_CUBE_LAYOUT.map((c, i) => (
+        <ShipModel
+          key={i}
+          url="public/waxcube-single-compressed.glb"
+          anchor={anchor}
+          scale={controls.scale}
+          heightOffset={controls.heightOffset}
+          eastOffset={controls.eastOffset + c.de * controls.spread}
+          northOffset={controls.northOffset + c.dn * controls.spread}
+          yawDeg={c.yaw}
+          oceanMatrixInverse={oceanMatrixInverse}
+          vu={vu}
+          gerstnerAmplitude={gerstnerAmplitude}
+          motion={cubeMotion}
+          waterOcclusion={false}
+        />
+      ))}
+    </>
   )
 }

@@ -116,6 +116,7 @@ import {
   SHIP_DEFS,
   ShipModel,
   useShip,
+  WaxCubes,
   type ShipMotionControls,
 } from './ShipModel'
 import { InstallationRig } from './InstallationRig'
@@ -2758,6 +2759,7 @@ export const Content: FC<{
   const ship3 = useShip(SHIP_DEFS[3], platformAnchor, orbitControlsRef)
   const ship4 = useShip(SHIP_DEFS[4], wasteAnchor, orbitControlsRef)
   const ship5 = useShip(SHIP_DEFS[5], platformAnchor, orbitControlsRef)
+  const ship6 = useShip(SHIP_DEFS[6], patrolAnchor, orbitControlsRef)
   // platformId keys the FPS deck-spawn/ride registry; buoyant=false pins the
   // structure to its rest pose (platforms don't heave).
   const ships: Array<{
@@ -2810,6 +2812,13 @@ export const Content: FC<{
       url: SHIP_DEFS[5].url,
       controls: ship5.controls,
       anchor: platformAnchor,
+      buoyant: true,
+      waterOcclusion: true
+    },
+    {
+      url: SHIP_DEFS[6].url,
+      controls: ship6.controls,
+      anchor: patrolAnchor,
       buoyant: true,
       waterOcclusion: true
     },
@@ -3963,6 +3972,21 @@ export const Content: FC<{
               />
             </Suspense>
           )
+      )}
+      {/* Floating wax-block raft beside the patrol supply ship (Bodø scenario).
+          One 'Wax cubes' leva folder positions/scales the whole cluster; each
+          cube bobs independently via the shared ShipModel buoyancy rig. */}
+      {!disableOcean && (
+        <Suspense fallback={null}>
+          <WaxCubes
+            anchor={patrolAnchor}
+            oceanMatrixInverse={oceanMatrixInverse}
+            vu={vertexUniforms}
+            gerstnerAmplitude={oceanUniforms?.gerstnerAmplitude ?? null}
+            motion={shipMotionControls}
+            orbitControlsRef={orbitControlsRef}
+          />
+        </Suspense>
       )}
       {/* Installation rig (turbine-install scenario), anchored offshore at the
           Utsira Nord preset, nudged half a tile off the ocean grid origin so it

@@ -69,10 +69,16 @@ const staticAssets: Array<{ from: string; to: string }> = [
     from: path.join(storybookAssets, 'ship_supply_compressed.glb'),
     to: 'public/ship_supply_compressed.glb'
   },
+  // Floating wax-block raft (WaxCubes in ShipModel.tsx) beside the patrol supply
+  // ship — a single ~4-unit cube reused as buoyant cargo at scale 0.35.
+  {
+    from: path.join(storybookAssets, 'waxcube-single-compressed.glb'),
+    to: 'public/waxcube-single-compressed.glb'
+  },
   // Patrol ship (Bodø scenario) + offshore platform (Norwegian Sea scenario).
   {
-    from: path.join(storybookAssets, 'patrolship-compressed.glb'),
-    to: 'public/patrolship-compressed.glb'
+    from: path.join(storybookAssets, 'patrolship_compressed.glb'),
+    to: 'public/patrolship_compressed.glb'
   },
   {
     from: path.join(storybookAssets, 'deepwater_platform_compressed.glb'),
