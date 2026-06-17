@@ -69,6 +69,11 @@ const staticAssets: Array<{ from: string; to: string }> = [
     from: path.join(storybookAssets, 'ship_supply_compressed.glb'),
     to: 'public/ship_supply_compressed.glb'
   },
+  // Platform service vessel (SHIP_DEFS 'Platform ship') — GLB-authored occluder.
+  {
+    from: path.join(storybookAssets, 'Ship_G2W_001_compressed.glb'),
+    to: 'public/Ship_G2W_001_compressed.glb'
+  },
   // Floating wax-block raft (WaxCubes in ShipModel.tsx) beside the patrol supply
   // ship — a single ~4-unit cube reused as buoyant cargo at scale 0.35.
   {

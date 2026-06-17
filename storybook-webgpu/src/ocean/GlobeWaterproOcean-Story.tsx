@@ -487,6 +487,11 @@ const CameraRig: FC<{
   // Gentle recenter: keep the CURRENT distance (no zoom change) and skip the
   // great-circle pull-out bump — a smooth pan of the orbit centre.
   gentleRecenter?: boolean
+  // Monotonic fly id: a CHANGE triggers a fly regardless of target/aim, so a
+  // viewpoint click always re-frames (two close-ups can share an aim and differ
+  // only in distance/heading; re-selecting after a yaw/heading change must
+  // re-fly). The fly then reads the live distance/heading/pitch as usual.
+  flyNonce?: number
   // Reports the camera's live distance to the orbit target when at rest
   // (including after a mouse-wheel zoom), so a host slider can track it.
   // Suppressed mid-fly and mid-slider-ease to avoid fighting those commands.
@@ -501,6 +506,7 @@ const CameraRig: FC<{
   pitchDeg,
   landExact = false,
   gentleRecenter = false,
+  flyNonce,
   onDistance
 }) => {
   const camera = useThree(({ camera }) => camera)
@@ -527,6 +533,7 @@ const CameraRig: FC<{
   const easeLambda = useRef(SLIDER_ZOOM_LAMBDA)
   const lastTarget = useRef<Vector3 | null>(null)
   const lastAim = useRef<Vector3 | null>(null)
+  const lastNonce = useRef<number | undefined>(undefined)
   const tmpAim = useRef(new Vector3())
   const lastEmitted = useRef(-1)
 
@@ -596,9 +603,13 @@ const CameraRig: FC<{
     const aimChanged =
       (lastAim.current == null) !== (aim == null) ||
       (lastAim.current != null && aim != null && !lastAim.current.equals(aim))
+    // A new fly id (a viewpoint click) re-flies even when target AND aim are
+    // unchanged — two close-ups can share an aim and differ only in distance/
+    // heading, and re-selecting after a wind/heading change must re-frame.
+    const nonceChanged = flyNonce != null && flyNonce !== lastNonce.current
     if (lastTarget.current == null) {
       place(startAim, dist)
-    } else if (!lastTarget.current.equals(target) || aimChanged) {
+    } else if (!lastTarget.current.equals(target) || aimChanged || nonceChanged) {
       const fromAim = controls?.target?.clone() ?? lastTarget.current.clone()
       const fromDist =
         controls?.target != null
@@ -647,8 +658,9 @@ const CameraRig: FC<{
     }
     lastTarget.current = target.clone()
     lastAim.current = aim?.clone() ?? null
+    lastNonce.current = flyNonce
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, aim, controls])
+  }, [target, aim, controls, flyNonce])
 
   useFrame((_, dt) => {
     if (controls?.target == null) return
@@ -2085,9 +2097,18 @@ export const Content: FC<{
     distance?: number
     headingDeg?: number
     pitchDeg?: number
+    // Turbine facing (deg) headingDeg was framed at. Set on close-ups that frame
+    // the yawing nacelle/rotor: the camera heading gets the live-yaw delta added
+    // (see flyHeadingDeg) so it circles WITH the model instead of the framed part
+    // rotating away under a fixed compass heading. Omitted → absolute world heading.
+    headingRefYaw?: number
     // Gentle recenter: ease the orbit centre at the CURRENT distance, no
     // great-circle pull-out arc (clicking a globe marker — already pulled back).
     gentle?: boolean
+    // Monotonic fly id from the host: the rig re-flies whenever this changes, so
+    // a viewpoint click re-frames even when target/aim are identical (e.g. two
+    // close-ups sharing an aim, or re-selecting after the wind/heading changed).
+    nonce?: number
   } | null
   // 'orbit' (default): OrbitControls + CameraRig fly-tos. 'fps': free-fly
   // first-person rig (WASD + drag look); OrbitControls and the rig are
@@ -2726,6 +2747,21 @@ export const Content: FC<{
     },
     cover: { value: true, label: 'Hero: cover' },
   })
+
+  // Effective fly heading. For close-ups anchored to the yawing turbine
+  // (flyTo.headingRefYaw set — the turbine facing the shot was framed at), add
+  // the live-yaw delta so the camera circles WITH the model: at the reference
+  // wind the delta is 0 (identical to the captured framing); any other wind
+  // rotates the camera by the same amount the nacelle/rotor turned, keeping the
+  // same part framed. liveYaw mirrors TurbineFarm's yaw (wind-from + rotor
+  // offset). Viewpoints without headingRefYaw pass through as world headings.
+  const flyHeadingDeg = useMemo(() => {
+    const h = flyTo?.headingDeg
+    if (h == null || flyTo?.headingRefYaw == null) return h
+    const liveYaw =
+      (windHeading ?? turbineControls.windDir) + turbineControls.yawOffset
+    return h + (liveYaw - flyTo.headingRefYaw)
+  }, [flyTo, windHeading, turbineControls.windDir, turbineControls.yawOffset])
 
   useEffect(() => {
     onTurbineCountChange?.(turbineControls.count)
@@ -3878,10 +3914,11 @@ export const Content: FC<{
           aim={flyAim}
           zoomDistance={zoomDistance}
           flyDistance={flyTo?.distance}
-          headingDeg={flyTo?.headingDeg}
+          headingDeg={flyHeadingDeg}
           pitchDeg={flyTo?.pitchDeg}
           landExact={flyTo?.height != null}
           gentleRecenter={flyTo?.gentle === true}
+          flyNonce={flyTo?.nonce}
           onDistance={onZoomChange}
         />
       )}

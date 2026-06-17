@@ -367,10 +367,16 @@ const App: FC = () => {
     distance?: number
     headingDeg?: number
     pitchDeg?: number
+    // Turbine facing (deg) the heading was framed at — set on nacelle/rotor
+    // close-ups so Content circles the camera with the live-yawed model.
+    headingRefYaw?: number
     // Gentle recenter: ease the orbit centre over at the CURRENT distance with
     // no great-circle pull-out arc (for clicking a globe marker, where you're
     // already pulled back and just want the centre to slew to it).
     gentle?: boolean
+    // Monotonic fly id (see flyNonceRef): the rig re-flies whenever this changes,
+    // so a click always re-frames even when target/aim are unchanged.
+    nonce?: number
   } | null>(null)
 
   // Scenario selection (ScenarioPanel, bottom-right). The scene loads at
@@ -388,6 +394,12 @@ const App: FC = () => {
     | null
   >(null)
   const spawnNonceRef = useRef(0)
+  // Monotonic fly id. A viewpoint CLICK is the fly trigger, not an incidental
+  // change in target/aim: two close-ups can share an aim (Hregg / Hregg Close)
+  // and differ only in distance/heading, and re-selecting a viewpoint after the
+  // wind (hence the yaw-relative heading) changed must re-frame. Bumping this on
+  // every fly command makes the rig re-fly on intent rather than coordinate diff.
+  const flyNonceRef = useRef(0)
 
   const respawnAt = useCallback((scenario: Scenario, viewpoint: Viewpoint) => {
     const spawn = spawnFor(scenario, viewpoint)
@@ -441,7 +453,9 @@ const App: FC = () => {
         // zoom slider, so there's no pre-fly snap.
         distance: viewpoint.distance,
         headingDeg: viewpoint.headingDeg,
-        pitchDeg: viewpoint.pitchDeg
+        pitchDeg: viewpoint.pitchDeg,
+        headingRefYaw: viewpoint.headingRefYaw,
+        nonce: ++flyNonceRef.current
       })
       setTurbineCount(scenario.turbines ?? 0)
       setActiveScenario(scenario.id)
@@ -580,7 +594,8 @@ const App: FC = () => {
         distance: VESSEL_FOCUS_DISTANCE,
         headingDeg: VESSEL_FOCUS_HEADING,
         pitchDeg: VESSEL_FOCUS_PITCH,
-        gentle: true
+        gentle: true,
+        nonce: ++flyNonceRef.current
       })
     },
     [shadowFleet, patrol]

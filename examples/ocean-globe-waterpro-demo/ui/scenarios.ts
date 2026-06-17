@@ -24,6 +24,14 @@ export interface Viewpoint {
   // looking up (e.g. a near-surface aim looking up through the water column).
   headingDeg?: number
   pitchDeg?: number
+  // Turbine-yaw reference (deg, the turbine facing this heading was FRAMED at,
+  // = wind-from bearing + rotor offset at capture). Set it on close-ups that
+  // frame the yawing nacelle/rotor so the camera circles WITH the model under
+  // live wind instead of the framed part rotating away from a fixed compass
+  // heading: the host adds (liveYaw − headingRefYaw) to headingDeg. Omitted →
+  // headingDeg is an absolute world bearing (correct for world-fixed subjects:
+  // ships, the rotationally-symmetric monopile, regional overviews).
+  headingRefYaw?: number
   // First-person spawn for THIS viewpoint (FPS camera mode). Omitted → derived
   // from the viewpoint itself: its lon/lat at eye level, or its aimOffsetENU.
   spawn?: FpsSpawn
@@ -125,7 +133,8 @@ export const SCENARIOS: Scenario[] = [
         aimOffsetENU: [463.9, 463.9, 82.1],
         distance: 16.8,
         headingDeg: 286.6,
-        pitchDeg: -4.9
+        pitchDeg: -4.9,
+        headingRefYaw: 225 // framed at the default wind (225° from, yawOffset 0)
       },
       {
         id: 'hregg',
@@ -133,7 +142,8 @@ export const SCENARIOS: Scenario[] = [
         aimOffsetENU: [464.1, 463.5, 82.1],
         distance: 4.2,
         headingDeg: 238.6,
-        pitchDeg: -2.6
+        pitchDeg: -2.6,
+        headingRefYaw: 225
       },
       {
         id: 'hregg-close',
@@ -141,7 +151,8 @@ export const SCENARIOS: Scenario[] = [
         aimOffsetENU: [464.1, 463.5, 82.1],
         distance: 2.2,
         headingDeg: 270.3,
-        pitchDeg: -8.2
+        pitchDeg: -8.2,
+        headingRefYaw: 225
       },
       // Underwater at the base of the same grid turbine, looking up the monopile
       // column toward the surface. Captured in-scene (camera 'Dump view', ECEF →
