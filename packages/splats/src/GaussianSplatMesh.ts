@@ -3,7 +3,8 @@ import {
   Mesh,
   Vector3,
   type Camera,
-  type WebGLRenderer
+  type Material,
+  type Vector2
 } from 'three'
 
 import type { GaussianSplatData } from './GaussianSplatData'
@@ -15,10 +16,31 @@ import {
   type GaussianSplatSorter
 } from './GaussianSplatSorter'
 
+// Structural view of the renderer parts a splat material's `update` needs.
+// Satisfied by both `WebGLRenderer` and the WebGPU `Renderer`.
+interface SplatMaterialRenderer {
+  getDrawingBufferSize: (target: Vector2) => Vector2
+}
+
+/**
+ * A material that can render {@link GaussianSplatGeometry}. The WebGL
+ * {@link GaussianSplatMaterial} and the WebGPU `GaussianSplatNodeMaterial`
+ * (from the `webgpu` entry point) both satisfy this, so the mesh, sorter, and
+ * geometry are shared across both render paths.
+ */
+export interface SplatMaterial extends Material {
+  update(renderer: SplatMaterialRenderer, camera: Camera): void
+}
+
 export interface GaussianSplatMeshOptions {
   sorter?: GaussianSplatSorter
   /** Camera rotation, in degrees, that triggers a re-sort. */
   sortThresholdDegrees?: number
+  /**
+   * Builds the material from the geometry. Defaults to the WebGL
+   * {@link GaussianSplatMaterial}; pass `GaussianSplatNodeMaterial` for WebGPU.
+   */
+  createMaterial?: (geometry: GaussianSplatGeometry) => SplatMaterial
 }
 
 const scratchCameraLocal = new Vector3()
@@ -31,7 +53,7 @@ const scratchInverseMatrix = new Matrix4()
  */
 export class GaussianSplatMesh extends Mesh<
   GaussianSplatGeometry,
-  GaussianSplatMaterial
+  SplatMaterial
 > {
   readonly sorter: GaussianSplatSorter
   private readonly trigger: SortTrigger
@@ -39,7 +61,8 @@ export class GaussianSplatMesh extends Mesh<
 
   constructor(data: GaussianSplatData, options: GaussianSplatMeshOptions = {}) {
     const geometry = new GaussianSplatGeometry(data)
-    const material = new GaussianSplatMaterial(geometry)
+    const material = (options.createMaterial ??
+      (geometry => new GaussianSplatMaterial(geometry)))(geometry)
     super(geometry, material)
 
     // Culling is handled per-splat in the vertex shader; the whole cloud is
@@ -56,7 +79,7 @@ export class GaussianSplatMesh extends Mesh<
    * Re-sorts the splats back-to-front if the camera has moved enough, and
    * refreshes the projection-dependent material uniforms.
    */
-  update(renderer: WebGLRenderer, camera: Camera): void {
+  update(renderer: SplatMaterialRenderer, camera: Camera): void {
     this.material.update(renderer, camera)
 
     // Transform the camera into the mesh's local space so the sort matches the

@@ -11,6 +11,12 @@ export {
   SortTrigger
 } from '../GaussianSplatSorter'
 export type { GaussianSplatSorter } from '../GaussianSplatSorter'
+export { GaussianSplatGeometry } from '../GaussianSplatGeometry'
+export { GaussianSplatMesh } from '../GaussianSplatMesh'
+export type {
+  GaussianSplatMeshOptions,
+  SplatMaterial
+} from '../GaussianSplatMesh'
 export { GaussianSplatsPlugin } from '../GaussianSplatsPlugin'
 export type { GaussianSplatsPluginOptions } from '../GaussianSplatsPlugin'
 export {
@@ -20,8 +26,7 @@ export {
 } from '../KhrGaussianSplattingExtension'
 export { PLYSplatLoader, parsePLYSplat } from '../PLYSplatLoader'
 
-// NOTE: The WebGPU TSL node material (GaussianSplatNode) is not yet implemented.
-// It requires the EWA projection to run in a TSL `vertexNode`/`positionNode`,
-// which must be prototyped and verified in a real WebGPU context before being
-// shipped (see docs/splats-design-spec.md, "Open Questions and Risks" #1). The
-// WebGL `GaussianSplatMaterial` from the main entry point is the working path.
+// WebGPU/TSL render path: the EWA projection runs in a full TSL `vertexNode`
+// (see docs/splats-design-spec.md §11.1). Pass it to `GaussianSplatMesh` via the
+// `createMaterial` option to render splats under the Three.js WebGPU renderer.
+export { GaussianSplatNodeMaterial } from './GaussianSplatNodeMaterial'
