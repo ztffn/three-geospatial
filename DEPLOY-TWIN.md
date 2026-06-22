@@ -21,14 +21,22 @@ export TWIN_ION_TOKEN=$(curl -s https://twin.humatopia.ai/$(curl -s https://twin
   | grep -o 'assets/index-[^"]*\.js' | head -1) \
   | grep -oE 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' | sort -u | head -1)
 export TWIN_GMAPS_KEY=$(grep '^STORYBOOK_GOOGLE_MAP_API_KEY=' .env | cut -d= -f2)
+# Optional — live shadow-fleet AIS layer. Omit and markers stay empty (no error);
+# WITHOUT these the proxy 503s "BarentsWatch credentials missing". RUNTIME creds
+# (not build-args): the script writes them into the container's .env on the VPS.
+export BARENTSWATCH_CLIENT_ID=$(grep '^BARENTSWATCH_CLIENT_ID=' .env | cut -d= -f2-)
+export BARENTSWATCH_CLIENT_SECRET=$(grep '^BARENTSWATCH_CLIENT_SECRET=' .env | cut -d= -f2-)
 # 3.
 ssh-add ~/.ssh/huma-ovh-vps && pnpm deploy:twin
 ```
 
 The script (`ops/deploy-twin.sh`) does: archive HEAD → ssh to the VPS → buildx
 `--load` (LOCAL image — the VPS has GHCR **pull-only**; `--push` fails) →
-compose recreate → `/health` poll → **pins the sha in `/opt/huma-twin/.env`**
-(reboot-safe). Build takes 5–10 min (8 GB RAM + swap; pnpm install dominates).
+compose recreate → `/health` poll. It **syncs `docker-compose.twin.yml` from the
+shipped archive** and **writes `/opt/huma-twin/.env` whole each deploy** — the sha
+pin **plus** the BarentsWatch creds (chmod 600) — so the VPS compose can't drift,
+reboots keep the image, AND the live AIS layer survives every deploy. Build takes
+5–10 min (8 GB RAM + swap; pnpm install dominates).
 
 ## Host facts
 
@@ -64,6 +72,19 @@ bundle — terrain comes via Ion asset 2275207 — but the script guard requires
    run the deploy in ONE command.
 5. Cloudflare caps asset `cache-control` at its zone Browser-TTL (4 h) —
    harmless; hashed filenames make staleness impossible.
+6. **AIS layer 503 "credentials missing" = runtime creds not shipped.** The live
+   shadow-fleet layer needs `BARENTSWATCH_CLIENT_ID`/`_SECRET` (real OAuth
+   secrets, unlike the public browser tokens) in the operator's repo `.env`.
+   These are RUNTIME env, not build-args — the deploy exports them (step 2) and
+   writes them into `/opt/huma-twin/.env` (chmod 600). If AIS 503s, your local
+   `.env` lacks them. Empty markers are the designed graceful state — never
+   fabricated. Two bugs caused this (both fixed 2026-06-16): the old deploy
+   pinned only `TWIN_IMAGE` (clobbering the creds), AND it never synced
+   `/opt/huma-twin/docker-compose.twin.yml`, so the VPS copy drifted to a version
+   missing the `BARENTSWATCH_*` env entries — the container was never told to
+   read them, no matter what `.env` held. Tell-tale: `TWIN_IMAGE` interpolates
+   but `docker compose config` shows the creds empty. The deploy now re-syncs the
+   compose file from the archive every run.
 
 ## Verify (after every deploy)
 

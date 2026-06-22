@@ -35,7 +35,7 @@ if (typeof window !== 'undefined') {
     clearTimeout(id)) as typeof window.cancelIdleCallback
 }
 
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import { Leva } from 'leva'
 import {
   useCallback,
@@ -270,6 +270,45 @@ const ReadinessProbe: FC<{
   return null
 }
 
+// Forces the renderer to the true window size after first layout and on every
+// resize / fullscreen transition. R3F's own ResizeObserver can latch a stale
+// size when the canvas mounts small and the window goes fullscreen late (the
+// Electron wrapper) — leaving the backbuffer + depth attachment at the 300x150
+// canvas default while the color attachment is retina-fullscreen, which trips
+// the WebGPU "depthBuffer size does not match color attachment" validation and
+// blacks out the scene. The canvas is position:fixed inset:0, so window.inner*
+// IS the canvas size; re-applying setSize/setDpr on the events that matter
+// (rAF after mount, window 'resize' — Electron OS-fullscreen fires this, not
+// document 'fullscreenchange' — and 'fullscreenchange' for the browser path)
+// repairs the whole size pipeline: backbuffer (gl.setSize), the pass node
+// (renderer.getSize), and size-keyed depth targets (useThree().size).
+const ResizeSync: FC = () => {
+  const setSize = useThree(state => state.setSize)
+  const setDpr = useThree(state => state.setDpr)
+  useEffect(() => {
+    const apply = (): void => {
+      // Match R3F's own default clamp ([1, 2]) — never uncap DPR, or DPR-3
+      // displays would render at 2.25x the pixels (perf regression).
+      setDpr([1, 2])
+      setSize(window.innerWidth, window.innerHeight)
+      // TEMP diagnostic — remove once the Electron fullscreen resize is verified.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[resize-sync] ${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio}`
+      )
+    }
+    const raf = requestAnimationFrame(apply)
+    window.addEventListener('resize', apply)
+    document.addEventListener('fullscreenchange', apply)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', apply)
+      document.removeEventListener('fullscreenchange', apply)
+    }
+  }, [setSize, setDpr])
+  return null
+}
+
 const App: FC = () => {
   const [refs, setRefs] = useState<ContentReadinessRefs | null>(null)
   const [phase, setPhase] = useState<Phase>('atmosphere')
@@ -328,17 +367,23 @@ const App: FC = () => {
     distance?: number
     headingDeg?: number
     pitchDeg?: number
+    // Turbine facing (deg) the heading was framed at — set on nacelle/rotor
+    // close-ups so Content circles the camera with the live-yawed model.
+    headingRefYaw?: number
     // Gentle recenter: ease the orbit centre over at the CURRENT distance with
     // no great-circle pull-out arc (for clicking a globe marker, where you're
     // already pulled back and just want the centre to slew to it).
     gentle?: boolean
+    // Monotonic fly id (see flyNonceRef): the rig re-flies whenever this changes,
+    // so a click always re-frames even when target/aim are unchanged.
+    nonce?: number
   } | null>(null)
 
   // Scenario selection (ScenarioPanel, bottom-right). The scene loads at
   // Karmøy with the farm up, so that scenario starts active.
   const [activeScenario, setActiveScenario] = useState<string | null>('karmoy')
   const [activeViewpoint, setActiveViewpoint] = useState<string | null>(
-    'turbine'
+    'overview'
   )
 
   // Camera mode (orbit / first-person) + the FPS spawn pose. The nonce forces
@@ -349,6 +394,12 @@ const App: FC = () => {
     | null
   >(null)
   const spawnNonceRef = useRef(0)
+  // Monotonic fly id. A viewpoint CLICK is the fly trigger, not an incidental
+  // change in target/aim: two close-ups can share an aim (Hregg / Hregg Close)
+  // and differ only in distance/heading, and re-selecting a viewpoint after the
+  // wind (hence the yaw-relative heading) changed must re-frame. Bumping this on
+  // every fly command makes the rig re-fly on intent rather than coordinate diff.
+  const flyNonceRef = useRef(0)
 
   const respawnAt = useCallback((scenario: Scenario, viewpoint: Viewpoint) => {
     const spawn = spawnFor(scenario, viewpoint)
@@ -402,7 +453,9 @@ const App: FC = () => {
         // zoom slider, so there's no pre-fly snap.
         distance: viewpoint.distance,
         headingDeg: viewpoint.headingDeg,
-        pitchDeg: viewpoint.pitchDeg
+        pitchDeg: viewpoint.pitchDeg,
+        headingRefYaw: viewpoint.headingRefYaw,
+        nonce: ++flyNonceRef.current
       })
       setTurbineCount(scenario.turbines ?? 0)
       setActiveScenario(scenario.id)
@@ -541,7 +594,8 @@ const App: FC = () => {
         distance: VESSEL_FOCUS_DISTANCE,
         headingDeg: VESSEL_FOCUS_HEADING,
         pitchDeg: VESSEL_FOCUS_PITCH,
-        gentle: true
+        gentle: true,
+        nonce: ++flyNonceRef.current
       })
     },
     [shadowFleet, patrol]
@@ -646,6 +700,10 @@ const App: FC = () => {
       <Canvas
         camera={{ fov: 45, near: 0.1, far: 1e8 }}
         style={{ position: 'fixed', inset: 0, background: '#101820' }}
+        // Apply resize immediately (no debounce) so the renderer tracks late
+        // fullscreen transitions without a stale-size window; ResizeSync below
+        // is the belt to this suspenders.
+        resize={{ debounce: 0 }}
         gl={async props => {
           const renderer = new WebGPURenderer({
             ...(props as any),
@@ -700,6 +758,7 @@ const App: FC = () => {
           onAtmosphereReady={handleAtmosphereReady}
           onOceanReady={handleOceanReady}
         />
+        <ResizeSync />
       </Canvas>
       <BrandMark />
       <DigitalTwinUI
@@ -715,6 +774,9 @@ const App: FC = () => {
         selected={selected}
         onScrub={setScrubbed}
         ais={SCENARIOS.find(s => s.id === activeScenario)?.ais ?? null}
+        bunkering={
+          SCENARIOS.find(s => s.id === activeScenario)?.bunkering ?? null
+        }
         selectedVessel={selectedVessel}
         onCloseVessel={() => setSelectedId(null)}
         installControls={
@@ -779,7 +841,7 @@ const App: FC = () => {
       {/* Debug controls: kept, but collapsed by default and out of the way
           (top-right; the conditions HUD stacks below it). */}
       <Leva collapsed />
-      <Splash visible={phase !== 'ready'} />
+      <Splash visible={phase !== 'ready'} phase={phase} />
     </>
   )
 }
@@ -856,10 +918,17 @@ const BrandMark: FC = () => (
 )
 
 // Minimal cover: full-bleed dark backdrop matching the canvas clear color, a
-// small spinner, and a single line of status. Fades out (500 ms) once the
-// loader reports ready. No spinning while ready — display:none after the
-// fade so the spinner doesn't burn cycles in the background.
-const Splash: FC<{ visible: boolean }> = ({ visible }) => {
+// small spinner, and one muted monospace status line that mirrors the console
+// milestones (what the loader is doing this phase). Fades out (500 ms) once the
+// loader reports ready. No spinning while ready — display:none after the fade
+// so the spinner doesn't burn cycles in the background.
+const PHASE_STATUS: Record<Phase, string> = {
+  atmosphere: 'Precomputing atmosphere…',
+  ocean: 'Building ocean…',
+  ready: 'Ready'
+}
+
+const Splash: FC<{ visible: boolean; phase: Phase }> = ({ visible, phase }) => {
   const [mounted, setMounted] = useState(true)
   useEffect(() => {
     if (visible) return
@@ -874,8 +943,10 @@ const Splash: FC<{ visible: boolean }> = ({ visible }) => {
         inset: 0,
         background: '#101820',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
+        gap: 14,
         opacity: visible ? 1 : 0,
         transition: 'opacity 500ms ease-out',
         pointerEvents: visible ? 'auto' : 'none',
@@ -892,6 +963,17 @@ const Splash: FC<{ visible: boolean }> = ({ visible }) => {
           animation: 'gwp-spin 0.9s linear infinite'
         }}
       />
+      <div
+        style={{
+          fontFamily:
+            "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+          fontSize: 11,
+          letterSpacing: '0.08em',
+          color: 'rgba(207, 216, 227, 0.55)'
+        }}
+      >
+        {PHASE_STATUS[phase]}
+      </div>
       <style>{`@keyframes gwp-spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )

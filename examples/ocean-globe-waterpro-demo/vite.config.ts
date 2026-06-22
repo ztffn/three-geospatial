@@ -62,17 +62,28 @@ const staticAssets: Array<{ from: string; to: string }> = [
   },
   // Service vessels (ShipModel.tsx SHIP_DEFS) — buoyancy + hull occluders.
   {
-    from: path.join(storybookAssets, 'ship-demo-compressed.glb'),
-    to: 'public/ship-demo-compressed.glb'
+    from: path.join(storybookAssets, 'ship_large_compressed.glb'),
+    to: 'public/ship_large_compressed.glb'
   },
   {
-    from: path.join(storybookAssets, 'ship-demo-small-compressed.glb'),
-    to: 'public/ship-demo-small-compressed.glb'
+    from: path.join(storybookAssets, 'ship_supply_compressed.glb'),
+    to: 'public/ship_supply_compressed.glb'
+  },
+  // Platform service vessel (SHIP_DEFS 'Platform ship') — GLB-authored occluder.
+  {
+    from: path.join(storybookAssets, 'Ship_G2W_001_compressed.glb'),
+    to: 'public/Ship_G2W_001_compressed.glb'
+  },
+  // Floating wax-block raft (WaxCubes in ShipModel.tsx) beside the patrol supply
+  // ship — a single ~4-unit cube reused as buoyant cargo at scale 0.35.
+  {
+    from: path.join(storybookAssets, 'waxcube-single-compressed.glb'),
+    to: 'public/waxcube-single-compressed.glb'
   },
   // Patrol ship (Bodø scenario) + offshore platform (Norwegian Sea scenario).
   {
-    from: path.join(storybookAssets, 'patrolship-compressed.glb'),
-    to: 'public/patrolship-compressed.glb'
+    from: path.join(storybookAssets, 'patrolship_compressed.glb'),
+    to: 'public/patrolship_compressed.glb'
   },
   {
     from: path.join(storybookAssets, 'deepwater_platform_compressed.glb'),
@@ -84,6 +95,25 @@ const staticAssets: Array<{ from: string; to: string }> = [
     from: path.join(storybookAssets, 'hregg_pivot.glb'),
     to: 'public/hregg_pivot.glb'
   },
+  // Waste-handling facility (waste-handling scenario; static land model on/near
+  // Karmøy island).
+  {
+    from: path.join(storybookAssets, 'site_compressed_new.glb'),
+    to: 'public/site_compressed_new.glb'
+  },
+  // Underwater fish schools (TwinFishSchool.tsx) — 7-column albedo atlas + its
+  // OpenGL tangent-space normal map (same canvas/framing), one pair per school
+  // size. Served at /public/fish/* (dev via sirv, build via copy).
+  ...['smallfish', 'largefish'].flatMap(name => [
+    {
+      from: path.join(storybookAssets, `fish/${name}-atlas-7.png`),
+      to: `public/fish/${name}-atlas-7.png`
+    },
+    {
+      from: path.join(storybookAssets, `fish/${name}-atlas-7-nrm.png`),
+      to: `public/fish/${name}-atlas-7-nrm.png`
+    }
+  ]),
   // Huma brand mark (top-left overlay in main.tsx): favicon + HumaDisplay
   // wordmark font. Served at /public/brand/* (dev via sirv, build via copy).
   {

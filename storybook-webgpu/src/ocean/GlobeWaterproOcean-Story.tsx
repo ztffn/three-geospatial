@@ -116,9 +116,11 @@ import {
   SHIP_DEFS,
   ShipModel,
   useShip,
+  WaxCubes,
   type ShipMotionControls,
 } from './ShipModel'
 import { InstallationRig } from './InstallationRig'
+import { TwinFishSchools } from './TwinFishSchool'
 import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
 import { CABLE_BAKE } from './cable-bake'
 import { CloudLayer } from './CloudLayer'
@@ -199,6 +201,9 @@ export const locationPresets = {
   // Offshore wind installation site for the rig (turbine-install scenario).
   // PROVISIONAL placeholder in the Utsira Nord zone, W of Karmøy — set per site.
   'Utsira Nord': { longitude: 4.55, latitude: 59.3, height: 20 },
+  // Waste-handling site on/near Karmøy island (site_compressed_new.glb). Captured
+  // ~where the camera was; height/placement tuned in-scene via the leva folder.
+  'Waste Handling': { longitude: 5.300927, latitude: 59.402448, height: 20 },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -482,6 +487,11 @@ const CameraRig: FC<{
   // Gentle recenter: keep the CURRENT distance (no zoom change) and skip the
   // great-circle pull-out bump — a smooth pan of the orbit centre.
   gentleRecenter?: boolean
+  // Monotonic fly id: a CHANGE triggers a fly regardless of target/aim, so a
+  // viewpoint click always re-frames (two close-ups can share an aim and differ
+  // only in distance/heading; re-selecting after a yaw/heading change must
+  // re-fly). The fly then reads the live distance/heading/pitch as usual.
+  flyNonce?: number
   // Reports the camera's live distance to the orbit target when at rest
   // (including after a mouse-wheel zoom), so a host slider can track it.
   // Suppressed mid-fly and mid-slider-ease to avoid fighting those commands.
@@ -496,6 +506,7 @@ const CameraRig: FC<{
   pitchDeg,
   landExact = false,
   gentleRecenter = false,
+  flyNonce,
   onDistance
 }) => {
   const camera = useThree(({ camera }) => camera)
@@ -522,6 +533,7 @@ const CameraRig: FC<{
   const easeLambda = useRef(SLIDER_ZOOM_LAMBDA)
   const lastTarget = useRef<Vector3 | null>(null)
   const lastAim = useRef<Vector3 | null>(null)
+  const lastNonce = useRef<number | undefined>(undefined)
   const tmpAim = useRef(new Vector3())
   const lastEmitted = useRef(-1)
 
@@ -591,9 +603,13 @@ const CameraRig: FC<{
     const aimChanged =
       (lastAim.current == null) !== (aim == null) ||
       (lastAim.current != null && aim != null && !lastAim.current.equals(aim))
+    // A new fly id (a viewpoint click) re-flies even when target AND aim are
+    // unchanged — two close-ups can share an aim and differ only in distance/
+    // heading, and re-selecting after a wind/heading change must re-frame.
+    const nonceChanged = flyNonce != null && flyNonce !== lastNonce.current
     if (lastTarget.current == null) {
       place(startAim, dist)
-    } else if (!lastTarget.current.equals(target) || aimChanged) {
+    } else if (!lastTarget.current.equals(target) || aimChanged || nonceChanged) {
       const fromAim = controls?.target?.clone() ?? lastTarget.current.clone()
       const fromDist =
         controls?.target != null
@@ -613,6 +629,20 @@ const CameraRig: FC<{
       // out arc (gentle still zeroes the bump below). No flyDistance → hold the
       // current distance. The slider channel is untouched, so no ease races this.
       const toDist = flyDistance ?? fromDist
+      // The mid-fly pull-out arc (bump) is a globe-scale dolly-out so the camera
+      // climbs over the cloud layer and back down on a LOCATION jump, instead of
+      // skimming the surface (clipping terrain/sea, driving OrbitControls into a
+      // near-radial pole — "spazzing out underwater") across hundreds of km.
+      //
+      // It must fire on ANY location jump, including ones that also carry an aim
+      // (e.g. RV North Star: a far-site preset with an aimOffsetENU). The gate is
+      // location-change, NOT aim-presence: keying off `aim != null` wrongly killed
+      // the arc for those far aim-flies. It must still NOT fire on a same-site aim
+      // hop (scenario sub-viewpoint, location unchanged): there `sep` is measured
+      // to the location target — not the aim — so even a tiny aim nudge produced a
+      // hundreds-of-metres out-and-back, very visible at the metre-scale close-ups
+      // (Nacelle/Hregg). Those ease straight to the framing.
+      const locationChanged = !lastTarget.current.equals(target)
       fly.current = {
         t: 0,
         dur: 1.6 + (sep / Math.PI) * 1.8,
@@ -620,13 +650,17 @@ const CameraRig: FC<{
         toAim: startAim,
         fromDist,
         toDist,
-        bump: gentleRecenter ? 0 : (sep / Math.PI) * 1.2e7 // ~globe scale for antipodal
+        bump:
+          gentleRecenter || (aim != null && !locationChanged)
+            ? 0
+            : (sep / Math.PI) * 1.2e7 // ~globe scale for antipodal
       }
     }
     lastTarget.current = target.clone()
     lastAim.current = aim?.clone() ?? null
+    lastNonce.current = flyNonce
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, aim, controls])
+  }, [target, aim, controls, flyNonce])
 
   useFrame((_, dt) => {
     if (controls?.target == null) return
@@ -2063,9 +2097,18 @@ export const Content: FC<{
     distance?: number
     headingDeg?: number
     pitchDeg?: number
+    // Turbine facing (deg) headingDeg was framed at. Set on close-ups that frame
+    // the yawing nacelle/rotor: the camera heading gets the live-yaw delta added
+    // (see flyHeadingDeg) so it circles WITH the model instead of the framed part
+    // rotating away under a fixed compass heading. Omitted → absolute world heading.
+    headingRefYaw?: number
     // Gentle recenter: ease the orbit centre at the CURRENT distance, no
     // great-circle pull-out arc (clicking a globe marker — already pulled back).
     gentle?: boolean
+    // Monotonic fly id from the host: the rig re-flies whenever this changes, so
+    // a viewpoint click re-frames even when target/aim are identical (e.g. two
+    // close-ups sharing an aim, or re-selecting after the wind/heading changed).
+    nonce?: number
   } | null
   // 'orbit' (default): OrbitControls + CameraRig fly-tos. 'fps': free-fly
   // first-person rig (WASD + drag look); OrbitControls and the rig are
@@ -2705,6 +2748,21 @@ export const Content: FC<{
     cover: { value: true, label: 'Hero: cover' },
   })
 
+  // Effective fly heading. For close-ups anchored to the yawing turbine
+  // (flyTo.headingRefYaw set — the turbine facing the shot was framed at), add
+  // the live-yaw delta so the camera circles WITH the model: at the reference
+  // wind the delta is 0 (identical to the captured framing); any other wind
+  // rotates the camera by the same amount the nacelle/rotor turned, keeping the
+  // same part framed. liveYaw mirrors TurbineFarm's yaw (wind-from + rotor
+  // offset). Viewpoints without headingRefYaw pass through as world headings.
+  const flyHeadingDeg = useMemo(() => {
+    const h = flyTo?.headingDeg
+    if (h == null || flyTo?.headingRefYaw == null) return h
+    const liveYaw =
+      (windHeading ?? turbineControls.windDir) + turbineControls.yawOffset
+    return h + (liveYaw - flyTo.headingRefYaw)
+  }, [flyTo, windHeading, turbineControls.windDir, turbineControls.yawOffset])
+
   useEffect(() => {
     onTurbineCountChange?.(turbineControls.count)
   }, [onTurbineCountChange, turbineControls.count])
@@ -2735,10 +2793,20 @@ export const Content: FC<{
     locationPresets['Utsira Nord'].latitude,
     locationPresets['Utsira Nord'].height
   )
+  // Waste-handling facility on/near Karmøy island (waste-handling scenario;
+  // static land structure — placement tuned in the 'Waste site' leva folder).
+  const wasteAnchor = useTargetECEF(
+    locationPresets['Waste Handling'].longitude,
+    locationPresets['Waste Handling'].latitude,
+    locationPresets['Waste Handling'].height
+  )
   const ship0 = useShip(SHIP_DEFS[0], shipAnchor, orbitControlsRef)
   const ship1 = useShip(SHIP_DEFS[1], shipAnchor, orbitControlsRef)
   const ship2 = useShip(SHIP_DEFS[2], patrolAnchor, orbitControlsRef)
   const ship3 = useShip(SHIP_DEFS[3], platformAnchor, orbitControlsRef)
+  const ship4 = useShip(SHIP_DEFS[4], wasteAnchor, orbitControlsRef)
+  const ship5 = useShip(SHIP_DEFS[5], platformAnchor, orbitControlsRef)
+  const ship6 = useShip(SHIP_DEFS[6], patrolAnchor, orbitControlsRef)
   // platformId keys the FPS deck-spawn/ride registry; buoyant=false pins the
   // structure to its rest pose (platforms don't heave).
   const ships: Array<{
@@ -2779,6 +2847,27 @@ export const Content: FC<{
       platformId: 'platform',
       buoyant: false,
       waterOcclusion: false
+    },
+    {
+      url: SHIP_DEFS[4].url,
+      controls: ship4.controls,
+      anchor: wasteAnchor,
+      buoyant: false,
+      waterOcclusion: false
+    },
+    {
+      url: SHIP_DEFS[5].url,
+      controls: ship5.controls,
+      anchor: platformAnchor,
+      buoyant: true,
+      waterOcclusion: true
+    },
+    {
+      url: SHIP_DEFS[6].url,
+      controls: ship6.controls,
+      anchor: patrolAnchor,
+      buoyant: true,
+      waterOcclusion: true
     },
   ]
 
@@ -3825,10 +3914,11 @@ export const Content: FC<{
           aim={flyAim}
           zoomDistance={zoomDistance}
           flyDistance={flyTo?.distance}
-          headingDeg={flyTo?.headingDeg}
+          headingDeg={flyHeadingDeg}
           pitchDeg={flyTo?.pitchDeg}
           landExact={flyTo?.height != null}
           gentleRecenter={flyTo?.gentle === true}
+          flyNonce={flyTo?.nonce}
           onDistance={onZoomChange}
         />
       )}
@@ -3901,10 +3991,10 @@ export const Content: FC<{
           compute) and isolated in its own Suspense so loading can't blank the
           rest of the scene. */}
       {ships.map(
-        ({ url, controls, anchor, platformId, buoyant, waterOcclusion }) =>
+        ({ url, controls, anchor, platformId, buoyant, waterOcclusion }, i) =>
           controls.visible &&
           !disableOcean && (
-            <Suspense key={url} fallback={null}>
+            <Suspense key={i} fallback={null}>
               <ShipModel
                 url={url}
                 anchor={anchor}
@@ -3931,6 +4021,21 @@ export const Content: FC<{
             </Suspense>
           )
       )}
+      {/* Floating wax-block raft beside the patrol supply ship (Bodø scenario).
+          One 'Wax cubes' leva folder positions/scales the whole cluster; each
+          cube bobs independently via the shared ShipModel buoyancy rig. */}
+      {!disableOcean && (
+        <Suspense fallback={null}>
+          <WaxCubes
+            anchor={patrolAnchor}
+            oceanMatrixInverse={oceanMatrixInverse}
+            vu={vertexUniforms}
+            gerstnerAmplitude={oceanUniforms?.gerstnerAmplitude ?? null}
+            motion={shipMotionControls}
+            orbitControlsRef={orbitControlsRef}
+          />
+        </Suspense>
+      )}
       {/* Installation rig (turbine-install scenario), anchored offshore at the
           Utsira Nord preset, nudged half a tile off the ocean grid origin so it
           sits inside one water cell (not on the 4-cell seam). Behind the ocean
@@ -3953,6 +4058,21 @@ export const Content: FC<{
           />
         </Suspense>
       )}
+      {/* Drop-in fish: one underwater school per scenario site. The component
+          owns the "Fish" leva folder and the per-site placement. Karmøy
+          (shipAnchor) is shallow, so it gets a per-site maxDepth cap that keeps
+          its school in the water column instead of the seabed. */}
+      <TwinFishSchools
+        sites={[
+          { anchor: shipAnchor, maxDepth: 12 },
+          { anchor: patrolAnchor },
+          { anchor: platformAnchor },
+          { anchor: rigAnchor }
+        ]}
+        seaLevelOffset={oceanFrameControls.seaLevelOffset}
+        seabedDepth={cableControls.seabedDepth}
+        ready={!disableOcean}
+      />
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}

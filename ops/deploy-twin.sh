@@ -19,6 +19,15 @@ REF="${1:-HEAD}"
 : "${TWIN_ION_TOKEN:?set TWIN_ION_TOKEN to the Cesium Ion token restricted to twin.humatopia.ai/*}"
 : "${TWIN_GMAPS_KEY:?set TWIN_GMAPS_KEY to the Google Maps key restricted to twin.humatopia.ai/*}"
 
+# Optional BarentsWatch AIS client credentials for the live shadow-fleet layer.
+# Absent → the AIS proxy 503s "credentials missing" and markers stay empty
+# (graceful, never fabricated). Export them from the repo .env like the tokens.
+# Unlike the browser tokens these are NOT build-args — the server reads
+# process.env at request time, so they are shipped to the container RUNTIME env
+# (the .env beside docker-compose.twin.yml on the VPS), not baked into the bundle.
+BARENTSWATCH_CLIENT_ID="${BARENTSWATCH_CLIENT_ID:-}"
+BARENTSWATCH_CLIENT_SECRET="${BARENTSWATCH_CLIENT_SECRET:-}"
+
 SHORT_SHA="$(git rev-parse --short "$REF")"
 DATE_STR="$(date -u +%Y%m%d)"
 TAGS=(
@@ -45,21 +54,35 @@ docker buildx build --builder huma-builder --platform linux/amd64 --load \
   -f Dockerfile ${TAG_FLAGS} .
 EOF
 
-echo "→ pulling + recreating huma-twin"
+echo "→ writing runtime env (image pin + AIS creds) and recreating huma-twin"
+# The container reads its runtime config from ${COMPOSE_DIR}/.env (docker compose
+# variable substitution). Write it WHOLE each deploy — the image pin plus the
+# optional BarentsWatch creds — so the recreate AND any future bare compose-up /
+# reboot use the same config; this is what makes the live AIS layer survive
+# deploys (the old pin wrote only TWIN_IMAGE and clobbered the creds). The inner
+# heredoc is quoted ('ENVEOF') so secret bytes are written literally with no
+# shell re-parsing; values are interpolated into the SSH stream (never command
+# args), and the file is chmod 600.
 ssh "${SSH_USER}@${SSH_HOST}" sudo bash <<EOF
 set -euo pipefail
+# Sync the compose file from the shipped archive so the VPS copy can't drift from
+# the repo. A stale copy (missing the BARENTSWATCH env entries) silently dropped
+# the live AIS layer regardless of .env — the deploy never re-synced it before.
+cp ${BUILD_DIR}/ops/docker-compose.twin.yml ${COMPOSE_DIR}/docker-compose.twin.yml
 cd ${COMPOSE_DIR}
-TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA} docker compose -f docker-compose.twin.yml up -d --force-recreate
+cat > .env <<'ENVEOF'
+TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA}
+BARENTSWATCH_CLIENT_ID=${BARENTSWATCH_CLIENT_ID}
+BARENTSWATCH_CLIENT_SECRET=${BARENTSWATCH_CLIENT_SECRET}
+ENVEOF
+chmod 600 .env
+docker compose -f docker-compose.twin.yml up -d --force-recreate
 EOF
 
 echo "→ waiting for health on :${HEALTH_PORT}"
 for i in $(seq 1 20); do
   if ssh "${SSH_USER}@${SSH_HOST}" curl -sf "http://127.0.0.1:${HEALTH_PORT}/health" >/dev/null; then
-    # Pin the deployed image so VPS reboots / bare compose-up runs keep it
-    # (shell env beats .env, so the next deploy's TWIN_IMAGE still wins).
-    ssh "${SSH_USER}@${SSH_HOST}" \
-      "echo TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA} | sudo tee ${COMPOSE_DIR}/.env >/dev/null"
-    echo "✓ deployed ${IMAGE_BASE}:sha-${SHORT_SHA} — healthy + pinned in ${COMPOSE_DIR}/.env"
+    echo "✓ deployed ${IMAGE_BASE}:sha-${SHORT_SHA} — healthy; runtime env pinned in ${COMPOSE_DIR}/.env"
     exit 0
   fi
   sleep 3
