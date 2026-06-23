@@ -74,13 +74,16 @@ export const SplatLayer: FC<{ target: Vector3 }> = ({ target }) => {
     let nodeMaterial!: GaussianSplatNodeMaterial
     const splatMesh = new GaussianSplatMesh(data, {
       createMaterial: geometry => {
-        // Twin renderer uses logarithmicDepthBuffer; match it so the splats
-        // depth-test correctly against the terrain/ocean/models. depthWrite so
-        // the aerial-perspective post-pass tints the splats as geometry instead
-        // of painting sky over them where sky is behind (same as CloudLayer).
+        // Dither-opaque mode: the splats render as opaque depth-writing geometry
+        // (stochastic discard ∝ alpha, resolved by the twin's TAA), so the scene
+        // pass occludes them against terrain/ocean/models and the deferred
+        // aerial-perspective pass tints them — no translucent silhouette (no
+        // black halo over the unrendered-sky clear color), no dedicated pass.
+        // logarithmicDepthBuffer matches the twin renderer so the per-splat
+        // depthNode emits log depth and depth-tests correctly at globe scale.
         nodeMaterial = new GaussianSplatNodeMaterial(geometry, {
           logarithmicDepthBuffer: true,
-          depthWrite: true
+          dither: true
         })
         return nodeMaterial
       }

@@ -48,7 +48,16 @@ import {
   type Group,
   type Object3D,
 } from 'three'
-import { convertToTexture, pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
+import {
+  convertToTexture,
+  mrt,
+  output,
+  pass,
+  toneMapping,
+  uniform,
+  uv,
+  vec4,
+} from 'three/tsl'
 import * as THREE from 'three/webgpu'
 import {
   MeshLambertNodeMaterial,
@@ -90,10 +99,12 @@ import {
   cameraNear,
   depthToViewZ,
   dithering,
+  highpVelocity,
   inverseProjectionMatrix,
   lensFlare,
   projectionMatrix,
   screenToPositionView,
+  temporalAntialias,
 } from '@takram/three-geospatial/webgpu'
 
 import {
@@ -3473,14 +3484,21 @@ export const Content: FC<{
       : globalTerrainAssetId
 
   // Post-processing chain — mirrors GlobeOceanProto.tsx:504-547.
-  // pass → colorNode.mul(0.55) → aerialPerspective → optional stars/sun/moon
-  // routed via skyNode → lensFlare → AgX tonemap → dithering.
+  // pass(+velocity MRT) → colorNode.mul(0.55) → aerialPerspective → optional
+  // stars/sun/moon routed via skyNode → lensFlare → AgX tonemap → TAA →
+  // dithering.
   const postProcessingData = useMemo(() => {
     context.camera = camera
 
-    const passNode = pass(scene, camera, { samples: 0 })
+    // MRT so the scene pass also emits per-object NDC velocity, which TAA needs
+    // to reproject history. `highpVelocity` derives velocity from each object's
+    // current/previous model-view matrices (camera fly-to + rotor/ship motion).
+    const passNode = pass(scene, camera, { samples: 0 }).setMRT(
+      mrt({ output, velocity: highpVelocity })
+    )
     const colorNode = passNode.getTextureNode('output')
     const depthNode = passNode.getTextureNode('depth')
+    const velocityNode = passNode.getTextureNode('velocity')
 
     const aerialNode = aerialPerspective(
       colorNode.mul(SCENE_RADIANCE_SCALE),
@@ -3538,12 +3556,22 @@ export const Content: FC<{
       uniform(atmosphereControls.exposure),
       lensFlareNode
     )
+    // Temporal antialiasing on the tone-mapped image. Also the prerequisite for
+    // the dither-opaque gaussian splats (SplatLayer): TAA averages their per-
+    // frame stochastic coverage back into smooth transparency. Same wiring as
+    // Ocean-Globe-Patch.tsx / Ocean-AerialPerspective.tsx.
+    const taaNode = temporalAntialias(highpVelocity)(
+      toneMappingNode,
+      depthNode,
+      velocityNode,
+      camera
+    )
     const overlayPassNode = pass(overlayScene, camera, {
       samples: 0,
       depthBuffer: false,
     })
 
-    const composite = toneMappingNode
+    const composite = taaNode
       .add(dithering)
       .mul(overlayPassNode.a.oneMinus())
       .add(overlayPassNode)
