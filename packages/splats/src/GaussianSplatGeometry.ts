@@ -28,6 +28,14 @@ const TEXTURE_WIDTH = 2048
 // Quad corners in standard-deviation units. The fragment shader discards beyond
 // ~2 sigma, so a half-extent of 2 fully covers each Gaussian's support.
 const QUAD_OFFSETS = new Float32Array([-2, -2, 2, -2, 2, 2, -2, 2])
+// Same corners as a vec3 `position` attribute. The WebGPU node material fully
+// overrides the clip position in its `vertexNode`, but `MeshBasicNodeMaterial`'s
+// default depth/MRT nodes still reference the built-in `position` attribute, so
+// the geometry must provide one or the node builder throws ("attribute position
+// not found"). Unused by the WebGL ShaderMaterial path.
+const QUAD_POSITIONS = new Float32Array([
+  -2, -2, 0, 2, -2, 0, 2, 2, 0, -2, 2, 0
+])
 const QUAD_INDICES = [0, 1, 2, 0, 2, 3]
 
 function quatToCovariance(
@@ -172,6 +180,11 @@ export class GaussianSplatGeometry extends InstancedBufferGeometry {
     const quadAttribute = new BufferAttribute(QUAD_OFFSETS, 2)
     quadAttribute.setUsage(StaticDrawUsage)
     this.setAttribute('quadOffset', quadAttribute)
+    // Placeholder `position` so node-material depth/MRT nodes resolve; the
+    // material's vertexNode supplies the real clip position.
+    const positionAttribute = new BufferAttribute(QUAD_POSITIONS, 3)
+    positionAttribute.setUsage(StaticDrawUsage)
+    this.setAttribute('position', positionAttribute)
     this.setIndex(QUAD_INDICES)
 
     // Per-instance ordering, rewritten each sort. Stored as float to match the

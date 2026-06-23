@@ -15,6 +15,8 @@ import {
 } from 'three'
 import {
   attribute,
+  cameraFar,
+  cameraNear,
   cameraProjectionMatrix,
   float,
   Fn,
@@ -28,7 +30,8 @@ import {
   varying,
   vec2,
   vec3,
-  vec4
+  vec4,
+  viewZToLogarithmicDepth
 } from 'three/tsl'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 
@@ -38,6 +41,27 @@ import type { GaussianSplatGeometry } from '../GaussianSplatGeometry'
 // `WebGLRenderer` and the WebGPU `Renderer`.
 interface RendererLike {
   getDrawingBufferSize: (target: Vector2) => Vector2
+}
+
+export interface GaussianSplatNodeMaterialOptions {
+  /**
+   * Emit logarithmic depth from the vertex stage so the splats depth-test
+   * correctly against a scene rendered with `renderer.logarithmicDepthBuffer`
+   * (e.g. the globe twin). Must match the renderer's setting. Default `false`.
+   */
+  logarithmicDepthBuffer?: boolean
+  /**
+   * Write depth so a deferred atmosphere / aerial-perspective post-pass treats
+   * splat pixels as scene geometry (tinting them) instead of painting sky over
+   * them where there is no opaque geometry behind. Default `false` (canonical
+   * splat compositing: sort-ordered, no depth write).
+   *
+   * NOTE: enabled WITHOUT `alphaTest` on purpose — an alpha-test `discard` on
+   * 50k heavily-overlapping splats defeats early-z and tanks the framerate. The
+   * cost is a faint depth fringe at quad corners (alpha ~0); acceptable, and far
+   * cheaper than per-fragment discard.
+   */
+  depthWrite?: boolean
 }
 
 const scratchSize = /*#__PURE__*/ new Vector2()
@@ -56,17 +80,31 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   private readonly focalX = uniform(1)
   private readonly focalY = uniform(1)
 
-  constructor(geometry: GaussianSplatGeometry) {
+  /**
+   * Linear scale applied to the resolved splat radiance. Lets a tone-mapped HDR
+   * scene (e.g. the twin's AgX pipeline) pull the splats into its exposure range
+   * instead of clipping to white. 1 = raw.
+   */
+  readonly intensity = uniform(1)
+
+  private readonly logarithmicDepthBuffer: boolean
+
+  constructor(
+    geometry: GaussianSplatGeometry,
+    options: GaussianSplatNodeMaterialOptions = {}
+  ) {
     super()
     this.type = 'GaussianSplatNodeMaterial'
+    this.logarithmicDepthBuffer = options.logarithmicDepthBuffer ?? false
 
     this.transparent = true
     this.depthTest = true
-    // Splats never write depth; mutual order comes from the sorter, and opaque
-    // geometry still occludes them via the shared depth buffer.
-    this.depthWrite = false
+    // Default off (sort establishes order). Twin opts in so the aerial-perspective
+    // post-pass treats splats as geometry — see the option doc.
+    this.depthWrite = options.depthWrite ?? false
     this.side = DoubleSide
-    // Splats carry their own resolved radiance; no scene tone mapping.
+    // Splats carry their own resolved radiance; no scene tone mapping at the
+    // material (the twin's post AgX pass still applies to the framebuffer).
     this.toneMapped = false
 
     // Pre-multiplied-alpha "over" blending, matching the WebGL material.
@@ -107,6 +145,7 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
 
     const viewport = vec2(this.viewportX, this.viewportY)
     const focal = vec2(this.focalX, this.focalY)
+    const useLogDepth = this.logarithmicDepthBuffer
 
     this.vertexNode = Fn(() => {
       const center = positionOpacity.xyz
@@ -166,7 +205,12 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
       const ndc = center2d
         .add(majorAxis.mul(quadOffset.x).div(viewport))
         .add(minorAxis.mul(quadOffset.y).div(viewport))
-      const position = vec4(ndc, clipCenter.z.div(clipCenter.w), 1)
+      // Depth must share the scene's buffer scale: logarithmic when the renderer
+      // uses a log depth buffer (globe twin), linear NDC otherwise (standalone).
+      const depthZ = useLogDepth
+        ? viewZToLogarithmicDepth(viewCenter.z, cameraNear, cameraFar)
+        : clipCenter.z.div(clipCenter.w)
+      const position = vec4(ndc, depthZ, 1)
 
       // Frustum cull by collapsing to a vertex outside the clip volume.
       const clip = clipCenter.w.mul(1.2)
@@ -178,11 +222,12 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     })()
 
     this.outputNode = Fn(() => {
-      // quadOffset is in standard-deviation units; discard beyond ~2σ.
+      // quadOffset is in standard-deviation units; fade out beyond ~2σ.
       const power = vQuad.dot(vQuad).negate()
       const alpha = power.exp().mul(vColor.a)
       const masked = power.lessThan(-4).select(float(0), alpha)
-      return vec4(vColor.rgb.mul(masked), masked)
+      // Premultiplied "over"; `intensity` scales radiance only, not coverage.
+      return vec4(vColor.rgb.mul(this.intensity).mul(masked), masked)
     })()
   }
 

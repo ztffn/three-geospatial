@@ -124,6 +124,7 @@ import { TwinFishSchools } from './TwinFishSchool'
 import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
 import { CABLE_BAKE } from './cable-bake'
 import { CloudLayer } from './CloudLayer'
+import { SplatLayer } from './SplatLayer'
 import {
   CLOUD_PRESETS,
   CLOUD_PRESET_NAMES,
@@ -4004,6 +4005,12 @@ export const Content: FC<{
           cables={cables}
         />
       )}
+      {/* Georeferenced gaussian-splat layer at the active site. Gated behind the
+          atmosphere stage (like the turbines/ocean/ships) so its build + WGSL
+          pipeline compile can't compete with the stage-1 LUT compute. Lives in
+          the same scene as the terrain, so pass(scene,camera) depth-composites
+          it against the 3D tiles. Leva 'Splats' folder toggles/tunes. */}
+      {!disableOcean && <SplatLayer target={target} />}
       {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
           download/parse doesn't compete with the stage-1 atmosphere-LUT
           compute) and isolated in its own Suspense so loading can't blank the
