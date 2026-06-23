@@ -2599,11 +2599,16 @@ export const Content: FC<{
     }
     const depthBelow = surfaceY - uwScratch.p.y
     // The planar depth test (height above the target's tangent plane) is only
-    // valid near the surface. Far out — e.g. planetary zoom — orbiting below
-    // that infinite plane reads as "deep underwater" and fades the post to
-    // black. Gate it by true altitude (generous vs any real diving view).
+    // valid NEAR the surface, so reject both extremes of altitude. High — e.g.
+    // planetary zoom — orbiting below that infinite plane reads as "deep
+    // underwater" and fades the post to black. Implausibly LOW is the load-time
+    // artifact: before the camera rig settles, a transient/default camera pose
+    // sits near earth-centre (camAltitude ≈ -6.4e6 m), which would also read as
+    // submerged and flash the underwater fade-to-black as the splash lifts.
+    // Real dives stay within a few tens of metres of the surface, so the ±500 m
+    // band never clips an intended underwater view.
     const camAltitude = camera.position.length() - target.length()
-    if (camAltitude > 500) {
+    if (camAltitude > 500 || camAltitude < -500) {
       uwScratch.submerged = false
     } else if (uwScratch.submerged) {
       if (depthBelow < 0.05) uwScratch.submerged = false
@@ -2913,7 +2918,13 @@ export const Content: FC<{
   // Auto-routed subsea inter-array cables — every turbine string runs to a hub
   // (Ship 1, the substation vessel). Baked once; see TurbineCables.
   const cableControls = useControls('Cables', {
-    enabled: { value: true },
+    // Disabled by default: the TurbineCables bake (terrain raycasts + Verlet
+    // solve) re-bakes on every terrain tile-load while coverage improves, and a
+    // committed snapshot only loads when its byte-exact signature matches the
+    // live scene — too brittle for the main path. Pending a refactor into a
+    // detachable scene-dressing plugin (see PERFORMANCE-FINDINGS.md). Flip on to
+    // author/inspect cables in the meantime.
+    enabled: { value: false },
     // Fallback floor only — where terrain raycasts have coverage, the
     // cables drape onto the sampled tile surface instead.
     seabedDepth: { value: 35, min: -100, max: 200, step: 1, label: 'Seabed depth (m)' },
@@ -3860,15 +3871,19 @@ export const Content: FC<{
   return (
     <>
       <atmosphereLight />
-      {cloudControls.enabled && (
+      {/* Gated behind the ocean stage: the volumetric cloud pipeline is one of
+          the heaviest first-frame WGSL compiles, and mounting it during the
+          atmosphere phase contends with the LUT precompute. */}
+      {!disableOcean && cloudControls.enabled && (
         <CloudLayer field={cloudField} altitude={cloudControls.altitude} />
       )}
       {/* Detachable precipitation plugin — remove this element to drop the whole
           rain/snow effect. Engine lives in storybook-webgpu/src/weather. */}
       {/* Mounted whenever enabled (not gated on rain intensity): there are always
           suspended particles underwater, even in clear weather. Above water with
-          no rain the visible budget collapses to ~nothing. */}
-      {precipControls.enabled && (
+          no rain the visible budget collapses to ~nothing. Behind the ocean
+          stage so its instanced-particle pipeline compile doesn't race the LUT. */}
+      {!disableOcean && precipControls.enabled && (
         <Precipitation
           scene={overlayScene}
           intensity={precipIntensity}
@@ -3961,31 +3976,34 @@ export const Content: FC<{
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth
           pre-pass for shoreline-foam gating.
-          Loaded eagerly: the compressed GLBs are small (~440 KB / ~3.8 MB,
-          Draco-decoded off-thread), so they're ready by reveal without starving
-          the atmosphere-LUT compute. NOTE: if you add a LARGE model here again,
-          re-gate it behind `{!disableOcean && (...)}` (as the ocean is) so its
-          download/parse doesn't compete with the stage-1 LUT pipeline — an
-          uncompressed 43 MB hero here once stalled that compute for ~80 s. */}
-      <TurbineFarm
-        target={target}
-        scale={turbineControls.scale}
-        heightOffset={turbineControls.heightOffset}
-        layoutHeadingDeg={turbineControls.windDir}
-        yawHeadingDeg={windHeading ?? turbineControls.windDir}
-        yawOffsetDeg={turbineControls.yawOffset}
-        spin={turbineControls.spin}
-        spinSpeed={turbineControls.spinSpeed}
-        count={farmCount ?? turbineControls.count}
-        crosswindSpacing={turbineControls.crosswindD * ROTOR_DIAMETER_M}
-        downwindSpacing={turbineControls.downwindD * ROTOR_DIAMETER_M}
-        stagger={turbineControls.stagger}
-        rotorRpm={turbineRpm}
-        wingsEnabled={wingsEnabled}
-        heroCover={heroCover ?? turbineControls.cover}
-        onHeroFocus={setHeroFocus}
-        cables={cables}
-      />
+          Gated behind the ocean stage: the GLBs are small (~440 KB / ~3.8 MB,
+          Draco-decoded off-thread), but their instanced PBR material pipelines
+          still compile on first draw and would race the stage-1 atmosphere-LUT
+          precompute. Mounting in the ocean phase keeps the atmosphere phase's
+          scene minimal so the LUT drains fast; the farm reports `heroFocus`
+          once mounted (the camera reframes onto it while the splash is still
+          up). An uncompressed 43 MB hero here once stalled the LUT for ~80 s. */}
+      {!disableOcean && (
+        <TurbineFarm
+          target={target}
+          scale={turbineControls.scale}
+          heightOffset={turbineControls.heightOffset}
+          layoutHeadingDeg={turbineControls.windDir}
+          yawHeadingDeg={windHeading ?? turbineControls.windDir}
+          yawOffsetDeg={turbineControls.yawOffset}
+          spin={turbineControls.spin}
+          spinSpeed={turbineControls.spinSpeed}
+          count={farmCount ?? turbineControls.count}
+          crosswindSpacing={turbineControls.crosswindD * ROTOR_DIAMETER_M}
+          downwindSpacing={turbineControls.downwindD * ROTOR_DIAMETER_M}
+          stagger={turbineControls.stagger}
+          rotorRpm={turbineRpm}
+          wingsEnabled={wingsEnabled}
+          heroCover={heroCover ?? turbineControls.cover}
+          onHeroFocus={setHeroFocus}
+          cables={cables}
+        />
+      )}
       {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
           download/parse doesn't compete with the stage-1 atmosphere-LUT
           compute) and isolated in its own Suspense so loading can't blank the
@@ -4073,6 +4091,15 @@ export const Content: FC<{
         seabedDepth={cableControls.seabedDepth}
         ready={!disableOcean}
       />
+      {/* NOT gated behind the ocean stage. The first terrain tile's
+          MeshLambertNodeMaterial entering the scene forces a one-time recompile
+          of the post `pass` pipeline; during that recompile the pass depth is
+          briefly invalid and the aerial-perspective draws no sky, blacking the
+          whole frame for ~1s. Mounting in the atmosphere phase puts that
+          recompile UNDER the splash (tiles still arrive ~1s after mount, well
+          before reveal, so the LUT precompute isn't starved). Do not re-gate
+          this behind `!disableOcean` without also pre-warming the tile material
+          or the post pipeline, or the fade-to-black returns at reveal. */}
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}

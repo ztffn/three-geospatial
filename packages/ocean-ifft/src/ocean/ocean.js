@@ -21,18 +21,27 @@ class OceanChunkManager extends entity.Component {
 
 		this.sun = new THREE.Vector3();
 
-		// three 0.183 webgpu build dropped WebGLCubeRenderTarget; CubeRenderTarget
-		// is the replacement. This target is a legacy artifact (layer-2 cube
-		// camera, nothing renders to it) but is constructed unconditionally in Init.
-		this.cubeRenderTarget = new THREE.CubeRenderTarget( 256 );
-		this.cubeRenderTarget.texture.format = THREE.RGBAFormat;
-		this.cubeRenderTarget.texture.type = THREE.HalfFloatType;
-		this.cubeRenderTarget.texture.minFilter = THREE.LinearMipMapLinearFilter;
-		this.cubeRenderTarget.texture.magFilter = THREE.LinearFilter;
-		this.cubeRenderTarget.texture.generateMipmaps = true;
-		this.cubeCamera = new THREE.CubeCamera( 1, 1000000, this.cubeRenderTarget );
-		this.cubeCamera.rotation.z = Math.PI/2;
-		this.cubeCamera.layers.set( 2 );
+		// Legacy dynamic reflection cube (three 0.183 webgpu dropped
+		// WebGLCubeRenderTarget; CubeRenderTarget is the replacement). The layer-2
+		// cube camera renders nothing — no objects are assigned to layer 2 — and
+		// its texture is sampled ONLY by the fallback OceanMaterial path below.
+		// The WaterPro/twin path supplies an external TSL material
+		// (params.material), whose reflection comes from the story's skyEnvironment
+		// cube instead, so building and updating this cube is pure dead GPU work in
+		// that path. Skip it entirely when a material is supplied — this removes 6
+		// cube-face render passes + a 256³ mipmap generation from EVERY frame.
+		this.usesExternalMaterial_ = params.material != null;
+		if ( !this.usesExternalMaterial_ ) {
+			this.cubeRenderTarget = new THREE.CubeRenderTarget( 256 );
+			this.cubeRenderTarget.texture.format = THREE.RGBAFormat;
+			this.cubeRenderTarget.texture.type = THREE.HalfFloatType;
+			this.cubeRenderTarget.texture.minFilter = THREE.LinearMipMapLinearFilter;
+			this.cubeRenderTarget.texture.magFilter = THREE.LinearFilter;
+			this.cubeRenderTarget.texture.generateMipmaps = true;
+			this.cubeCamera = new THREE.CubeCamera( 1, 1000000, this.cubeRenderTarget );
+			this.cubeCamera.rotation.z = Math.PI/2;
+			this.cubeCamera.layers.set( 2 );
+		}
 
 
 		// Optional material override: callers can supply a pre-built chunk
@@ -155,7 +164,13 @@ class OceanChunkManager extends entity.Component {
 			relativeCameraPosition.sub( scenePosition );
 		}
 
-		this.cubeCamera.update( this.params_.renderer, this.params_.scene );
+		// Skip the dead legacy reflection-cube render in the external-material
+		// (WaterPro/twin) path — see Init. Saves 6 cube-face passes + mipmap gen
+		// per frame, which also lets builder_.Update() drain worker results sooner
+		// during the initial chunk build.
+		if ( !this.usesExternalMaterial_ ) {
+			this.cubeCamera.update( this.params_.renderer, this.params_.scene );
+		}
 
 
 		this.builder_.Update();

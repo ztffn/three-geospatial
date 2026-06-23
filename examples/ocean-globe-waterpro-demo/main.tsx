@@ -9,31 +9,17 @@
 // + camera/scenario panels (DigitalTwinUI, fed by the active scene location),
 // and a collapsed Leva debug panel.
 
-// requestIdleCallback shim — set BEFORE any package import.
-// packages/atmosphere/src/webgpu/AtmosphereLUTNode.ts's `timeSlice` helper
-// drives its multi-stage WebGPU compute (transmittance, scattering, multiple
-// scattering 2..4) via `requestIdleCallback`. In a production-bundled build
-// the WebGPU render loop is consistently >50 ms (rAF violations of 100-300
-// ms), so Chrome never grants idle time and the LUT pipeline stalls
-// indefinitely. Replacing the global with a setTimeout shim forces each
-// stage to schedule on the next macrotask regardless of main-thread
-// busyness. The atmosphere helper picks up window.requestIdleCallback at
-// first call, so this must run before any atmosphere code loads.
-if (typeof window !== 'undefined') {
-  const force = function (cb: IdleRequestCallback): number {
-    return setTimeout(
-      () =>
-        cb({
-          didTimeout: false,
-          timeRemaining: () => 16
-        }),
-      0
-    ) as unknown as number
-  }
-  window.requestIdleCallback = force as typeof window.requestIdleCallback
-  window.cancelIdleCallback = ((id: number) =>
-    clearTimeout(id)) as typeof window.cancelIdleCallback
-}
+// requestIdleCallback shim — MUST be the first import. The atmosphere package
+// (AtmosphereLUTNode -> helpers/requestIdleCallback) drives its multi-stage LUT
+// compute via requestIdleCallback, and that helper captures
+// window.requestIdleCallback into a module-level const the first time it
+// evaluates. Under the twin's heavy WebGPU render loop Chrome starves the
+// native idle callback, so the LUT precompute hangs ("Precomputing atmosphere").
+// The shim must therefore be installed BEFORE any atmosphere code evaluates —
+// an inline shim here would be too late, because ES module imports are hoisted
+// and evaluated before this module's own body runs. Keeping it as the first
+// import guarantees its module body wins the capture. See installIdleCallbackShim.ts.
+import './installIdleCallbackShim'
 
 import { Canvas, useThree } from '@react-three/fiber'
 import { Leva } from 'leva'
