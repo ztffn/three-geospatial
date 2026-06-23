@@ -64,6 +64,28 @@ Reveal waits for the entire initial quadtree (160 chunks, 7 workers,
   off the critical path (during the splash) would unblock the build and likely
   cut a large slice of the 3.6 s.
 
+### A2. Steady-state frame rate (the recurring `requestAnimationFrame` violations)
+Two distinct things show up as DevTools rAF violations:
+- **1.5–2.4 s spikes** — the one-time WGSL compiles from A (under the splash).
+- **A continuous stream of 50–300 ms ones** — the scene renders at ~10 fps in
+  dev (~100 ms/frame), and Chrome's violation threshold is 50 ms, so below
+  ~20 fps **every frame trips the warning**. Not a discrete bug — it's the
+  steady-state GPU cost of the full scene (IFFT ocean + sky reflections +
+  aerial-perspective + the whole post chain + terrain streaming + turbines +
+  clouds + precip + the wet-lens RTT). These are timing *notices*, not errors,
+  and can't be suppressed from code — only by shortening frames. (Dev build;
+  prod is faster, but steady-state fps is still a real axis.)
+
+Cheapest steady-state lever: the **wet-lens always-on RTT**. With
+`lensControls.enabled` (default on), `outputNode =
+lensDrops.apply(convertToTexture(composite))` runs an **extra full-frame
+render-to-texture every frame even when it isn't raining** (strength 0).
+Bypassing the RTT when dry saves a whole pass per frame. The catch: `enabled` is
+a post-memo dep, so toggling it rebuilds the pipeline (a hitch) — a clean fix
+needs an internal passthrough in the lens node rather than a memo-level toggle.
+Then: DPR clamp, and a pass-level profile (ocean reflections vs aerial-perspective
+vs clouds) to find the dominant cost.
+
 ### B. Terrain dip — bulletproof fix
 The shipped fix hides the one-time post-`pass` recompile under the splash by
 mounting terrain early. It relies on the first tile arriving before reveal
