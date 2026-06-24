@@ -9,6 +9,7 @@
 
 import { Html, OrbitControls } from '@react-three/drei'
 import {
+  createPortal,
   extend,
   useFrame,
   useThree,
@@ -48,16 +49,7 @@ import {
   type Group,
   type Object3D,
 } from 'three'
-import {
-  convertToTexture,
-  mrt,
-  output,
-  pass,
-  toneMapping,
-  uniform,
-  uv,
-  vec4,
-} from 'three/tsl'
+import { convertToTexture, pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
 import * as THREE from 'three/webgpu'
 import {
   MeshLambertNodeMaterial,
@@ -99,12 +91,10 @@ import {
   cameraNear,
   depthToViewZ,
   dithering,
-  highpVelocity,
   inverseProjectionMatrix,
   lensFlare,
   projectionMatrix,
   screenToPositionView,
-  temporalAntialias,
 } from '@takram/three-geospatial/webgpu'
 
 import {
@@ -2235,6 +2225,10 @@ export const Content: FC<{
   const [vertexUniforms, setVertexUniforms] =
     useState<VertexUniformsBag | null>(null)
   const overlayScene = useMemo(() => new Scene(), [])
+  // Dedicated scene for the gaussian splats so they render in their own pass and
+  // composite AFTER the atmosphere (approach A) — premultiplied splats blended in
+  // the main pass darken their soft edges against the black clear color (halo).
+  const splatScene = useMemo(() => new Scene(), [])
   const context = useMemo(() => new AtmosphereContext(), [])
   context.camera = camera
   useAtmosphereContextNode(context)
@@ -3484,21 +3478,14 @@ export const Content: FC<{
       : globalTerrainAssetId
 
   // Post-processing chain — mirrors GlobeOceanProto.tsx:504-547.
-  // pass(+velocity MRT) → colorNode.mul(0.55) → aerialPerspective → optional
-  // stars/sun/moon routed via skyNode → lensFlare → AgX tonemap → TAA →
-  // dithering.
+  // pass → colorNode.mul(0.55) → aerialPerspective → optional stars/sun/moon
+  // routed via skyNode → lensFlare → AgX tonemap → dithering.
   const postProcessingData = useMemo(() => {
     context.camera = camera
 
-    // MRT so the scene pass also emits per-object NDC velocity, which TAA needs
-    // to reproject history. `highpVelocity` derives velocity from each object's
-    // current/previous model-view matrices (camera fly-to + rotor/ship motion).
-    const passNode = pass(scene, camera, { samples: 0 }).setMRT(
-      mrt({ output, velocity: highpVelocity })
-    )
+    const passNode = pass(scene, camera, { samples: 0 })
     const colorNode = passNode.getTextureNode('output')
     const depthNode = passNode.getTextureNode('depth')
-    const velocityNode = passNode.getTextureNode('velocity')
 
     const aerialNode = aerialPerspective(
       colorNode.mul(SCENE_RADIANCE_SCALE),
@@ -3542,8 +3529,23 @@ export const Content: FC<{
       projectionMatrix(camera),
       inverseProjectionMatrix(camera)
     )
+    // Approach A: composite the gaussian splats over the atmosphere-tinted scene
+    // (premultiplied, rendered in their own pass) so their soft edges blend over
+    // the lit sky here instead of the black scene-pass clear color (no halo), and
+    // a depth test against the main scene depth keeps terrain/models in front
+    // occluding them. Both depths are log-encoded by the same renderer → compared
+    // directly. When the splat is disabled/empty the pass is transparent and this
+    // composite is a no-op (splatVisible irrelevant where alpha = 0).
+    const splatPassNode = pass(splatScene, camera, { samples: 0 })
+    const splatColorNode = splatPassNode.getTextureNode('output')
+    const splatDepthNode = splatPassNode.getTextureNode('depth')
+    const splatVisible = splatDepthNode.r.lessThanEqual(depthNode.r).toFloat()
+    const aerialWithSplat = aerialNode
+      .mul(splatColorNode.a.mul(splatVisible).oneMinus())
+      .add(splatColorNode.rgb.mul(splatVisible))
+
     const underwaterNode = underwaterPostNode({
-      inputNode: aerialNode,
+      inputNode: aerialWithSplat,
       oceanPos: viewToOceanUniform.mul(vec4(uwPosView, 1)).xyz,
       dist: uwPosView.length(),
       time: underwaterTimeUniform,
@@ -3556,22 +3558,12 @@ export const Content: FC<{
       uniform(atmosphereControls.exposure),
       lensFlareNode
     )
-    // Temporal antialiasing on the tone-mapped image. Also the prerequisite for
-    // the dither-opaque gaussian splats (SplatLayer): TAA averages their per-
-    // frame stochastic coverage back into smooth transparency. Same wiring as
-    // Ocean-Globe-Patch.tsx / Ocean-AerialPerspective.tsx.
-    const taaNode = temporalAntialias(highpVelocity)(
-      toneMappingNode,
-      depthNode,
-      velocityNode,
-      camera
-    )
     const overlayPassNode = pass(overlayScene, camera, {
       samples: 0,
       depthBuffer: false,
     })
 
-    const composite = taaNode
+    const composite = toneMappingNode
       .add(dithering)
       .mul(overlayPassNode.a.oneMinus())
       .add(overlayPassNode)
@@ -3596,6 +3588,7 @@ export const Content: FC<{
     camera,
     context,
     overlayScene,
+    splatScene,
     renderer,
     scene,
     underwaterUniforms,
@@ -4038,7 +4031,7 @@ export const Content: FC<{
           pipeline compile can't compete with the stage-1 LUT compute. Lives in
           the same scene as the terrain, so pass(scene,camera) depth-composites
           it against the 3D tiles. Leva 'Splats' folder toggles/tunes. */}
-      {!disableOcean && <SplatLayer target={target} />}
+      {!disableOcean && <SplatLayer target={target} splatScene={splatScene} />}
       {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
           download/parse doesn't compete with the stage-1 atmosphere-LUT
           compute) and isolated in its own Suspense so loading can't blank the

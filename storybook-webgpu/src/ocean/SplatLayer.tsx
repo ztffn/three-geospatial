@@ -1,14 +1,15 @@
 // Georeferenced Gaussian-splat layer for the Globe WaterPro twin scene. Places a
 // splat cloud at the active-location ECEF target (ENU-oriented, leva-tunable
-// scale/height/intensity) and renders it via the WebGPU GaussianSplatNodeMaterial
-// as a sibling of the terrain in the same scene, so the twin's pass(scene,camera)
-// depth-composites it against the 3D tiles (log-depth matched). Minimal proof of
-// splats-in-twin; the procedural sphere-shell cloud stands in until real captures.
+// scale/height/intensity) and renders it (premultiplied GaussianSplatNodeMaterial)
+// into a dedicated `splatScene`, which the twin composites AFTER the atmosphere
+// pass (approach A) — premultiplied over the lit sky so there's no black halo, and
+// depth-masked against the scene so terrain/models occlude it. Placeholder
+// procedural sphere-shell until real captures.
 
-import { useFrame, useThree } from '@react-three/fiber'
+import { createPortal, useFrame, useThree } from '@react-three/fiber'
 import { useControls } from 'leva'
 import { useEffect, useMemo, type FC } from 'react'
-import { Quaternion, Vector3 } from 'three'
+import { Quaternion, Vector3, type Scene } from 'three'
 import type { Renderer } from 'three/webgpu'
 
 import { Ellipsoid } from '@takram/three-geospatial'
@@ -56,7 +57,10 @@ function createSphereSplatCloud(count: number): GaussianSplatData {
   return { count, positions, scales, rotations, colors }
 }
 
-export const SplatLayer: FC<{ target: Vector3 }> = ({ target }) => {
+export const SplatLayer: FC<{ target: Vector3; splatScene: Scene }> = ({
+  target,
+  splatScene
+}) => {
   const { enabled, scale, heightOffset, intensity } = useControls('Splats', {
     enabled: true,
     // Sphere-shell is unit radius, so `scale` is the cloud radius in metres.
@@ -74,16 +78,12 @@ export const SplatLayer: FC<{ target: Vector3 }> = ({ target }) => {
     let nodeMaterial!: GaussianSplatNodeMaterial
     const splatMesh = new GaussianSplatMesh(data, {
       createMaterial: geometry => {
-        // Dither-opaque mode: the splats render as opaque depth-writing geometry
-        // (stochastic discard ∝ alpha, resolved by the twin's TAA), so the scene
-        // pass occludes them against terrain/ocean/models and the deferred
-        // aerial-perspective pass tints them — no translucent silhouette (no
-        // black halo over the unrendered-sky clear color), no dedicated pass.
-        // logarithmicDepthBuffer matches the twin renderer so the per-splat
-        // depthNode emits log depth and depth-tests correctly at globe scale.
+        // Twin renderer uses logarithmicDepthBuffer; match it so the splat pass
+        // writes log-depth comparable to the main scene depth. depthWrite so the
+        // splat pass produces a depth buffer for approach A's occlusion mask.
         nodeMaterial = new GaussianSplatNodeMaterial(geometry, {
           logarithmicDepthBuffer: true,
-          dither: true
+          depthWrite: true
         })
         return nodeMaterial
       }
@@ -125,9 +125,12 @@ export const SplatLayer: FC<{ target: Vector3 }> = ({ target }) => {
   if (!enabled) {
     return null
   }
-  return (
+  // Portal into the dedicated splat scene so it renders in its own pass and the
+  // twin composites it after the atmosphere (see GlobeWaterproOcean-Story).
+  return createPortal(
     <group position={position} quaternion={quaternion} scale={scale}>
       <primitive object={mesh} />
-    </group>
+    </group>,
+    splatScene
   )
 }
