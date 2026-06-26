@@ -206,6 +206,17 @@ export const locationPresets = {
   // Waste-handling site on/near Karmøy island (site_compressed_new.glb). Captured
   // ~where the camera was; height/placement tuned in-scene via the leva folder.
   'Waste Handling': { longitude: 5.300927, latitude: 59.402448, height: 20 },
+  // Real gaussian-splat capture (SuperSplat 'Superior Marshall Wildfire' drone
+  // sample). Same anchor as 'Waste Handling' — CRUCIALLY height 20 (sea level),
+  // because the ocean surface is placed at target + up·seaLevelOffset, so a
+  // non-sea-level anchor height lifts the whole ocean and floods the camera. The
+  // site's land elevation + horizontal offset live on the splat placement (the
+  // 'Splats' leva folder east/north/height), not here.
+  'Realtime Geospatial': {
+    longitude: 5.300927,
+    latitude: 59.402448,
+    height: 20,
+  },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -4031,7 +4042,21 @@ export const Content: FC<{
           pipeline compile can't compete with the stage-1 LUT compute. Lives in
           the same scene as the terrain, so pass(scene,camera) depth-composites
           it against the 3D tiles. Leva 'Splats' folder toggles/tunes. */}
-      {!disableOcean && <SplatLayer target={target} splatScene={splatScene} />}
+      {!disableOcean && (
+        <SplatLayer
+          target={target}
+          splatScene={splatScene}
+          // In the 'Realtime Geospatial' scenario, load the real SPZ capture
+          // (served from storybook-webgpu/assets in dev); other scenarios keep
+          // the procedural sphere placeholder. Gating the URL gates the 130 MB
+          // fetch so it only loads when that scenario is active.
+          spzUrl={
+            locationControls.preset === 'Realtime Geospatial'
+              ? '/public/d4ae1c10.spz'
+              : undefined
+          }
+        />
+      )}
       {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
           download/parse doesn't compete with the stage-1 atmosphere-LUT
           compute) and isolated in its own Suspense so loading can't blank the

@@ -763,6 +763,10 @@ const App: FC = () => {
         bunkering={
           SCENARIOS.find(s => s.id === activeScenario)?.bunkering ?? null
         }
+        splat={SCENARIOS.find(s => s.id === activeScenario)?.splat ?? null}
+        process={
+          SCENARIOS.find(s => s.id === activeScenario)?.process ?? null
+        }
         selectedVessel={selectedVessel}
         onCloseVessel={() => setSelectedId(null)}
         installControls={

@@ -88,6 +88,51 @@ export interface BunkeringReadings {
   busKv: number
 }
 
+// Gaussian-splat capture stats for the Realtime Geospatial scenario inspector
+// (replaces the turbine panel). A "hi-tech" readout of the loaded 3DGS cloud.
+export interface SplatReadings {
+  // Human label for the capture.
+  sceneName: string
+  // Total splats in the source capture (the headline number).
+  totalSplats: number
+  // Spherical-harmonics degree (0-3); view-dependent colour bands.
+  shDegree: number
+  // SH coefficient vectors carried per splat (degree → count, ×3 channels).
+  shCoeffs: number
+  // On-disk container format + compressed size (MB).
+  format: string
+  compressedMB: number
+  // Capture provenance / sensor.
+  source: string
+}
+
+// Process-stack telemetry for the Waste Handling site (Kiln/Carbox/Arx biomass→
+// wax plant; see huma-qa-vault/kiln_arx_carbox_system_analysis.md). Full 10-kiln
+// facility basis. Static demo figures; replaces the turbine inspector.
+export interface ProcessReadings {
+  stackName: string // process chain label
+  biomassTPerDay: number // dry biomass feed, tonnes/day
+  waxKgPerDay: number // Caera wax output, kg/day
+  waxTPerYear: number // Caera wax, tonnes/year
+  waxEnergyMWhPerDay: number // wax chemical energy, MWh/day
+  oxygenTPerYear: number // O₂ co-product, tonnes/year
+  biocharTPerYear: number // enhanced biochar/graphite, tonnes/year
+  carbonToProductsPct: number // % of feed carbon ending in products
+  co2VentedTPerYear: number // CO₂ vented (0 = closed loop)
+  kilnTempC: number // pyrolysis kiln
+  carboxTempC: number // Carbox redox (reduction)
+  ftTempC: number // Arx Fischer-Tropsch
+  // Arx F-T reactor operating point (from the simulation engine's simulate_arx;
+  // see huma-simulation-engine api/engine/unit_ops/arx.py). The F-T telemetry
+  // card random-walks around these steady-state values for a live readout.
+  ftCatalyst: string // catalyst label
+  ftH2CoRatio: number // H₂:CO feed (mol)
+  ftConversionPct: number // per-pass CO conversion
+  ftChainGrowthAlpha: number // Anderson-Schulz-Flory α (wax selectivity)
+  ftWaxRateKgH: number // wax production, kg/h
+  ftHeatDutyKw: number // exothermic heat released, kW
+}
+
 export interface Scenario {
   id: string
   label: string
@@ -100,6 +145,10 @@ export interface Scenario {
   ais?: AisReadings
   // Static demo two-vessel metrics for the bunkering scenario inspector.
   bunkering?: BunkeringReadings
+  // Gaussian-splat capture stats; replaces the turbine inspector (geospatial).
+  splat?: SplatReadings
+  // Process-stack telemetry; replaces the turbine inspector (waste handling).
+  process?: ProcessReadings
   // Setting toggles shown when this scenario is active; ids resolve against
   // the registry the host passes in ScenarioControlsState.settings.
   settings?: string[]
@@ -247,6 +296,27 @@ export const SCENARIOS: Scenario[] = [
     id: 'waste-handling',
     label: 'Waste Handling',
     preset: 'Waste Handling',
+    // Kiln/Carbox/Arx biomass→wax stack telemetry (full 10-kiln facility).
+    process: {
+      stackName: 'Kiln · Carbox · Arx',
+      biomassTPerDay: 24,
+      waxKgPerDay: 6060,
+      waxTPerYear: 2212,
+      waxEnergyMWhPerDay: 78,
+      oxygenTPerYear: 6000,
+      biocharTPerYear: 1095,
+      carbonToProductsPct: 100,
+      co2VentedTPerYear: 0,
+      kilnTempC: 1000,
+      carboxTempC: 1400,
+      ftTempC: 250,
+      ftCatalyst: 'Staged Fe/Co',
+      ftH2CoRatio: 2.0,
+      ftConversionPct: 85,
+      ftChainGrowthAlpha: 0.9,
+      ftWaxRateKgH: 252,
+      ftHeatDutyKw: 479
+    },
     viewpoints: [
       {
         id: 'overview',
@@ -267,6 +337,40 @@ export const SCENARIOS: Scenario[] = [
         headingDeg: 159.4,
         pitchDeg: -47.8,
         spawn: { offsetENU: [-39.6, -5.2, 69.6], headingDeg: 145.8, pitchDeg: -41.3 }
+      }
+    ]
+  },
+  // Realtime gaussian-splat capture showcase. Loads the SPZ capture
+  // (d4ae1c10.spz — SuperSplat 'Superior Marshall Wildfire' drone sample) at the
+  // 'Realtime Geospatial' preset (the waste-site land patch). The SplatLayer
+  // 'Splats' leva folder fine-tunes placement (east/north/height/scale/yaw) like
+  // the site 3D models. turbines:0 (not a wind farm).
+  {
+    id: 'realtime-geospatial',
+    label: 'Realtime Geospatial',
+    preset: 'Realtime Geospatial',
+    // Splat-capture readout (replaces the turbine inspector). SuperSplat
+    // 'Superior Marshall Wildfire' drone sample, full SH, SPZ-compressed.
+    splat: {
+      sceneName: 'Superior Marshall Wildfire',
+      totalSplats: 8_331_135,
+      shDegree: 3,
+      shCoeffs: 15,
+      format: 'SPZ',
+      compressedMB: 130,
+      source: 'Aerial drone · 3D Gaussian Splatting'
+    },
+    viewpoints: [
+      {
+        id: 'overview',
+        label: 'Overview',
+        // Orbit pivot = the splat's placement (the 'Splats' leva east/north/up
+        // offsets: 315 E, 163 N, 84.4 up from the sea-level anchor), so the
+        // camera circles the capture, not the sea anchor.
+        aimOffsetENU: [315, 163, 84.4],
+        distance: 219,
+        headingDeg: 108,
+        pitchDeg: -25
       }
     ]
   },

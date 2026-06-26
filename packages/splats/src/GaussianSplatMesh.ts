@@ -30,6 +30,12 @@ interface SplatMaterialRenderer {
  */
 export interface SplatMaterial extends Material {
   update(renderer: SplatMaterialRenderer, camera: Camera): void
+  /**
+   * Optional per-view colour resolve (e.g. a view-dependent SH compute pre-pass).
+   * Called when the camera moves, with the camera in the mesh's local space.
+   * Requires a compute-capable renderer (the WebGPU `Renderer`).
+   */
+  updateColors?: (renderer: SplatMaterialRenderer, cameraLocal: Vector3) => void
 }
 
 export interface GaussianSplatMeshOptions {
@@ -90,10 +96,17 @@ export class GaussianSplatMesh extends Mesh<
       .setFromMatrixPosition(camera.matrixWorld)
       .applyMatrix4(scratchInverseMatrix)
 
-    if (
-      this.pendingSort ||
-      !this.trigger.shouldSort(scratchCameraLocal, this.geometry.centroid)
-    ) {
+    const moved = this.trigger.shouldSort(
+      scratchCameraLocal,
+      this.geometry.centroid
+    )
+    // Re-resolve view-dependent colours (a GPU compute pre-pass) whenever the
+    // camera moves — independent of the sort, which the worker may still be
+    // running. No-op for materials without a per-view colour pass.
+    if (moved) {
+      this.material.updateColors?.(renderer, scratchCameraLocal)
+    }
+    if (this.pendingSort || !moved) {
       return
     }
 

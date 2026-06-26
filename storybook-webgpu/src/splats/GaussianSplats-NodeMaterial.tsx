@@ -1,17 +1,21 @@
-// WebGPU storybook story for the Gaussian splat node material. Renders a
-// procedurally generated splat cloud (a colored sphere shell) under the Three.js
-// WebGPU renderer via GaussianSplatNodeMaterial, exercising the full TSL path
-// (covariance reconstruction, clip-space EWA projection, depth sorting) without
-// depending on an external .ply / LFS asset.
+// WebGPU storybook story for the Gaussian splat node material. Renders EITHER a
+// real SPZ capture (spz-js → loadSpzSplatData → GaussianSplatNodeMaterial) or a
+// procedurally generated sphere shell, under a plain OrbitControls camera with no
+// globe, no logarithmic depth, and no separate-scene composite. This isolates the
+// loader + EWA material from the twin integration: if the SPZ renders correctly
+// here but wrong in the twin, the bug is in the twin's compositing, not the splats.
 
 import { OrbitControls } from '@react-three/drei'
 import { useFrame, useThree } from '@react-three/fiber'
-import { useEffect, useMemo, type FC } from 'react'
+import { useControls } from 'leva'
+import { useEffect, useMemo, useState, type FC } from 'react'
 import type { Renderer } from 'three/webgpu'
 
 import {
   GaussianSplatMesh,
   GaussianSplatNodeMaterial,
+  loadSpzSplatData,
+  WorkerSplatSorter,
   type GaussianSplatData
 } from '@takram/three-geospatial-splats/webgpu'
 
@@ -19,6 +23,11 @@ import type { StoryFC } from '../components/createStory'
 import { Description } from '../components/Description'
 import { WebGPUCanvas } from '../components/WebGPUCanvas'
 import { rendererArgs, rendererArgTypes } from '../controls/rendererControls'
+
+// SPZ capture served from storybook-webgpu/assets (staticDir → /public). The same
+// 8.33M-splat "Superior Marshall Wildfire" sample the twin loads, decoded here in
+// the clean standalone path for an apples-to-apples correctness comparison.
+const SPZ_URL = '/public/d4ae1c10.spz'
 
 // Generates a genuine Gaussian splat dataset shaped as a thick sphere shell,
 // colored by surface direction, so the covariance and sort paths are exercised.
@@ -64,28 +73,116 @@ const Content: FC = () => {
   const renderer = useThree<Renderer>(({ gl }) => gl as unknown as Renderer)
   const camera = useThree(({ camera }) => camera)
 
-  const mesh = useMemo(() => {
-    const data = createSphereSplatCloud(50000)
-    return new GaussianSplatMesh(data, {
-      createMaterial: geometry => new GaussianSplatNodeMaterial(geometry)
-    })
-  }, [])
+  const { source, debug, intensity, maxSplats } = useControls('Splats', {
+    // SPZ is the default — this story exists to validate the real capture.
+    source: {
+      value: 'SPZ capture',
+      options: ['SPZ capture', 'Procedural sphere']
+    },
+    // Coordinate/debug, mirrors SpzSplatLoader. flipYZ = RDF→RUB; raw = none;
+    // isotropic = equal scales + identity rotation (round blobs). Reloads on change.
+    debug: { value: 'flipYZ', options: ['flipYZ', 'raw', 'isotropic'] },
+    // No AgX tonemapping here (unlike the twin), so 1 = true 0..1 capture colour.
+    intensity: { value: 1, min: 0, max: 4, step: 0.01 },
+    // Decimation for the single-mesh CPU-sort path. 0 = full (8.33M). Reloads.
+    maxSplats: {
+      value: 1_000_000,
+      options: {
+        Full: 0,
+        '4M': 4_000_000,
+        '2M': 2_000_000,
+        '1M': 1_000_000,
+        '500k': 500_000
+      }
+    }
+  })
+
+  const [data, setData] = useState<GaussianSplatData | null>(null)
 
   useEffect(() => {
-    return () => {
-      mesh.dispose()
+    let cancelled = false
+    if (source === 'Procedural sphere') {
+      setData(createSphereSplatCloud(50000))
+      return
     }
-  }, [mesh])
+    setData(null)
+    const started = performance.now()
+    void fetch(SPZ_URL)
+      .then(async response => {
+        if (!response.ok) {
+          throw new Error(`SPZ fetch ${response.status} for ${SPZ_URL}`)
+        }
+        return await response.arrayBuffer()
+      })
+      .then(async buffer =>
+        await loadSpzSplatData(buffer, {
+          ...(maxSplats > 0 ? { maxSplats } : {}),
+          debug: debug as 'flipYZ' | 'raw' | 'isotropic'
+        })
+      )
+      .then(loaded => {
+        if (cancelled) {
+          return
+        }
+         
+        console.log(
+          `[SplatTest] SPZ loaded: ${loaded.count.toLocaleString()} splats in ${Math.round(performance.now() - started)} ms`
+        )
+        setData(loaded)
+      })
+      .catch((error: unknown) => {
+         
+        console.error('[SplatTest] SPZ load failed:', error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [source, debug, maxSplats])
+
+  const meshState = useMemo(() => {
+    if (data == null) {
+      return null
+    }
+    let material!: GaussianSplatNodeMaterial
+    const mesh = new GaussianSplatMesh(data, {
+      // Off-main-thread sort so multi-million-splat clouds stay interactive
+      // (the synchronous CPU sorter blocks the render thread past ~500k).
+      sorter: new WorkerSplatSorter(),
+      // Default material options: linear (non-log) depth, depthWrite off — matches
+      // this canvas (no logarithmicDepthBuffer) and the canonical sorted-no-depth
+      // splat compositing. None of the twin's log-depth / depthWrite / composite.
+      createMaterial: geometry => {
+        material = new GaussianSplatNodeMaterial(geometry)
+        return material
+      }
+    })
+    return { mesh, material }
+  }, [data])
+
+  useEffect(() => {
+    const mesh = meshState?.mesh
+    return () => {
+      mesh?.dispose()
+    }
+  }, [meshState])
+
+  useEffect(() => {
+    if (meshState != null) {
+      meshState.material.intensity.value = intensity
+    }
+  }, [meshState, intensity])
 
   useFrame(() => {
-    mesh.update(renderer, camera)
+    if (meshState != null) {
+      meshState.mesh.update(renderer, camera)
+    }
   })
 
   return (
     <>
       <color attach='background' args={[0.02, 0.02, 0.04]} />
       <OrbitControls />
-      <primitive object={mesh} />
+      {meshState != null && <primitive object={meshState.mesh} />}
     </>
   )
 }
@@ -93,7 +190,8 @@ const Content: FC = () => {
 interface StoryProps {}
 
 export const Story: StoryFC<StoryProps> = () => (
-  <WebGPUCanvas camera={{ fov: 45, position: [3, 1, 3] }}>
+  // Camera framed for the ~8 m capture (radius ≈ 4.6 m, centroid near origin).
+  <WebGPUCanvas camera={{ fov: 45, position: [9, 5, 11], near: 0.1, far: 1000 }}>
     <Content />
     <Description />
   </WebGPUCanvas>

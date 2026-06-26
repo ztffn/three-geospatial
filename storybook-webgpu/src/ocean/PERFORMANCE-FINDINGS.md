@@ -153,6 +153,48 @@ ship-anchor / target tweak invalidates it). Direction: extract cables into a
 plugins) that places baked cable sets at variable sites on demand, decoupled
 from the core scene. Re-enable the Leva toggle to author/inspect in the meantime.
 
+## Gaussian splats — dither-opaque is SLOWER than blending on TBDR (2026-06-24)
+The twin's `SplatLayer` (`storybook-webgpu/src/ocean/`, material in
+`packages/splats/src/webgpu/GaussianSplatNodeMaterial.ts`) renders splats with
+**premultiplied semi-transparent blending**, NOT dithered-opaque — and that is a
+deliberate, measured choice that **inverts the usual desktop intuition**.
+
+The standard splat perf wisdom (SuperSplat/PlayCanvas) is: render splats as
+*opaque* geometry and fake transparency with a per-fragment `discard` (dither),
+because on immediate-mode desktop GPUs that skips alpha-blending + back-to-front
+sorting and keeps early-Z. We tried exactly this in the twin and it **dropped to
+1–5 fps**. Root cause: the twin targets **Apple Silicon → Metal → tile-based
+deferred rendering (TBDR)**, where the trade reverses:
+- **Transparent blending is cheap** on TBDR — it blends overlapping layers in
+  fast on-chip tile memory; that's what the architecture is built for.
+- **`discard` is expensive** on TBDR — it breaks the hidden-surface-removal /
+  early-visibility fast path, so every overlapping fragment shades at full cost.
+  (The same applies to any `discard`/`alphaTest`/`alphaHash` "dithered opacity".)
+
+So we reverted dither and shipped **premultiplied + composite-after-atmosphere**
+(approach A): the splat renders in its own `splatScene` pass, composited after
+`aerialPerspective` so its soft edges blend over the lit sky (no black halo), with
+a depth mask against the scene depth for occlusion, and a no-op `setupDepth()` on
+the material so the vertexNode's per-splat clip-z depth is authoritative (each
+splat occludes per-pixel instead of the whole cloud writing one near-origin
+depth). Perf is back to smooth.
+
+Detours this took (so they aren't repeated): dither *requires* TAA to resolve its
+stochastic coverage → TAA was added then removed; then a tiled OGC3DTiles/SPZ
+streaming spike (`@jdultra/threedtiles`, contextsplat.xyz) — abandoned because
+every public fixture is SPZ-v3 / `KHR_gaussian_splatting_compression_spz_2`, which
+no JS decoder currently reads (`spz-js@1.2.5` maxes at v2; threedtiles' GLTFLoader
+rejects the KHR extension). Streaming is still the eventual answer for real
+million-splat captures, but it's parked on the ecosystem, not on us.
+
+**Lesson for future splat / transparency work: do NOT assume desktop GPU
+intuition on this twin.** On TBDR, prefer real alpha blending over
+`discard`/dither-opacity. Always perf-test a discard-based "optimisation" on the
+actual Apple-Silicon target before adopting it. (See memory
+`twin_splats_dither_opaque_taa`.) Note dither for *output anti-banding*
+(`.add(dithering)` in the post chain) is unrelated and stays — it adds sub-LSB
+noise to final colours, no `discard`, always cheap.
+
 ## Diagnostic method notes
 - **Leva persists control values to `localStorage`** and overrides code
   defaults. When testing a changed default, clear the `leva` key (DevTools →

@@ -16,6 +16,7 @@ import {
 
 import {
   computeSplatBounds,
+  shDegreeToCoefficientCount,
   validateGaussianSplatData,
   type GaussianSplatData
 } from './GaussianSplatData'
@@ -93,6 +94,105 @@ function createFloatTexture(data: Float32Array, height: number): DataTexture {
   return texture
 }
 
+function clampByte(x: number): number {
+  const r = Math.round(x)
+  return r < 0 ? 0 : r > 255 ? 255 : r
+}
+
+interface ShTextureResult {
+  texture: DataTexture | null
+  size: Vector2
+  degree: 0 | 1 | 2 | 3
+  coefficientCount: number
+  rangeMin: number
+  rangeScale: number
+}
+
+/**
+ * Byte-quantizes the view-dependent SH rest-coefficients into an RGBA8 data
+ * texture, one texel per coefficient (RGB = the coefficient's three channels, A
+ * unused). Texels are packed `count * coefficientCount` in row-major order,
+ * addressed `splatIndex * coefficientCount + coefficient`. Values map from a
+ * global `[min, max]` range to bytes (mkkellogg-style 8-bit SH compression);
+ * the material recovers them with the returned `rangeMin` / `rangeScale`.
+ * Returns a null texture when the source carries no SH.
+ */
+function buildShTexture(data: GaussianSplatData): ShTextureResult {
+  const empty: ShTextureResult = {
+    texture: null,
+    size: new Vector2(1, 1),
+    degree: 0,
+    coefficientCount: 0,
+    rangeMin: 0,
+    rangeScale: 1
+  }
+  const { sh, shDegree, count } = data
+  if (sh == null || shDegree == null || shDegree === 0 || count === 0) {
+    return empty
+  }
+  const coefficientCount = shDegreeToCoefficientCount(shDegree)
+  if (coefficientCount === 0) {
+    return empty
+  }
+
+  // Global value range for the byte quantization.
+  let min = Infinity
+  let max = -Infinity
+  for (let i = 0; i < sh.length; ++i) {
+    const v = sh[i]
+    if (v < min) min = v
+    if (v > max) max = v
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    min = -1
+    max = 1
+  }
+  const range = max - min
+  const invRange = 255 / range
+
+  const totalTexels = count * coefficientCount
+  // Square-ish; width rounded to a multiple of 64 so the RGBA8 row is a multiple
+  // of 256 bytes (WebGPU writeTexture alignment). Minimal dimensions so large
+  // clouds stay within the adapter's max-texture limit.
+  const width = Math.max(
+    64,
+    Math.ceil(Math.ceil(Math.sqrt(totalTexels)) / 64) * 64
+  )
+  const height = Math.max(1, Math.ceil(totalTexels / width))
+
+  const texData = new Uint8Array(width * height * 4)
+  for (let i = 0; i < count; ++i) {
+    for (let j = 0; j < coefficientCount; ++j) {
+      const dst = (i * coefficientCount + j) * 4
+      const src = (i * coefficientCount + j) * 3
+      texData[dst] = clampByte((sh[src] - min) * invRange)
+      texData[dst + 1] = clampByte((sh[src + 1] - min) * invRange)
+      texData[dst + 2] = clampByte((sh[src + 2] - min) * invRange)
+      texData[dst + 3] = 255
+    }
+  }
+
+  const texture = new DataTexture(
+    texData,
+    width,
+    height,
+    RGBAFormat,
+    UnsignedByteType
+  )
+  texture.minFilter = NearestFilter
+  texture.magFilter = NearestFilter
+  texture.needsUpdate = true
+
+  return {
+    texture,
+    size: new Vector2(width, height),
+    degree: shDegree,
+    coefficientCount,
+    rangeMin: min,
+    rangeScale: range
+  }
+}
+
 /**
  * An {@link InstancedBufferGeometry} that renders one screen-aligned quad per
  * splat. Per-splat attributes are uploaded once into data textures; the only
@@ -110,6 +210,19 @@ export class GaussianSplatGeometry extends InstancedBufferGeometry {
   readonly covATexture: DataTexture
   readonly covBTexture: DataTexture
   readonly colorTexture: DataTexture
+
+  /**
+   * View-dependent SH rest-coefficients (degrees 1-3), byte-quantized one RGBA8
+   * texel per coefficient (RGB = coefficient, A unused). Null when the source
+   * carries no SH. The material samples `shCoefficientCount` consecutive texels
+   * per splat and dequantizes via `[shRangeMin, shRangeMin + shRangeScale]`.
+   */
+  readonly shTexture: DataTexture | null
+  readonly shTextureSize: Vector2
+  readonly shDegree: 0 | 1 | 2 | 3
+  readonly shCoefficientCount: number
+  readonly shRangeMin: number
+  readonly shRangeScale: number
 
   private readonly splatIndexAttribute: InstancedBufferAttribute
 
@@ -174,7 +287,20 @@ export class GaussianSplatGeometry extends InstancedBufferGeometry {
     )
     this.colorTexture.minFilter = NearestFilter
     this.colorTexture.magFilter = NearestFilter
+    // Left as raw bytes (no sRGB colour-space flag): the byte colours are 3DGS
+    // display values (`0.5 + SH_C0 * f_dc`), and the material does the colour
+    // management in-shader — it adds the view-dependent SH in this display space,
+    // clamps, then converts display→linear once before output so the renderer's
+    // linear→sRGB encode round-trips the result (see GaussianSplatNodeMaterial).
     this.colorTexture.needsUpdate = true
+
+    const sh = buildShTexture(data)
+    this.shTexture = sh.texture
+    this.shTextureSize = sh.size
+    this.shDegree = sh.degree
+    this.shCoefficientCount = sh.coefficientCount
+    this.shRangeMin = sh.rangeMin
+    this.shRangeScale = sh.rangeScale
 
     // Base quad shared by every instance (per-vertex attribute).
     const quadAttribute = new BufferAttribute(QUAD_OFFSETS, 2)
@@ -217,6 +343,7 @@ export class GaussianSplatGeometry extends InstancedBufferGeometry {
     this.covATexture.dispose()
     this.covBTexture.dispose()
     this.colorTexture.dispose()
+    this.shTexture?.dispose()
     super.dispose()
   }
 }

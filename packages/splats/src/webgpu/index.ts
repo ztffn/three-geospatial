@@ -11,6 +11,7 @@ export {
   SortTrigger
 } from '../GaussianSplatSorter'
 export type { GaussianSplatSorter } from '../GaussianSplatSorter'
+export { WorkerSplatSorter } from '../WorkerSplatSorter'
 export { GaussianSplatGeometry } from '../GaussianSplatGeometry'
 export { GaussianSplatMesh } from '../GaussianSplatMesh'
 export type {
@@ -25,6 +26,8 @@ export {
   KHR_GAUSSIAN_SPLATTING_COMPRESSION_SPZ
 } from '../KhrGaussianSplattingExtension'
 export { PLYSplatLoader, parsePLYSplat } from '../PLYSplatLoader'
+export { loadSpzSplatData } from '../SpzSplatLoader'
+export type { SpzSplatLoadOptions } from '../SpzSplatLoader'
 
 // WebGPU/TSL render path: the EWA projection runs in a full TSL `vertexNode`
 // (see docs/splats-design-spec.md §11.1). Pass it to `GaussianSplatMesh` via the
