@@ -4047,12 +4047,14 @@ export const Content: FC<{
           target={target}
           splatScene={splatScene}
           // In the 'Realtime Geospatial' scenario, load the real SPZ capture
-          // (served from storybook-webgpu/assets in dev); other scenarios keep
-          // the procedural sphere placeholder. Gating the URL gates the 130 MB
-          // fetch so it only loads when that scenario is active.
+          // from the public R2 asset bucket (assets.humatopia.ai → humatopia-public;
+          // bucket CORS allows the twin origin + localhost). Served from
+          // Cloudflare's edge so the 136 MB never touches the VPS. Other scenarios
+          // keep the procedural sphere placeholder; gating the URL gates the fetch
+          // so it only loads when that scenario is active.
           spzUrl={
             locationControls.preset === 'Realtime Geospatial'
-              ? '/public/d4ae1c10.spz'
+              ? 'https://assets.humatopia.ai/realtime-geospatial.spz'
               : undefined
           }
         />
