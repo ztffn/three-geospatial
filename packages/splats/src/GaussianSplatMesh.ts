@@ -1,8 +1,11 @@
 import {
+  Frustum,
   Matrix4,
   Mesh,
   Vector3,
+  WebGLCoordinateSystem,
   type Camera,
+  type CoordinateSystem,
   type Material,
   type Vector2
 } from 'three'
@@ -23,6 +26,8 @@ import { computeSplatImportance, SplatOctree } from './SplatOctree'
 // Satisfied by both `WebGLRenderer` and the WebGPU `Renderer`.
 interface SplatMaterialRenderer {
   getDrawingBufferSize: (target: Vector2) => Vector2
+  /** WebGL2 (z −1..1) vs WebGPU (z 0..1) clip space, for frustum extraction. */
+  coordinateSystem?: CoordinateSystem
 }
 
 /**
@@ -104,6 +109,8 @@ const scratchCameraLocal = new Vector3()
 const scratchInverseMatrix = new Matrix4()
 const scratchView = new Matrix4()
 const scratchModelView = new Matrix4()
+const scratchProjScreen = new Matrix4()
+const scratchFrustum = new Frustum()
 
 /**
  * Renders a set of 3D Gaussian splats. Drop it into any three.js scene; call
@@ -198,9 +205,19 @@ export class GaussianSplatMesh extends Mesh<
         this.lodDirty ||
         this.trigger.shouldSort(scratchCameraLocal, this.geometry.centroid)
       ) {
+        // Frustum in splat-local space (clip = projection · modelView), so leaves
+        // fully off-screen are dropped — the budget then goes to what's visible.
+        scratchProjScreen.multiplyMatrices(
+          camera.projectionMatrix,
+          scratchModelView
+        )
+        scratchFrustum.setFromProjectionMatrix(
+          scratchProjScreen,
+          renderer.coordinateSystem ?? WebGLCoordinateSystem
+        )
         const result = this.lodSelector.select(
           scratchCameraLocal,
-          null,
+          scratchFrustum,
           this.lodParams
         )
         const active = result.indices.subarray(0, result.count)
