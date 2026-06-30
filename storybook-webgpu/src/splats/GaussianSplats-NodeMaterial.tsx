@@ -14,8 +14,8 @@ import type { Renderer } from 'three/webgpu'
 import {
   GaussianSplatMesh,
   GaussianSplatNodeMaterial,
+  GpuSplatSorter,
   loadSpzSplatData,
-  WorkerSplatSorter,
   type GaussianSplatData
 } from '@takram/three-geospatial-splats/webgpu'
 
@@ -73,7 +73,9 @@ const Content: FC = () => {
   const renderer = useThree<Renderer>(({ gl }) => gl as unknown as Renderer)
   const camera = useThree(({ camera }) => camera)
 
-  const { source, debug, intensity, maxSplats } = useControls('Splats', {
+  const { source, debug, intensity, lodSize, budget, maxSplats } = useControls(
+    'Splats',
+    {
     // SPZ is the default — this story exists to validate the real capture.
     source: {
       value: 'SPZ capture',
@@ -84,7 +86,24 @@ const Content: FC = () => {
     debug: { value: 'flipYZ', options: ['flipYZ', 'raw', 'isotropic'] },
     // No AgX tonemapping here (unlike the twin), so 1 = true 0..1 capture colour.
     intensity: { value: 1, min: 0, max: 4, step: 0.01 },
-    // Decimation for the single-mesh CPU-sort path. 0 = full (8.33M). Reloads.
+    // Screen-space LOD cull (px). Collapses splats whose projected stddev is below
+    // this → zero fragments → bounds transparent overdraw (the 4M GPU bottleneck).
+    // Crank up to trade far-field density for fps; 0 draws every splat.
+    lodSize: { value: 1, min: 0, max: 8, step: 0.1 },
+    // Octree-LOD render budget: max splats DRAWN per frame. The LOD selector
+    // coarsens the farthest octree leaves to fit this, bounding overdraw. Live (no
+    // reload). `maxSplats` caps what's LOADED; `budget` caps what's drawn.
+    budget: {
+      value: 1_000_000,
+      options: {
+        '4M': 4_000_000,
+        '2M': 2_000_000,
+        '1M': 1_000_000,
+        '500k': 500_000,
+        '250k': 250_000
+      }
+    },
+    // Decimation cap. 0 = full (8.33M). Reloads. LOD then bounds what's drawn.
     maxSplats: {
       value: 1_000_000,
       options: {
@@ -95,7 +114,8 @@ const Content: FC = () => {
         '500k': 500_000
       }
     }
-  })
+    }
+  )
 
   const [data, setData] = useState<GaussianSplatData | null>(null)
 
@@ -145,9 +165,14 @@ const Content: FC = () => {
     }
     let material!: GaussianSplatNodeMaterial
     const mesh = new GaussianSplatMesh(data, {
-      // Off-main-thread sort so multi-million-splat clouds stay interactive
-      // (the synchronous CPU sorter blocks the render thread past ~500k).
-      sorter: new WorkerSplatSorter(),
+      // Octree LOD (PlayCanvas's unified-gsplat approach, ported): build a spatial
+      // octree with importance-decimated LOD levels at load, then each frame draw
+      // only a budgeted subset chosen by distance. Bounds the rasterized count so
+      // multi-million-splat clouds stay interactive. `budget` is tuned live below.
+      lod: { budget: 1_000_000 },
+      // GPU radix sort (PlayCanvas multipass port) for the non-LOD full-cloud path;
+      // dormant while LOD is active (the LOD selector sorts its own subset on CPU).
+      sorter: new GpuSplatSorter(),
       // Default material options: linear (non-log) depth, depthWrite off — matches
       // this canvas (no logarithmicDepthBuffer) and the canonical sorted-no-depth
       // splat compositing. None of the twin's log-depth / depthWrite / composite.
@@ -169,8 +194,13 @@ const Content: FC = () => {
   useEffect(() => {
     if (meshState != null) {
       meshState.material.intensity.value = intensity
+      meshState.material.lodSize.value = lodSize
     }
-  }, [meshState, intensity])
+  }, [meshState, intensity, lodSize])
+
+  useEffect(() => {
+    meshState?.mesh.setLodBudget(budget)
+  }, [meshState, budget])
 
   useFrame(() => {
     if (meshState != null) {

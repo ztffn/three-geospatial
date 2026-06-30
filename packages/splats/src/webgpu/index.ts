@@ -10,14 +10,22 @@ export {
   CPUSplatSorter,
   SortTrigger
 } from '../GaussianSplatSorter'
-export type { GaussianSplatSorter } from '../GaussianSplatSorter'
+export type {
+  GaussianSplatSorter,
+  GpuGaussianSplatSorter
+} from '../GaussianSplatSorter'
 export { WorkerSplatSorter } from '../WorkerSplatSorter'
 export { GaussianSplatGeometry } from '../GaussianSplatGeometry'
 export { GaussianSplatMesh } from '../GaussianSplatMesh'
 export type {
   GaussianSplatMeshOptions,
+  SplatLodMeshOptions,
   SplatMaterial
 } from '../GaussianSplatMesh'
+export { SplatOctree, computeSplatImportance } from '../SplatOctree'
+export type { SplatOctreeLeaf, SplatOctreeOptions } from '../SplatOctree'
+export { SplatLodSelector } from '../SplatLodSelector'
+export type { SplatLodParams, SplatLodResult } from '../SplatLodSelector'
 export { GaussianSplatsPlugin } from '../GaussianSplatsPlugin'
 export type { GaussianSplatsPluginOptions } from '../GaussianSplatsPlugin'
 export {
@@ -33,3 +41,9 @@ export type { SpzSplatLoadOptions } from '../SpzSplatLoader'
 // (see docs/splats-design-spec.md §11.1). Pass it to `GaussianSplatMesh` via the
 // `createMaterial` option to render splats under the Three.js WebGPU renderer.
 export { GaussianSplatNodeMaterial } from './GaussianSplatNodeMaterial'
+
+// GPU-resident radix sort (PlayCanvas multipass port). `GpuSplatSorter` drops
+// into `GaussianSplatMesh` via the `sorter` option to sort multi-million-splat
+// clouds entirely on the GPU — no CPU worker, no per-sort index upload.
+export { GpuSplatSorter } from './GpuSplatSorter'
+export { WebGpuRadixSort } from './WebGpuRadixSort'

@@ -8,17 +8,16 @@ import {
   AddEquation,
   CustomBlending,
   DoubleSide,
+  Matrix4,
   OneFactor,
   OneMinusSrcAlphaFactor,
   Vector2,
   type Camera,
+  type PerspectiveCamera,
   type Vector3
 } from 'three'
 import {
   attribute,
-  cameraFar,
-  cameraNear,
-  cameraProjectionMatrix,
   float,
   Fn,
   instancedArray,
@@ -26,7 +25,8 @@ import {
   int,
   ivec2,
   mat3,
-  modelViewMatrix,
+  storage,
+  struct,
   texture,
   transpose,
   uniform,
@@ -38,6 +38,7 @@ import {
 } from 'three/tsl'
 import {
   MeshBasicNodeMaterial,
+  StorageInstancedBufferAttribute,
   type ComputeNode,
   type Node
 } from 'three/webgpu'
@@ -95,6 +96,17 @@ const SH_C3 = [
   -0.5900435899266435
 ]
 
+// Per-splat data the vertex stage needs, packed into one struct so it is a single
+// coherent buffer read (one cache line per instance) rather than several scattered
+// texture/buffer fetches. `center` = NDC centre (xy), depth (z), cull flag (w);
+// `axes` = major (xy) / minor (zw) ellipse axes in pixels; `color` = resolved
+// linear radiance (rgb) + opacity (w). Filled by the prepare compute pass.
+const splatStruct = /*#__PURE__*/ struct({
+  center: 'vec4',
+  axes: 'vec4',
+  color: 'vec4'
+})
+
 const scratchSize = /*#__PURE__*/ new Vector2()
 
 /**
@@ -118,18 +130,48 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
    */
   readonly intensity = uniform(1)
 
+  /**
+   * Screen-space LOD cull, in pixels. The prepare pass collapses any splat whose
+   * projected major-axis standard deviation is below this — its quad becomes a
+   * degenerate offscreen triangle, producing zero fragments. This bounds the
+   * transparent OVERDRAW that dominates GPU cost on dense multi-million-splat
+   * clouds (the steady-state bottleneck), at the cost of thinning the far field.
+   * 0 = draw every splat. A coarse stand-in for PlayCanvas's octree LOD budget —
+   * a flat SPZ has no LOD octree to drive a true budget.
+   */
+  readonly lodSize = uniform(0)
+
   private readonly logarithmicDepthBuffer: boolean
 
-  // View-dependent SH is resolved per splat in a compute pre-pass (not per quad
-  // vertex) into this storage buffer; the vertex stage reads one resolved colour.
-  // Null when the cloud carries no SH (the colour is then resolved inline). Camera
-  // position is supplied in splat-local space as scalar uniforms (reassigned, not
-  // mutated, so the WebGPU backend reliably re-uploads them).
-  private resolvedColor: ReturnType<typeof instancedArray> | null = null
-  private computeNode: ComputeNode | null = null
+  // Everything the vertex stage needs per splat — screen-space ellipse (centre,
+  // axes, depth, cull flag) AND resolved colour+opacity — is computed once per
+  // splat in a single "prepare" compute pass and packed into `prepared` (one
+  // struct per splat), so the vertex does ONE coherent buffer read instead of
+  // several scattered texture fetches (the dominant cost for large clouds).
+  // Recomputed only when the view changes (see updatePrepare); a static camera
+  // costs nothing. Camera-local position + matrices are uniforms (reassigned /
+  // copied so the WebGPU backend re-uploads them; mat4 via .value.copy, as in
+  // HighpVelocityNode).
+  private prepared: ReturnType<typeof instancedArray> | null = null
+  private prepareNode: ComputeNode | null = null
+
+  // Draw order: per-instance splat id (sorted back-to-front), in a GPU storage
+  // buffer the vertex reads via `instanceIndex`. Rewritten each sort — by
+  // GpuSplatSorter (GPU-GPU copy, no upload) or a CPU sorter (uploadOrder).
+  private orderAttribute: StorageInstancedBufferAttribute | null = null
+  private orderArray: ReturnType<typeof storage> | null = null
+  private count = 0
+
   private readonly cameraLocalX = uniform(0)
   private readonly cameraLocalY = uniform(0)
   private readonly cameraLocalZ = uniform(0)
+  private readonly modelViewUniform = uniform('mat4')
+  private readonly projectionUniform = uniform('mat4')
+  private readonly nearUniform = uniform(0)
+  private readonly farUniform = uniform(1)
+  private readonly lastModelView = new Matrix4()
+  private readonly lastProjection = new Matrix4()
+  private preparedOnce = false
 
   constructor(
     geometry: GaussianSplatGeometry,
@@ -162,52 +204,96 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   }
 
   private buildNodes(geometry: GaussianSplatGeometry): void {
+    this.count = geometry.count
+    const quadOffset = attribute('quadOffset', 'vec2')
+
+    // One prepare compute pass (projection + colour) fills a per-splat struct,
+    // indexed by the splat's own id. The draw order (instance → splat id) lives in
+    // a GPU storage buffer rewritten each sort; identity-initialised so the first
+    // frame (before any sort) is still coherent.
+    this.prepared = instancedArray(geometry.count, splatStruct)
+    this.prepareNode = this.buildPrepare(geometry)
+
+    const orderData = new Uint32Array(geometry.count)
+    for (let i = 0; i < geometry.count; i++) {
+      orderData[i] = i
+    }
+    const orderAttribute = new StorageInstancedBufferAttribute(orderData, 1)
+    this.orderAttribute = orderAttribute
+    this.orderArray = storage(orderAttribute, 'uint', geometry.count)
+
+    // Draw instance j reads order[j] = sorted splat id, then that splat's prepared
+    // record. instanceIndex is the per-instance builtin; quadOffset is per-vertex.
+    const splatId = this.orderArray.element(instanceIndex)
+    const splat = this.prepared.element(int(splatId))
+    const viewport = vec2(this.viewportX, this.viewportY)
+
+    // color: rgb = resolved linear radiance, a = opacity (flat across the quad).
+    const vColor = varying(splat.get('color'))
+    const vQuad = varying(quadOffset)
+
+    this.vertexNode = Fn(() => {
+      const pc = splat.get('center') // xy = NDC centre, z = depth, w = valid flag
+      const pa = splat.get('axes') // xy = major axis (px), zw = minor axis (px)
+      const ndc = pc.xy
+        .add(pa.xy.mul(quadOffset.x).div(viewport))
+        .add(pa.zw.mul(quadOffset.y).div(viewport))
+      const position = vec4(ndc, pc.z, 1)
+      // Splats the prepare pass frustum-culled carry valid = 0 → collapse offscreen.
+      return pc.w.lessThan(0.5).select(vec4(0, 0, 2, 1), position)
+    })()
+
+    this.outputNode = Fn(() => {
+      // quadOffset is in standard-deviation units; fade out beyond ~2σ.
+      const power = vQuad.dot(vQuad).negate()
+      const alpha = power.exp().mul(vColor.a)
+      const masked = power.lessThan(-4).select(float(0), alpha)
+      // Premultiplied "over"; `intensity` scales radiance only, not coverage.
+      return vec4(vColor.rgb.mul(this.intensity).mul(masked), masked)
+    })()
+  }
+
+  // Resolves everything the vertex stage needs for one splat — the EWA screen-space
+  // ellipse (centre, axes, depth, frustum-cull flag) AND the view-dependent colour
+  // (DC + SH degrees 1-3, clamped, display→linear) — and packs it into the prepared
+  // struct. One coherent compute invocation per splat, replacing the EWA done ×4 per
+  // quad vertex plus the scattered covariance/SH fetches. SH is evaluated against the
+  // splat→camera direction in the splat-local frame the (flip-baked) coeffs live in.
+  private buildPrepare(geometry: GaussianSplatGeometry): ComputeNode {
     const textureWidth = int(geometry.textureSize.x)
     const positionTexture = texture(geometry.positionTexture)
     const covATexture = texture(geometry.covATexture)
     const covBTexture = texture(geometry.covBTexture)
     const colorTexture = texture(geometry.colorTexture)
-
-    const quadOffset = attribute('quadOffset', 'vec2')
-    const splatIndex = attribute('splatIndex', 'float')
-
-    // Resolve the per-instance splat index to a data-texture texel. Integer
-    // arithmetic only (y = i / w, x = i - y * w) to avoid a separate modulo op.
-    const index = int(splatIndex.add(0.5))
-    const texelY = index.div(textureWidth)
-    const texelX = index.sub(texelY.mul(textureWidth))
-    const texel = ivec2(texelX, texelY)
-
-    const positionOpacity = positionTexture.load(texel)
-    const colorTexel = colorTexture.load(texel)
-
-    // Resolve the flat per-splat colour. View-dependent SH (degrees 1-3) is a
-    // per-splat sum over up to 15 coefficients; doing it here would cost that work
-    // ×4 per quad vertex with scattered, sort-ordered texture reads — the dominant
-    // GPU cost for large clouds. Instead resolve it ONCE per splat in a compute
-    // pre-pass (`buildColorCompute`, recomputed only when the camera moves) into
-    // `resolvedColor`, and read a single element here. With no SH the DC display
-    // colour is view-independent, so it is resolved inline (sRGB→linear).
-    const shCount = geometry.shCoefficientCount
-    let linearColor: SplatNode
-    if (geometry.shTexture != null && shCount > 0) {
-      this.resolvedColor = instancedArray(geometry.count, 'vec3')
-      this.computeNode = this.buildColorCompute(geometry)
-      linearColor = this.resolvedColor.element(index)
-    } else {
-      linearColor = srgbToLinear(colorTexel.rgb)
-    }
-
-    // Interpolated across the quad for the fragment Gaussian; color is flat.
-    const vColor = varying(vec4(linearColor, positionOpacity.w))
-    const vQuad = varying(quadOffset)
-
-    const viewport = vec2(this.viewportX, this.viewportY)
+    const prepared = this.prepared!
     const focal = vec2(this.focalX, this.focalY)
+    const modelView = this.modelViewUniform
+    const projection = this.projectionUniform
+    const near = this.nearUniform
+    const far = this.farUniform
+    const lodSize = this.lodSize
     const useLogDepth = this.logarithmicDepthBuffer
+    const cameraLocal = vec3(
+      this.cameraLocalX,
+      this.cameraLocalY,
+      this.cameraLocalZ
+    )
 
-    this.vertexNode = Fn(() => {
-      const center = positionOpacity.xyz
+    const shCount = geometry.shCoefficientCount
+    const hasSh = geometry.shTexture != null && shCount > 0
+    const shTexture = hasSh ? texture(geometry.shTexture) : null
+    const shWidth = int(geometry.shTextureSize.x)
+    const shStride = int(shCount)
+    const shScale = float(geometry.shRangeScale)
+    const shMin = float(geometry.shRangeMin)
+
+    return Fn(() => {
+      const i = int(instanceIndex)
+      const ty = i.div(textureWidth)
+      const tx = i.sub(ty.mul(textureWidth))
+      const texel = ivec2(tx, ty)
+      const posOpacity = positionTexture.load(texel)
+      const center = posOpacity.xyz
       const covA = covATexture.load(texel)
       const covB = covBTexture.load(texel)
       // Symmetric 3D covariance from its 6 stored entries.
@@ -223,11 +309,10 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
         covB.z
       )
 
-      const viewCenter = modelViewMatrix.mul(vec4(center, 1))
-      const clipCenter = cameraProjectionMatrix.mul(viewCenter)
+      const viewCenter = modelView.mul(vec4(center, 1))
+      const clipCenter = projection.mul(viewCenter)
 
-      // 2D covariance = Jᵀ Wᵀ Σ W J, reduced to the three unique entries via the
-      // first two columns of T = Wᵀ J (avoids matrix element extraction in TSL).
+      // 2D covariance via the first two columns of T = Wᵀ J.
       const invZ = float(1).div(viewCenter.z)
       const jColumn0 = vec3(
         focal.x.mul(invZ),
@@ -239,7 +324,7 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
         focal.y.mul(invZ),
         focal.y.mul(viewCenter.y).mul(invZ).mul(invZ).negate()
       )
-      const W = transpose(mat3(modelViewMatrix))
+      const W = transpose(mat3(modelView))
       const t0 = W.mul(jColumn0)
       const t1 = W.mul(jColumn1)
       const Vt0 = Vrk.mul(t0)
@@ -261,136 +346,148 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
       )
 
       const center2d = clipCenter.xy.div(clipCenter.w)
-      const ndc = center2d
-        .add(majorAxis.mul(quadOffset.x).div(viewport))
-        .add(minorAxis.mul(quadOffset.y).div(viewport))
       // Depth must share the scene's buffer scale: logarithmic when the renderer
       // uses a log depth buffer (globe twin), linear NDC otherwise (standalone).
       const depthZ = useLogDepth
-        ? viewZToLogarithmicDepth(viewCenter.z, cameraNear, cameraFar)
+        ? viewZToLogarithmicDepth(viewCenter.z, near, far)
         : clipCenter.z.div(clipCenter.w)
-      const position = vec4(ndc, depthZ, 1)
 
-      // Frustum cull by collapsing to a vertex outside the clip volume.
+      // Frustum cull → valid flag the vertex stage uses to collapse the quad.
       const clip = clipCenter.w.mul(1.2)
       const culled = clipCenter.z
         .lessThan(clip.negate())
         .or(clipCenter.x.abs().greaterThan(clip))
         .or(clipCenter.y.abs().greaterThan(clip))
-      return culled.select(vec4(0, 0, 2, 1), position)
-    })()
+      // Screen-space LOD: also collapse splats whose major-axis stddev is below
+      // `lodSize` px. lambda1 is the major eigenvalue (variance in px²), so the
+      // test is lambda1 < lodSize² — no sqrt. Bounds transparent overdraw on
+      // dense clouds; lodSize 0 keeps every splat (compares against 0).
+      const tooSmall = lambda1.lessThan(lodSize.mul(lodSize))
+      const valid = culled.or(tooSmall).select(float(0), float(1))
 
-    this.outputNode = Fn(() => {
-      // quadOffset is in standard-deviation units; fade out beyond ~2σ.
-      const power = vQuad.dot(vQuad).negate()
-      const alpha = power.exp().mul(vColor.a)
-      const masked = power.lessThan(-4).select(float(0), alpha)
-      // Premultiplied "over"; `intensity` scales radiance only, not coverage.
-      return vec4(vColor.rgb.mul(this.intensity).mul(masked), masked)
-    })()
-  }
-
-  // Resolves the view-dependent colour of every splat (DC + SH degrees 1-3) into
-  // `resolvedColor`, one compute invocation per splat — coherent access in splat
-  // order, not the scattered ×4-per-quad-vertex reads of evaluating it inline.
-  // Writes the premultiply-ready LINEAR colour (display + SH, clamped, sRGB→linear)
-  // the vertex stage reads. View direction is per splat in the splat-local frame
-  // the (already flip-baked) coefficients live in.
-  private buildColorCompute(geometry: GaussianSplatGeometry): ComputeNode {
-    const textureWidth = int(geometry.textureSize.x)
-    const positionTexture = texture(geometry.positionTexture)
-    const colorTexture = texture(geometry.colorTexture)
-    const shTexture = texture(geometry.shTexture!)
-    const shWidth = int(geometry.shTextureSize.x)
-    const shStride = int(geometry.shCoefficientCount)
-    const shScale = float(geometry.shRangeScale)
-    const shMin = float(geometry.shRangeMin)
-    const shCount = geometry.shCoefficientCount
-    const resolvedColor = this.resolvedColor!
-    const cameraLocal = vec3(
-      this.cameraLocalX,
-      this.cameraLocalY,
-      this.cameraLocalZ
-    )
-
-    return Fn(() => {
-      const i = int(instanceIndex)
-      const ty = i.div(textureWidth)
-      const tx = i.sub(ty.mul(textureWidth))
-      const texel = ivec2(tx, ty)
-      const center = positionTexture.load(texel).xyz
+      // Colour: DC display colour + view-dependent SH, clamped, display→linear.
       const dc = colorTexture.load(texel).rgb
-
-      // Dequantized RGB of the j-th rest-coefficient (one RGBA8 texel each,
-      // addressed splatIndex * coeffCount + j in the SH texture's own grid).
-      const coeff = (j: number): SplatNode => {
-        const gt = i.mul(shStride).add(int(j))
-        const gy = gt.div(shWidth)
-        const gx = gt.sub(gy.mul(shWidth))
-        return shTexture.load(ivec2(gx, gy)).rgb.mul(shScale).add(shMin)
-      }
-
-      const dir = center.sub(cameraLocal).normalize()
-      const x = dir.x
-      const y = dir.y
-      const z = dir.z
-      let sh: SplatNode = coeff(0)
-        .mul(y.negate())
-        .add(coeff(1).mul(z))
-        .add(coeff(2).mul(x.negate()))
-        .mul(SH_C1)
-      if (shCount >= 8) {
-        const xx = x.mul(x)
-        const yy = y.mul(y)
-        const zz = z.mul(z)
-        const xy = x.mul(y)
-        const yz = y.mul(z)
-        const xz = x.mul(z)
-        sh = sh
-          .add(coeff(3).mul(xy).mul(SH_C2[0]))
-          .add(coeff(4).mul(yz).mul(SH_C2[1]))
-          .add(coeff(5).mul(zz.mul(2).sub(xx).sub(yy)).mul(SH_C2[2]))
-          .add(coeff(6).mul(xz).mul(SH_C2[3]))
-          .add(coeff(7).mul(xx.sub(yy)).mul(SH_C2[4]))
-        if (shCount >= 15) {
-          sh = sh
-            .add(coeff(8).mul(y.mul(xx.mul(3).sub(yy))).mul(SH_C3[0]))
-            .add(coeff(9).mul(xy.mul(z)).mul(SH_C3[1]))
-            .add(coeff(10).mul(y.mul(zz.mul(4).sub(xx).sub(yy))).mul(SH_C3[2]))
-            .add(
-              coeff(11)
-                .mul(z.mul(zz.mul(2).sub(xx.mul(3)).sub(yy.mul(3))))
-                .mul(SH_C3[3])
-            )
-            .add(coeff(12).mul(x.mul(zz.mul(4).sub(xx).sub(yy))).mul(SH_C3[4]))
-            .add(coeff(13).mul(z.mul(xx.sub(yy))).mul(SH_C3[5]))
-            .add(coeff(14).mul(x.mul(xx.sub(yy.mul(3)))).mul(SH_C3[6]))
+      let displayColor: SplatNode = dc
+      if (hasSh && shTexture != null) {
+        // Dequantized RGB of the j-th rest-coefficient (one RGBA8 texel each).
+        const coeff = (j: number): SplatNode => {
+          const gt = i.mul(shStride).add(int(j))
+          const gy = gt.div(shWidth)
+          const gx = gt.sub(gy.mul(shWidth))
+          return shTexture.load(ivec2(gx, gy)).rgb.mul(shScale).add(shMin)
         }
+        const dir = center.sub(cameraLocal).normalize()
+        const x = dir.x
+        const y = dir.y
+        const z = dir.z
+        let sh: SplatNode = coeff(0)
+          .mul(y.negate())
+          .add(coeff(1).mul(z))
+          .add(coeff(2).mul(x.negate()))
+          .mul(SH_C1)
+        if (shCount >= 8) {
+          const xx = x.mul(x)
+          const yy = y.mul(y)
+          const zz = z.mul(z)
+          const xy = x.mul(y)
+          const yz = y.mul(z)
+          const xz = x.mul(z)
+          sh = sh
+            .add(coeff(3).mul(xy).mul(SH_C2[0]))
+            .add(coeff(4).mul(yz).mul(SH_C2[1]))
+            .add(coeff(5).mul(zz.mul(2).sub(xx).sub(yy)).mul(SH_C2[2]))
+            .add(coeff(6).mul(xz).mul(SH_C2[3]))
+            .add(coeff(7).mul(xx.sub(yy)).mul(SH_C2[4]))
+          if (shCount >= 15) {
+            sh = sh
+              .add(coeff(8).mul(y.mul(xx.mul(3).sub(yy))).mul(SH_C3[0]))
+              .add(coeff(9).mul(xy.mul(z)).mul(SH_C3[1]))
+              .add(coeff(10).mul(y.mul(zz.mul(4).sub(xx).sub(yy))).mul(SH_C3[2]))
+              .add(
+                coeff(11)
+                  .mul(z.mul(zz.mul(2).sub(xx.mul(3)).sub(yy.mul(3))))
+                  .mul(SH_C3[3])
+              )
+              .add(coeff(12).mul(x.mul(zz.mul(4).sub(xx).sub(yy))).mul(SH_C3[4]))
+              .add(coeff(13).mul(z.mul(xx.sub(yy))).mul(SH_C3[5]))
+              .add(coeff(14).mul(x.mul(xx.sub(yy.mul(3)))).mul(SH_C3[6]))
+          }
+        }
+        displayColor = dc.add(sh)
       }
-      const display = dc.add(sh).clamp(0, 1)
-      resolvedColor.element(i).assign(srgbToLinear(display))
+      const linear = srgbToLinear(displayColor.clamp(0, 1))
+
+      const out = prepared.element(i)
+      out.get('center').assign(vec4(center2d, depthZ, valid))
+      out.get('axes').assign(vec4(majorAxis, minorAxis))
+      out.get('color').assign(vec4(linear, posOpacity.w))
     })().compute(geometry.count)
   }
 
   /**
-   * Resolves the per-splat view-dependent colour for the current camera via the
-   * compute pre-pass. No-op when the cloud carries no SH. Call when the camera
-   * moves; `cameraLocal` is the camera position in the splat mesh's local space.
+   * Resolves the per-splat render data (projection + colour) for the current view
+   * via the prepare compute pass. Call each frame with the splat mesh's model-view
+   * matrix and the camera in mesh-local space; skips the dispatch when the view is
+   * unchanged, so a static camera costs nothing.
    */
-  updateColors(renderer: RendererLike, cameraLocal: Vector3): void {
-    if (this.computeNode == null) {
+  updatePrepare(
+    renderer: RendererLike,
+    modelView: Matrix4,
+    cameraLocal: Vector3,
+    camera: Camera
+  ): void {
+    if (this.prepareNode == null) {
       return
     }
+    const projectionMatrix = camera.projectionMatrix
+    if (
+      this.preparedOnce &&
+      this.lastModelView.equals(modelView) &&
+      this.lastProjection.equals(projectionMatrix)
+    ) {
+      return
+    }
+    this.modelViewUniform.value.copy(modelView)
+    this.projectionUniform.value.copy(projectionMatrix)
+    const perspective = camera as PerspectiveCamera
+    this.nearUniform.value = perspective.near
+    this.farUniform.value = perspective.far
     this.cameraLocalX.value = cameraLocal.x
     this.cameraLocalY.value = cameraLocal.y
     this.cameraLocalZ.value = cameraLocal.z
+    this.lastModelView.copy(modelView)
+    this.lastProjection.copy(projectionMatrix)
+    this.preparedOnce = true
     void (
       renderer as unknown as { compute: (node: ComputeNode) => unknown }
-    ).compute(this.computeNode)
+    ).compute(this.prepareNode)
+  }
+
+  /**
+   * The order storage attribute (per-instance splat id). {@link GpuSplatSorter}
+   * writes the sorted order straight into its GPU buffer; the mesh passes this in.
+   */
+  getOrderAttribute(): StorageInstancedBufferAttribute | null {
+    return this.orderAttribute
+  }
+
+  /**
+   * Uploads a CPU-computed draw order (instance → splat id) into the order buffer.
+   * Used when the WebGPU node path is paired with a CPU/worker sorter instead of
+   * {@link GpuSplatSorter} (which writes the buffer on-GPU with no upload).
+   */
+  uploadOrder(indices: Uint32Array): void {
+    if (this.orderAttribute == null) {
+      return
+    }
+    ;(this.orderAttribute.array as Uint32Array).set(
+      indices.subarray(0, this.count)
+    )
+    this.orderAttribute.needsUpdate = true
   }
 
   override dispose(): void {
-    this.resolvedColor?.dispose()
+    this.prepared?.dispose()
     super.dispose()
   }
 

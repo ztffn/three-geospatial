@@ -88,9 +88,32 @@ export const WebGPUCanvas: FC<WebGPUCanvasProps> = ({
           key={forceWebGL ? 'webgl' : 'webgpu'}
           {...canvasProps}
           gl={async props => {
+            // Three requests the device with spec-minimum limits unless told
+            // otherwise: 128 MB storage-buffer binding, 256 MB max buffer, 8192
+            // max 2D texture. All three are exceeded by large splat clouds — the
+            // per-splat struct buffer (48 B/splat → 192 MB at 4M, 400 MB at 8M)
+            // and the SH texture (11200×11158 at full 8.33M). Request the
+            // adapter's real maxima so large clouds allocate. Skipped under WebGL;
+            // clamped to what the adapter reports (some browsers — e.g. Firefox's
+            // core adapter — may still cap at the minimums).
+            const requiredLimits: Record<string, number> = {}
+            if (!forceWebGL && navigator.gpu != null) {
+              const adapter = await navigator.gpu.requestAdapter()
+              if (adapter != null) {
+                requiredLimits.maxStorageBufferBindingSize =
+                  adapter.limits.maxStorageBufferBindingSize
+                requiredLimits.maxBufferSize = adapter.limits.maxBufferSize
+                requiredLimits.maxTextureDimension2D =
+                  adapter.limits.maxTextureDimension2D
+              }
+            }
             const renderer = new WebGPURenderer({
               ...(props as any),
               ...otherProps,
+              requiredLimits: {
+                ...requiredLimits,
+                ...(otherProps.requiredLimits ?? {})
+              },
               forceWebGL
             })
             ref.current = renderer

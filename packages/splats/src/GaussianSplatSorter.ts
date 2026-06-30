@@ -24,6 +24,26 @@ export interface GaussianSplatSorter {
 }
 
 /**
+ * A GPU-resident sorter (e.g. the WebGPU `GpuSplatSorter`). Instead of returning
+ * indices to the CPU, it writes the sorted draw order directly into the material's
+ * order storage buffer on the GPU — no per-sort index upload. The
+ * {@link GaussianSplatMesh} detects it via {@link isGpuSplatSorter} and drives
+ * {@link sortGpu} instead of {@link GaussianSplatSorter.sort}. The renderer and
+ * order attribute are typed loosely so this contract stays free of WebGPU types.
+ */
+export interface GpuGaussianSplatSorter {
+  readonly isGpuSplatSorter: true
+  sortGpu(
+    renderer: unknown,
+    orderAttribute: unknown,
+    positions: Float32Array,
+    cameraPosition: Vector3,
+    count: number
+  ): void
+  dispose(): void
+}
+
+/**
  * Synchronous counting sort that buckets splats by quantized squared distance
  * from the camera. Single pass over the data with `bucketCount` buckets, which
  * is both faster and more numerically forgiving than a comparison sort for the
