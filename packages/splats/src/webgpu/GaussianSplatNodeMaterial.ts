@@ -20,6 +20,7 @@ import {
   attribute,
   float,
   Fn,
+  If,
   instancedArray,
   instanceIndex,
   int,
@@ -169,6 +170,11 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   private readonly projectionUniform = uniform('mat4')
   private readonly nearUniform = uniform(0)
   private readonly farUniform = uniform(1)
+  // Number of active splats this frame: the prepare pass dispatches this many
+  // invocations and reads `order[invocation]` to project only the drawn subset
+  // (LOD budget), instead of every loaded splat. Guards over-dispatch rounding.
+  private readonly activeCountUniform = uniform(0)
+  private lastActiveCount = -1
   private readonly lastModelView = new Matrix4()
   private readonly lastProjection = new Matrix4()
   private preparedOnce = false
@@ -207,13 +213,10 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     this.count = geometry.count
     const quadOffset = attribute('quadOffset', 'vec2')
 
-    // One prepare compute pass (projection + colour) fills a per-splat struct,
-    // indexed by the splat's own id. The draw order (instance → splat id) lives in
-    // a GPU storage buffer rewritten each sort; identity-initialised so the first
-    // frame (before any sort) is still coherent.
-    this.prepared = instancedArray(geometry.count, splatStruct)
-    this.prepareNode = this.buildPrepare(geometry)
-
+    // Draw order (instance → splat id), in a GPU storage buffer rewritten each
+    // sort/LOD-select. Identity-initialised so the first frame is coherent. Built
+    // before the prepare pass because the prepare reads it (projects only the
+    // active subset, `order[0..activeCount)`).
     const orderData = new Uint32Array(geometry.count)
     for (let i = 0; i < geometry.count; i++) {
       orderData[i] = i
@@ -221,6 +224,11 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     const orderAttribute = new StorageInstancedBufferAttribute(orderData, 1)
     this.orderAttribute = orderAttribute
     this.orderArray = storage(orderAttribute, 'uint', geometry.count)
+
+    // One prepare compute pass (projection + colour) fills a per-splat struct,
+    // indexed by the splat's own id, for the active subset only.
+    this.prepared = instancedArray(geometry.count, splatStruct)
+    this.prepareNode = this.buildPrepare(geometry)
 
     // Draw instance j reads order[j] = sorted splat id, then that splat's prepared
     // record. instanceIndex is the per-instance builtin; quadOffset is per-vertex.
@@ -286,9 +294,16 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     const shStride = int(shCount)
     const shScale = float(geometry.shRangeScale)
     const shMin = float(geometry.shRangeMin)
+    const orderArray = this.orderArray!
+    const activeCount = this.activeCountUniform
 
     return Fn(() => {
-      const i = int(instanceIndex)
+      // Each invocation projects one active splat: `order[invocation]`. Dispatched
+      // over `activeCount` (the LOD budget), so only drawn splats are projected —
+      // not the whole loaded cloud. The guard ignores over-dispatch rounding.
+      const invocation = int(instanceIndex)
+      If(invocation.lessThan(activeCount), () => {
+      const i = int(orderArray.element(invocation))
       const ty = i.div(textureWidth)
       const tx = i.sub(ty.mul(textureWidth))
       const texel = ivec2(tx, ty)
@@ -421,20 +436,25 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
       out.get('center').assign(vec4(center2d, depthZ, valid))
       out.get('axes').assign(vec4(majorAxis, minorAxis))
       out.get('color').assign(vec4(linear, posOpacity.w))
+      })
     })().compute(geometry.count)
   }
 
   /**
    * Resolves the per-splat render data (projection + colour) for the current view
    * via the prepare compute pass. Call each frame with the splat mesh's model-view
-   * matrix and the camera in mesh-local space; skips the dispatch when the view is
-   * unchanged, so a static camera costs nothing.
+   * matrix, the camera in mesh-local space, and the active splat count (the LOD
+   * budget, or the full count without LOD). Only `activeCount` splats — read from
+   * the order buffer — are projected, so the prepare cost tracks the drawn count,
+   * not the loaded count. Skips the dispatch when neither the view nor the active
+   * count changed, so a static camera costs nothing.
    */
   updatePrepare(
     renderer: RendererLike,
     modelView: Matrix4,
     cameraLocal: Vector3,
-    camera: Camera
+    camera: Camera,
+    activeCount: number
   ): void {
     if (this.prepareNode == null) {
       return
@@ -442,6 +462,7 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     const projectionMatrix = camera.projectionMatrix
     if (
       this.preparedOnce &&
+      this.lastActiveCount === activeCount &&
       this.lastModelView.equals(modelView) &&
       this.lastProjection.equals(projectionMatrix)
     ) {
@@ -455,12 +476,18 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     this.cameraLocalX.value = cameraLocal.x
     this.cameraLocalY.value = cameraLocal.y
     this.cameraLocalZ.value = cameraLocal.z
+    this.activeCountUniform.value = activeCount
     this.lastModelView.copy(modelView)
     this.lastProjection.copy(projectionMatrix)
+    this.lastActiveCount = activeCount
     this.preparedOnce = true
+    // Dispatch only `activeCount` invocations (the backend caches the workgroup
+    // split per count), so projection scales with the drawn subset.
     void (
-      renderer as unknown as { compute: (node: ComputeNode) => unknown }
-    ).compute(this.prepareNode)
+      renderer as unknown as {
+        compute: (node: ComputeNode, dispatchSize: number) => unknown
+      }
+    ).compute(this.prepareNode, Math.max(1, activeCount))
   }
 
   /**

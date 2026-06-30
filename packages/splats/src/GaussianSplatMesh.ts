@@ -48,7 +48,8 @@ export interface SplatMaterial extends Material {
     renderer: SplatMaterialRenderer,
     modelView: Matrix4,
     cameraLocal: Vector3,
-    camera: Camera
+    camera: Camera,
+    activeCount: number
   ) => void
   /**
    * Order storage attribute (instance → splat id) a GPU sorter writes directly.
@@ -187,21 +188,11 @@ export class GaussianSplatMesh extends Mesh<
       .setFromMatrixPosition(camera.matrixWorld)
       .applyMatrix4(scratchInverseMatrix)
 
-    // Resolve per-splat render data (screen-space projection + colour) for this
-    // view — a GPU compute pre-pass, gated on view change inside the material so a
-    // static camera costs nothing. No-op for materials without it (the WebGL path
-    // projects per vertex).
-    this.material.updatePrepare?.(
-      renderer,
-      scratchModelView,
-      scratchCameraLocal,
-      camera
-    )
-
-    // LOD path: pick a budgeted subset by octree LOD + distance, sorted
+    // LOD path FIRST: pick a budgeted subset by octree LOD + distance, sorted
     // back-to-front, and draw only that (instanceCount = the subset). Bounds the
     // rasterized count for multi-million-splat clouds. Gated on the camera-rotation
-    // threshold (or a budget change), so a static camera costs nothing.
+    // threshold (or a budget change), so a static camera costs nothing. Runs before
+    // the prepare pass so the prepare projects only the active subset.
     if (this.lodSelector != null) {
       if (
         this.lodDirty ||
@@ -222,6 +213,22 @@ export class GaussianSplatMesh extends Mesh<
         this.trigger.markSorted(scratchCameraLocal, this.geometry.centroid)
         this.lodDirty = false
       }
+    }
+
+    // Resolve per-splat render data (screen-space projection + colour) for this
+    // view — a GPU compute pre-pass over the active subset (`instanceCount`),
+    // gated on view/count change inside the material so a static camera costs
+    // nothing. No-op for materials without it (the WebGL path projects per vertex).
+    this.material.updatePrepare?.(
+      renderer,
+      scratchModelView,
+      scratchCameraLocal,
+      camera,
+      this.geometry.instanceCount
+    )
+
+    // LOD path already set the draw order; no separate sorter pass.
+    if (this.lodSelector != null) {
       return
     }
 
