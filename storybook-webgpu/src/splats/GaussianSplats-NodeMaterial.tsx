@@ -8,7 +8,7 @@
 import { OrbitControls } from '@react-three/drei'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useControls } from 'leva'
-import { useEffect, useMemo, useState, type FC } from 'react'
+import { useEffect, useMemo, useRef, useState, type FC } from 'react'
 import type { Renderer } from 'three/webgpu'
 
 import {
@@ -202,9 +202,32 @@ const Content: FC = () => {
     meshState?.mesh.setLodBudget(budget)
   }, [meshState, budget])
 
+  // Live LOD diagnostics in the panel: `drawn` = splats actually rendered (should
+  // cap at budget); `leaves` = visible/total (visible < total ⇒ frustum culling is
+  // dropping off-screen leaves — pan so part of the cloud leaves the view to see it
+  // drop). Stays "—" if the worker never resolves (LOD off — check the console).
+  const [, setLodInfo] = useControls('LOD stats', () => ({
+    drawn: { value: '—', editable: false },
+    leaves: { value: '—', editable: false }
+  }))
+  const lastLodInfo = useRef('')
+
   useFrame(() => {
-    if (meshState != null) {
-      meshState.mesh.update(renderer, camera)
+    if (meshState == null) {
+      return
+    }
+    meshState.mesh.update(renderer, camera)
+    // Push LOD stats to the panel only when they change (no per-frame re-render).
+    const stats = meshState.mesh.lodStats
+    if (stats != null) {
+      const line = `${stats.activeCount}|${stats.visibleLeaves}/${stats.totalLeaves}`
+      if (line !== lastLodInfo.current) {
+        lastLodInfo.current = line
+        setLodInfo({
+          drawn: stats.activeCount.toLocaleString(),
+          leaves: `${stats.visibleLeaves}/${stats.totalLeaves}`
+        })
+      }
     }
   })
 

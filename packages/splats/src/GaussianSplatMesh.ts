@@ -131,6 +131,16 @@ export class GaussianSplatMesh extends Mesh<
   readonly sorter: GaussianSplatSorter | GpuGaussianSplatSorter
   /** LOD/budget parameters; mutate (or call {@link setLodBudget}) to tune live. */
   readonly lodParams: SplatLodParams
+  /**
+   * Latest LOD selection diagnostics (null until the first worker result lands —
+   * if it stays null, the worker never resolved and LOD is off). `visibleLeaves <
+   * totalLeaves` means frustum culling dropped leaves this frame.
+   */
+  lodStats: {
+    activeCount: number
+    visibleLeaves: number
+    totalLeaves: number
+  } | null = null
   private readonly trigger: SortTrigger
   private pendingSort = false
   private readonly lodSelector: WorkerSplatLodSelector | null
@@ -255,6 +265,11 @@ export class GaussianSplatMesh extends Mesh<
               this.geometry.setSortedIndices(active)
             }
             this.geometry.instanceCount = result.count
+            this.lodStats = {
+              activeCount: result.count,
+              visibleLeaves: result.visibleLeaves,
+              totalLeaves: result.totalLeaves
+            }
           })
       }
     }

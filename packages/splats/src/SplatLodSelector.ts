@@ -22,6 +22,10 @@ export interface SplatLodResult {
   /** Per-instance LOD-transition fade in `[0, 1]`, parallel to {@link indices}. */
   fade: Float32Array
   count: number
+  /** Leaves that passed the frustum cull this frame (diagnostics). */
+  visibleLeaves: number
+  /** Total octree leaves (diagnostics; `visibleLeaves < totalLeaves` ⇒ culling). */
+  totalLeaves: number
 }
 
 function saturate(x: number): number {
@@ -174,7 +178,7 @@ export class SplatLodSelector {
       }
     }
 
-    return this.sortBackToFront(
+    const sorted = this.sortBackToFront(
       active,
       activeFade,
       activeCount,
@@ -182,6 +186,13 @@ export class SplatLodSelector {
       cameraY,
       cameraZ
     )
+    return {
+      indices: sorted.indices,
+      fade: sorted.fade,
+      count: sorted.count,
+      visibleLeaves: visibleCount,
+      totalLeaves: leaves.length
+    }
   }
 
   // AABB vs six inward-facing planes: outside if the AABB's positive vertex (the
@@ -224,7 +235,7 @@ export class SplatLodSelector {
     cx: number,
     cy: number,
     cz: number
-  ): SplatLodResult {
+  ): { indices: Uint32Array; fade: Float32Array; count: number } {
     const positions = this.positions
     const distances = this.distances
 

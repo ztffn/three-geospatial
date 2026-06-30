@@ -15,6 +15,8 @@ interface WorkerResult {
   order: ArrayBuffer
   fade: ArrayBuffer
   count: number
+  visibleLeaves: number
+  totalLeaves: number
 }
 
 /**
@@ -43,8 +45,19 @@ export class WorkerSplatLodSelector {
       resolve?.({
         indices: new Uint32Array(data.order),
         fade: new Float32Array(data.fade),
-        count: data.count
+        count: data.count,
+        visibleLeaves: data.visibleLeaves,
+        totalLeaves: data.totalLeaves
       })
+    }
+    // Surface worker load/runtime failures instead of silently never resolving
+    // (which would leave LOD off — full cloud drawn, no budget/cull/fade).
+    this.worker.onerror = (event: ErrorEvent) => {
+      console.error(
+        '[WorkerSplatLodSelector] worker error — LOD selection is not running:',
+        event.message,
+        event
+      )
     }
 
     // One-time init: flatten the octree and ship it with a positions copy. The

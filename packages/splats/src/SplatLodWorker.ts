@@ -67,8 +67,14 @@ ctx.onmessage = (event: MessageEvent) => {
   const fade = new Float32Array(message.fade)
   order.set(result.indices.subarray(0, result.count))
   fade.set(result.fade.subarray(0, result.count))
-  ctx.postMessage({ order: order.buffer, fade: fade.buffer, count: result.count }, [
-    order.buffer,
-    fade.buffer
-  ])
+  ctx.postMessage(
+    {
+      order: order.buffer,
+      fade: fade.buffer,
+      count: result.count,
+      visibleLeaves: result.visibleLeaves,
+      totalLeaves: result.totalLeaves
+    },
+    [order.buffer, fade.buffer]
+  )
 }
