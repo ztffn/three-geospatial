@@ -58,3 +58,8 @@ export { GaussianSplatNodeMaterial } from './GaussianSplatNodeMaterial'
 // clouds entirely on the GPU — no CPU worker, no per-sort index upload.
 export { GpuSplatSorter } from './GpuSplatSorter'
 export { WebGpuRadixSort } from './WebGpuRadixSort'
+
+// React Three Fiber component for the WebGPU path (SPZ/PLY + GPU sort + octree LOD).
+// The WebGL-only `<GaussianSplats>` lives in the `r3f` entry.
+export { GaussianSplatsGPU } from './GaussianSplatsGPU'
+export type { GaussianSplatsGPUProps } from './GaussianSplatsGPU'
