@@ -20,6 +20,7 @@ export { GaussianSplatMesh } from '../GaussianSplatMesh'
 export type {
   GaussianSplatMeshOptions,
   SplatLodMeshOptions,
+  SplatLodPipelineLike,
   SplatMaterial
 } from '../GaussianSplatMesh'
 export {
@@ -35,8 +36,7 @@ export type {
   SplatOctreeFlat
 } from '../SplatOctree'
 export { SplatLodSelector } from '../SplatLodSelector'
-export type { SplatLodParams, SplatLodResult } from '../SplatLodSelector'
-export { WorkerSplatLodSelector } from '../WorkerSplatLodSelector'
+export type { SplatLodParams, SplatLeafLodResult } from '../SplatLodSelector'
 export { GaussianSplatsPlugin } from '../GaussianSplatsPlugin'
 export type { GaussianSplatsPluginOptions } from '../GaussianSplatsPlugin'
 export {
@@ -58,6 +58,11 @@ export { GaussianSplatNodeMaterial } from './GaussianSplatNodeMaterial'
 // clouds entirely on the GPU — no CPU worker, no per-sort index upload.
 export { GpuSplatSorter } from './GpuSplatSorter'
 export { WebGpuRadixSort } from './WebGpuRadixSort'
+
+// Fully-GPU octree-LOD pipeline (per-splat alpha cross-fade → stream compaction →
+// sort → indirect draw). Pass `(o, p, c) => new SplatLodPipeline(o, p, c)` as the
+// `lod.createPipeline` factory and `lodFade: true` on the node material.
+export { SplatLodPipeline } from './SplatLodPipeline'
 
 // React Three Fiber component for the WebGPU path (SPZ/PLY + GPU sort + octree LOD).
 // The WebGL-only `<GaussianSplats>` lives in the `r3f` entry.

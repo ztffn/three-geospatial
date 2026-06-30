@@ -16,6 +16,7 @@ import {
   GaussianSplatNodeMaterial,
   GpuSplatSorter,
   loadSpzSplatData,
+  SplatLodPipeline,
   type GaussianSplatData
 } from '@takram/three-geospatial-splats/webgpu'
 
@@ -166,18 +167,24 @@ const Content: FC = () => {
     let material!: GaussianSplatNodeMaterial
     const mesh = new GaussianSplatMesh(data, {
       // Octree LOD (PlayCanvas's unified-gsplat approach, ported): build a spatial
-      // octree with importance-decimated LOD levels at load, then each frame draw
-      // only a budgeted subset chosen by distance. Bounds the rasterized count so
-      // multi-million-splat clouds stay interactive. `budget` is tuned live below.
-      lod: { budget: 1_000_000 },
+      // octree with importance-decimated LOD levels at load, then each frame pick a
+      // budgeted target LOD per leaf. The injected GPU pipeline expands that into a
+      // per-splat temporal cross-fade, compacts the drawn set, sorts it, and draws it
+      // indirectly — bounding the rasterized count. `budget` is tuned live below.
+      lod: {
+        budget: 1_000_000,
+        createPipeline: (octree, positions, count) =>
+          new SplatLodPipeline(octree, positions, count)
+      },
       // GPU radix sort (PlayCanvas multipass port) for the non-LOD full-cloud path;
-      // dormant while LOD is active (the LOD selector sorts its own subset on CPU).
+      // dormant while LOD is active (the LOD pipeline sorts its compacted subset).
       sorter: new GpuSplatSorter(),
-      // Default material options: linear (non-log) depth, depthWrite off — matches
-      // this canvas (no logarithmicDepthBuffer) and the canonical sorted-no-depth
-      // splat compositing. None of the twin's log-depth / depthWrite / composite.
+      // lodFade: scale coverage by the per-splat cross-fade alpha. Linear (non-log)
+      // depth, depthWrite off — matches this canvas (no logarithmicDepthBuffer) and
+      // the canonical sorted-no-depth splat compositing. None of the twin's
+      // log-depth / depthWrite / composite.
       createMaterial: geometry => {
-        material = new GaussianSplatNodeMaterial(geometry)
+        material = new GaussianSplatNodeMaterial(geometry, { lodFade: true })
         return material
       }
     })

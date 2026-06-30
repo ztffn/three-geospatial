@@ -22,6 +22,7 @@ import { PLYSplatLoader } from '../PLYSplatLoader'
 import { loadSpzSplatData } from '../SpzSplatLoader'
 import { GaussianSplatNodeMaterial } from './GaussianSplatNodeMaterial'
 import { GpuSplatSorter } from './GpuSplatSorter'
+import { SplatLodPipeline } from './SplatLodPipeline'
 
 type GroupProps = ThreeElements['group']
 
@@ -106,13 +107,26 @@ export const GaussianSplatsGPU = forwardRef<
       return null
     }
     let material!: GaussianSplatNodeMaterial
+    const useLod = lod != null
     const mesh = new GaussianSplatMesh(loaded, {
       createMaterial: geometry => {
-        material = new GaussianSplatNodeMaterial(geometry)
+        // The LOD path scales coverage by the per-splat alpha cross-fade; the
+        // full-cloud path leaves coverage unscaled.
+        material = new GaussianSplatNodeMaterial(geometry, { lodFade: useLod })
         return material
       },
       sorter: new GpuSplatSorter(),
-      ...(lod != null ? { lod } : {}),
+      // Inject the WebGPU GPU pipeline factory so the renderer-agnostic mesh stays
+      // free of `three/webgpu` at runtime.
+      ...(useLod
+        ? {
+            lod: {
+              ...lod,
+              createPipeline: (octree, positions, count) =>
+                new SplatLodPipeline(octree, positions, count)
+            }
+          }
+        : {}),
       ...(sortThresholdDegrees != null ? { sortThresholdDegrees } : {})
     })
     return { mesh, material }

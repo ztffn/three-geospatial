@@ -9,6 +9,7 @@ import {
   type Material,
   type Vector2
 } from 'three'
+import type { IndirectStorageBufferAttribute } from 'three/webgpu'
 
 import type { GaussianSplatData } from './GaussianSplatData'
 import { GaussianSplatGeometry } from './GaussianSplatGeometry'
@@ -19,9 +20,12 @@ import {
   type GaussianSplatSorter,
   type GpuGaussianSplatSorter
 } from './GaussianSplatSorter'
-import type { SplatLodParams } from './SplatLodSelector'
-import { computeSplatImportance, SplatOctree } from './SplatOctree'
-import { WorkerSplatLodSelector } from './WorkerSplatLodSelector'
+import { SplatLodSelector, type SplatLodParams } from './SplatLodSelector'
+import {
+  computeSplatImportance,
+  SplatOctree,
+  type SplatOctreeData
+} from './SplatOctree'
 
 // Structural view of the renderer parts a splat material's `update` needs.
 // Satisfied by both `WebGLRenderer` and the WebGPU `Renderer`.
@@ -40,46 +44,71 @@ interface SplatMaterialRenderer {
 export interface SplatMaterial extends Material {
   update(renderer: SplatMaterialRenderer, camera: Camera): void
   /**
-   * Optional per-view colour resolve (e.g. a view-dependent SH compute pre-pass).
-   * Called when the camera moves, with the camera in the mesh's local space.
-   * Requires a compute-capable renderer (the WebGPU `Renderer`).
-   */
-  /**
    * Optional per-view resolve of per-splat render data (e.g. a compute pre-pass
    * that projects each splat and evaluates its view-dependent colour). Called each
    * frame with the mesh's model-view matrix and the camera in mesh-local space.
-   * Requires a compute-capable renderer (the WebGPU `Renderer`).
+   * `dispatch` is the splat count to project (non-LOD path) or the GPU-written
+   * indirect dispatch attribute (LOD path). Requires a compute-capable renderer.
    */
   updatePrepare?: (
     renderer: SplatMaterialRenderer,
     modelView: Matrix4,
     cameraLocal: Vector3,
     camera: Camera,
-    activeCount: number
+    dispatchCount: number,
+    setCompactCount: boolean
   ) => void
   /**
-   * Order storage attribute (instance → splat id) a GPU sorter writes directly.
-   * Present on the WebGPU `GaussianSplatNodeMaterial`. The mesh passes it to a
-   * {@link GpuGaussianSplatSorter}.
+   * Order storage attribute (instance → splat id) a GPU sorter / LOD pipeline writes
+   * directly. Present on the WebGPU `GaussianSplatNodeMaterial`.
    */
   getOrderAttribute?: () => unknown
   /**
+   * Per-splat persistent alpha storage attribute (LOD cross-fade), keyed by splat
+   * id; the LOD pipeline ramps it on-GPU. Present on the WebGPU node material.
+   */
+  getAlphaAttribute?: () => unknown
+  /**
+   * 1-element drawn-count storage attribute the prepare guard reads; the LOD
+   * pipeline writes it on-GPU. Present on the WebGPU node material.
+   */
+  getCompactCountAttribute?: () => unknown
+  /**
    * Uploads a CPU-computed draw order into the order buffer. Lets the WebGPU node
-   * path use a CPU/worker sorter (the GPU sorter writes the buffer on-GPU instead).
+   * path use a CPU/worker sorter (the GPU sorter/pipeline writes the buffer on-GPU).
    */
   uploadOrder?: (indices: Uint32Array) => void
-  /**
-   * Uploads the per-instance LOD-transition fade (parallel to the draw order), so
-   * margin splats dissolve across a LOD change instead of popping.
-   */
-  uploadFade?: (fade: Float32Array) => void
+}
+
+/**
+ * The GPU LOD pipeline the mesh drives when octree LOD is enabled (satisfied by the
+ * WebGPU `SplatLodPipeline` class). Injected via
+ * {@link SplatLodMeshOptions.createPipeline} so the renderer-agnostic mesh carries no
+ * runtime dependency on `three/webgpu`.
+ */
+export interface SplatLodPipelineLike {
+  uploadLeafTargetLod: (leafTargetLod: Uint32Array) => void
+  update: (
+    renderer: unknown,
+    orderAttr: unknown,
+    alphaAttr: unknown,
+    compactCountAttr: unknown,
+    camX: number,
+    camY: number,
+    camZ: number,
+    fadeStep: number
+  ) => boolean
+  getDrawIndirect: () => IndirectStorageBufferAttribute
+  dispose: () => void
 }
 
 /**
  * Enables octree LOD: builds a spatial octree with importance-decimated LOD levels
  * at construction (PlayCanvas's offline-baked structure, built here at load), then
- * each frame renders only a budgeted subset chosen by distance. Bounds the
- * rasterized splat count so multi-million-splat clouds stay interactive.
+ * each frame chooses a budgeted target LOD per leaf. The injected GPU pipeline
+ * expands that into a per-splat temporal cross-fade, compacts the drawn set, sorts
+ * it, and draws it indirectly — bounding the rasterized splat count so
+ * multi-million-splat clouds stay interactive. WebGPU node material only.
  */
 export interface SplatLodMeshOptions {
   /** Max splats rendered per frame. Default 1,000,000. */
@@ -92,6 +121,18 @@ export interface SplatLodMeshOptions {
   leafCapacity?: number
   /** Number of LOD levels per node. Default 6. */
   lodLevels?: number
+  /** Per-frame alpha step of the LOD cross-fade (0..1). Default 0.1 (~10 frames). */
+  fadeStep?: number
+  /**
+   * Builds the GPU LOD pipeline from the octree (built here), the splat centres, and
+   * the count. The WebGPU path passes `(o, p, c) => new SplatLodPipeline(o, p, c)`.
+   * Without it, octree LOD is inert (no pipeline to drive).
+   */
+  createPipeline?: (
+    octree: SplatOctreeData,
+    positions: Float32Array,
+    count: number
+  ) => SplatLodPipelineLike
 }
 
 export interface GaussianSplatMeshOptions {
@@ -104,9 +145,9 @@ export interface GaussianSplatMeshOptions {
    */
   createMaterial?: (geometry: GaussianSplatGeometry) => SplatMaterial
   /**
-   * Enables octree LOD (see {@link SplatLodMeshOptions}). When set, the mesh
-   * selects a budgeted subset per frame instead of sorting/drawing every splat —
-   * the path that scales to multi-million-splat clouds. WebGPU node material only.
+   * Enables octree LOD (see {@link SplatLodMeshOptions}). When set with a
+   * `createPipeline` factory, the mesh selects a budgeted subset per frame and draws
+   * only that — the path that scales to multi-million-splat clouds. WebGPU only.
    */
   lod?: SplatLodMeshOptions
 }
@@ -132,9 +173,9 @@ export class GaussianSplatMesh extends Mesh<
   /** LOD/budget parameters; mutate (or call {@link setLodBudget}) to tune live. */
   readonly lodParams: SplatLodParams
   /**
-   * Latest LOD selection diagnostics (null until the first worker result lands —
-   * if it stays null, the worker never resolved and LOD is off). `visibleLeaves <
-   * totalLeaves` means frustum culling dropped leaves this frame.
+   * Latest LOD selection diagnostics (null until the first selection). `activeCount`
+   * is the selected (budgeted) splat count; `visibleLeaves < totalLeaves` means
+   * frustum culling dropped leaves this frame.
    */
   lodStats: {
     activeCount: number
@@ -143,9 +184,16 @@ export class GaussianSplatMesh extends Mesh<
   } | null = null
   private readonly trigger: SortTrigger
   private pendingSort = false
-  private readonly lodSelector: WorkerSplatLodSelector | null
+  // Synchronous main-thread per-leaf selection (O(leaves), cheap) + the GPU pipeline
+  // it feeds. Both null unless octree LOD is enabled with a pipeline factory.
+  private readonly lodSelector: SplatLodSelector | null
+  private readonly lodPipeline: SplatLodPipelineLike | null
   private lodDirty = true
-  private pendingLodSelect = false
+  // Frames the GPU pipeline keeps running after the last selection change, so the
+  // temporal cross-fade settles before a static camera stops costing anything.
+  private readonly fadeStep: number
+  private readonly fadeFrames: number
+  private fadeFramesRemaining = 0
 
   constructor(data: GaussianSplatData, options: GaussianSplatMeshOptions = {}) {
     const geometry = new GaussianSplatGeometry(data)
@@ -175,9 +223,17 @@ export class GaussianSplatMesh extends Mesh<
         lodLevels: options.lod.lodLevels,
         lodMultiplier: options.lod.lodMultiplier
       })
-      // The selector runs in a worker; the octree is flattened + shipped to it and
-      // not retained here (its sortedIndices buffer is transferred away).
-      this.lodSelector = new WorkerSplatLodSelector(octree, data.positions)
+      this.lodSelector = new SplatLodSelector(octree)
+      this.lodPipeline =
+        options.lod.createPipeline?.(octree, data.positions, data.count) ?? null
+      // GPU-driven draw: the pipeline's indirect buffer carries the instance count
+      // (the compacted drawn set). `geometry.instanceCount` stays at the full count
+      // so Three doesn't skip the object (it's >0); the indirect buffer overrides it.
+      if (this.lodPipeline != null) {
+        this.geometry.setIndirect(this.lodPipeline.getDrawIndirect())
+      }
+      this.fadeStep = options.lod.fadeStep ?? 0.1
+      this.fadeFrames = Math.ceil(1 / this.fadeStep) + 4
       const radius = this.geometry.boundingSphere?.radius ?? 1
       this.lodParams = {
         budget: options.lod.budget ?? 1_000_000,
@@ -186,6 +242,9 @@ export class GaussianSplatMesh extends Mesh<
       }
     } else {
       this.lodSelector = null
+      this.lodPipeline = null
+      this.fadeStep = 0.1
+      this.fadeFrames = 0
       this.lodParams = { budget: 0, lodBaseDistance: 1, lodMultiplier: 2 }
     }
   }
@@ -215,20 +274,17 @@ export class GaussianSplatMesh extends Mesh<
       .setFromMatrixPosition(camera.matrixWorld)
       .applyMatrix4(scratchInverseMatrix)
 
-    // LOD path FIRST: pick a budgeted subset by octree LOD + distance, sorted
-    // back-to-front, and draw only that (instanceCount = the subset). Bounds the
-    // rasterized count for multi-million-splat clouds. Gated on the camera-rotation
-    // threshold (or a budget change), so a static camera costs nothing. Runs before
-    // the prepare pass so the prepare projects only the active subset.
-    if (this.lodSelector != null) {
-      if (
-        !this.pendingLodSelect &&
-        (this.lodDirty ||
-          this.trigger.shouldSort(scratchCameraLocal, this.geometry.centroid))
-      ) {
+    // Fully-GPU LOD path: pick a per-leaf target LOD on the camera-rotation trigger
+    // (cheap, O(leaves)), then drive the GPU pipeline (per-splat alpha ramp →
+    // compaction → sort → indirect args) while the temporal cross-fade settles. The
+    // prepare projects only the GPU-compacted drawn set, and the draw is indirect.
+    if (this.lodSelector != null && this.lodPipeline != null) {
+      const moved =
+        this.lodDirty ||
+        this.trigger.shouldSort(scratchCameraLocal, this.geometry.centroid)
+      if (moved) {
         // Frustum in splat-local space (clip = projection · modelView), packed as
-        // 6 inward planes for the worker; leaves fully off-screen are dropped, so
-        // the budget goes to what's visible.
+        // 6 inward planes; leaves fully off-screen are dropped from the budget.
         scratchProjScreen.multiplyMatrices(
           camera.projectionMatrix,
           scratchModelView
@@ -244,52 +300,71 @@ export class GaussianSplatMesh extends Mesh<
           scratchPlanes[p * 4 + 2] = plane.normal.z
           scratchPlanes[p * 4 + 3] = plane.constant
         }
-        this.pendingLodSelect = true
+        const result = this.lodSelector.select(
+          scratchCameraLocal.x,
+          scratchCameraLocal.y,
+          scratchCameraLocal.z,
+          scratchPlanes,
+          this.lodParams
+        )
+        this.lodPipeline.uploadLeafTargetLod(result.leafTargetLod)
+        this.lodStats = {
+          activeCount: result.selectedCount,
+          visibleLeaves: result.visibleLeaves,
+          totalLeaves: result.totalLeaves
+        }
         this.lodDirty = false
         this.trigger.markSorted(scratchCameraLocal, this.geometry.centroid)
-        void this.lodSelector
-          .select(
-            scratchCameraLocal.x,
-            scratchCameraLocal.y,
-            scratchCameraLocal.z,
-            scratchPlanes,
-            this.lodParams
-          )
-          .then(result => {
-            this.pendingLodSelect = false
-            const active = result.indices.subarray(0, result.count)
-            if (this.material.uploadOrder != null) {
-              this.material.uploadOrder(active)
-              this.material.uploadFade?.(result.fade.subarray(0, result.count))
-            } else {
-              this.geometry.setSortedIndices(active)
-            }
-            this.geometry.instanceCount = result.count
-            this.lodStats = {
-              activeCount: result.count,
-              visibleLeaves: result.visibleLeaves,
-              totalLeaves: result.totalLeaves
-            }
-          })
+        // Keep the pipeline running long enough for the cross-fade to complete.
+        this.fadeFramesRemaining = this.fadeFrames
       }
+
+      if (moved || this.fadeFramesRemaining > 0) {
+        const ran = this.lodPipeline.update(
+          renderer,
+          this.material.getOrderAttribute?.(),
+          this.material.getAlphaAttribute?.(),
+          this.material.getCompactCountAttribute?.(),
+          scratchCameraLocal.x,
+          scratchCameraLocal.y,
+          scratchCameraLocal.z,
+          this.fadeStep
+        )
+        // Only count down once the pipeline is actually running (the first frame(s)
+        // no-op while Three lazily creates the storage/indirect buffers).
+        if (ran && !moved) {
+          this.fadeFramesRemaining--
+        }
+        // Prepare: over-dispatch the loaded count (the in-shader guard clips the
+        // heavy projection to the GPU-compacted drawn set). `setCompactCount = false`
+        // leaves the compact-count buffer to the pipeline. Always dispatched here
+        // (also on warm-up, so the compute creates the material's storage buffers).
+        this.material.updatePrepare?.(
+          renderer,
+          scratchModelView,
+          scratchCameraLocal,
+          camera,
+          this.geometry.count,
+          false
+        )
+      }
+      // Settled + static: the last GPU state (order, alpha, indirect args) persists,
+      // so the continuous render keeps drawing the correct frame at no extra cost.
+      return
     }
 
-    // Resolve per-splat render data (screen-space projection + colour) for this
-    // view — a GPU compute pre-pass over the active subset (`instanceCount`),
-    // gated on view/count change inside the material so a static camera costs
-    // nothing. No-op for materials without it (the WebGL path projects per vertex).
+    // Non-LOD path: resolve per-splat render data over the whole cloud (the prepare
+    // pass projects all `instanceCount` splats), gated on view change inside the
+    // material. `setCompactCount = true` sets the prepare guard to the full count.
+    // No-op for materials without it (the WebGL path projects per vertex).
     this.material.updatePrepare?.(
       renderer,
       scratchModelView,
       scratchCameraLocal,
       camera,
-      this.geometry.instanceCount
+      this.geometry.instanceCount,
+      true
     )
-
-    // LOD path already set the draw order; no separate sorter pass.
-    if (this.lodSelector != null) {
-      return
-    }
 
     // GPU sorter: dispatches a compute sort that writes the order buffer directly
     // on the GPU — no indices returned, no per-sort index upload. Gated on the
@@ -348,5 +423,6 @@ export class GaussianSplatMesh extends Mesh<
     this.geometry.dispose()
     this.material.dispose()
     this.sorter.dispose()
+    this.lodPipeline?.dispose()
   }
 }

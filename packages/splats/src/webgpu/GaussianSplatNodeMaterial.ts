@@ -81,6 +81,14 @@ export interface GaussianSplatNodeMaterialOptions {
    * cheaper than per-fragment discard.
    */
   depthWrite?: boolean
+  /**
+   * Enables the fully-GPU LOD path: the fragment scales each splat's coverage by a
+   * per-splat persistent alpha (the temporal cross-fade, written by
+   * `SplatLodPipeline`), and the prepare pass is dispatched indirectly over the
+   * GPU-compacted drawn set. Alpha is initialised to 0 (the cloud fades in). Leave
+   * `false` (default) for the full-cloud / CPU-sorter paths — coverage is unscaled.
+   */
+  lodFade?: boolean
 }
 
 // Real spherical-harmonics basis constants (degrees 1-3), matching the canonical
@@ -161,10 +169,17 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   // GpuSplatSorter (GPU-GPU copy, no upload) or a CPU sorter (uploadOrder).
   private orderAttribute: StorageInstancedBufferAttribute | null = null
   private orderArray: ReturnType<typeof storage> | null = null
-  // Per-instance LOD-transition fade [0,1]; the LOD selector writes it so splats
-  // crossing a LOD boundary dissolve instead of popping. 1 = fully opaque.
-  private fadeAttribute: StorageInstancedBufferAttribute | null = null
-  private fadeArray: ReturnType<typeof storage> | null = null
+  // Per-SPLAT persistent alpha [0,1], keyed by splat id (NOT per-instance — instances
+  // are re-indexed every re-select, so the temporal fade must persist per splat). The
+  // GPU LOD pipeline ramps it; the fragment reads alpha[splatId]. 0 = invisible.
+  private alphaAttribute: StorageInstancedBufferAttribute | null = null
+  private alphaArray: ReturnType<typeof storage> | null = null
+  // GPU-resident drawn-splat count (1 u32). The prepare pass reads it to guard the
+  // indirect over-dispatch tail; the LOD pipeline writes it on-GPU, the non-LOD path
+  // sets it to the full dispatch count via {@link uploadOrder}-adjacent logic.
+  private compactCountAttribute: StorageInstancedBufferAttribute | null = null
+  private compactCountArray: ReturnType<typeof storage> | null = null
+  private readonly lodFade: boolean
   private count = 0
 
   private readonly cameraLocalX = uniform(0)
@@ -174,11 +189,9 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   private readonly projectionUniform = uniform('mat4')
   private readonly nearUniform = uniform(0)
   private readonly farUniform = uniform(1)
-  // Number of active splats this frame: the prepare pass dispatches this many
-  // invocations and reads `order[invocation]` to project only the drawn subset
-  // (LOD budget), instead of every loaded splat. Guards over-dispatch rounding.
-  private readonly activeCountUniform = uniform(0)
-  private lastActiveCount = -1
+  // Drawn-splat count this frame, read from the compact-count storage buffer; the
+  // prepare pass projects `order[0..compactCount)`, guarding the over-dispatch tail.
+  private lastDispatchCount = -1
   private readonly lastModelView = new Matrix4()
   private readonly lastProjection = new Matrix4()
   private preparedOnce = false
@@ -190,6 +203,7 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     super()
     this.type = 'GaussianSplatNodeMaterial'
     this.logarithmicDepthBuffer = options.logarithmicDepthBuffer ?? false
+    this.lodFade = options.lodFade ?? false
 
     this.transparent = true
     this.depthTest = true
@@ -229,12 +243,21 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     this.orderAttribute = orderAttribute
     this.orderArray = storage(orderAttribute, 'uint', geometry.count)
 
-    // Per-instance LOD fade, parallel to the order buffer. Identity-initialised to
-    // 1 (opaque) so the non-LOD path is unaffected.
-    const fadeData = new Float32Array(geometry.count).fill(1)
-    const fadeAttribute = new StorageInstancedBufferAttribute(fadeData, 1)
-    this.fadeAttribute = fadeAttribute
-    this.fadeArray = storage(fadeAttribute, 'float', geometry.count)
+    // Per-splat persistent alpha, indexed by splat id (the fragment reads
+    // alpha[order[instanceIndex]]). The LOD path inits 0 (fade in from nothing);
+    // the non-LOD path inits 1 (unused — coverage is unscaled there).
+    const alphaData = new Float32Array(geometry.count).fill(this.lodFade ? 0 : 1)
+    const alphaAttribute = new StorageInstancedBufferAttribute(alphaData, 1)
+    this.alphaAttribute = alphaAttribute
+    this.alphaArray = storage(alphaAttribute, 'float', geometry.count)
+
+    // GPU-resident drawn count (1 u32), read by the prepare pass's dispatch guard.
+    const compactCountAttribute = new StorageInstancedBufferAttribute(
+      new Uint32Array([0]),
+      1
+    )
+    this.compactCountAttribute = compactCountAttribute
+    this.compactCountArray = storage(compactCountAttribute, 'uint', 1)
 
     // One prepare compute pass (projection + colour) fills a per-splat struct,
     // indexed by the splat's own id, for the active subset only.
@@ -250,8 +273,11 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     // color: rgb = resolved linear radiance, a = opacity (flat across the quad).
     const vColor = varying(splat.get('color'))
     const vQuad = varying(quadOffset)
-    // Per-instance LOD-transition fade (constant across the quad's verts).
-    const vFade = varying(this.fadeArray.element(instanceIndex))
+    // Per-splat LOD cross-fade (constant across the quad's verts), read by splat id
+    // so it persists across re-selection. Only wired when lodFade is on.
+    const vFade = this.lodFade
+      ? varying(this.alphaArray.element(int(splatId)))
+      : null
 
     this.vertexNode = Fn(() => {
       const pc = splat.get('center') // xy = NDC centre, z = depth, w = valid flag
@@ -268,8 +294,9 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
       // quadOffset is in standard-deviation units; fade out beyond ~2σ.
       const power = vQuad.dot(vQuad).negate()
       const alpha = power.exp().mul(vColor.a)
-      // LOD-transition fade scales coverage so margin splats dissolve smoothly.
-      const masked = power.lessThan(-4).select(float(0), alpha).mul(vFade)
+      const gaussian = power.lessThan(-4).select(float(0), alpha)
+      // LOD cross-fade scales coverage so splats dissolve in/out smoothly (LOD path).
+      const masked = vFade != null ? gaussian.mul(vFade) : gaussian
       // Premultiplied "over"; `intensity` scales radiance only, not coverage.
       return vec4(vColor.rgb.mul(this.intensity).mul(masked), masked)
     })()
@@ -309,14 +336,15 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     const shScale = float(geometry.shRangeScale)
     const shMin = float(geometry.shRangeMin)
     const orderArray = this.orderArray!
-    const activeCount = this.activeCountUniform
+    const compactCountArray = this.compactCountArray!
 
     return Fn(() => {
-      // Each invocation projects one active splat: `order[invocation]`. Dispatched
-      // over `activeCount` (the LOD budget), so only drawn splats are projected —
-      // not the whole loaded cloud. The guard ignores over-dispatch rounding.
+      // Each invocation projects one drawn splat: `order[invocation]`. Dispatched
+      // over the compacted drawn count (LOD budget), so only drawn splats are
+      // projected — not the whole loaded cloud. The guard ignores the over-dispatch
+      // tail by reading the GPU-resident drawn count.
       const invocation = int(instanceIndex)
-      If(invocation.lessThan(activeCount), () => {
+      If(invocation.lessThan(int(compactCountArray.element(0))), () => {
       const i = int(orderArray.element(invocation))
       const ty = i.div(textureWidth)
       const tx = i.sub(ty.mul(textureWidth))
@@ -468,15 +496,21 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     modelView: Matrix4,
     cameraLocal: Vector3,
     camera: Camera,
-    activeCount: number
+    dispatchCount: number,
+    setCompactCount: boolean
   ): void {
     if (this.prepareNode == null) {
       return
     }
     const projectionMatrix = camera.projectionMatrix
+    // Full-cloud / CPU-sorter path (setCompactCount): skip the dispatch when neither
+    // the view nor the count changed, so a static camera costs nothing. The LOD path
+    // (setCompactCount = false) always re-dispatches — the mesh gates it via its
+    // settle counter, and the per-splat alpha/order change every fade frame.
     if (
+      setCompactCount &&
       this.preparedOnce &&
-      this.lastActiveCount === activeCount &&
+      this.lastDispatchCount === dispatchCount &&
       this.lastModelView.equals(modelView) &&
       this.lastProjection.equals(projectionMatrix)
     ) {
@@ -490,18 +524,29 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     this.cameraLocalX.value = cameraLocal.x
     this.cameraLocalY.value = cameraLocal.y
     this.cameraLocalZ.value = cameraLocal.z
-    this.activeCountUniform.value = activeCount
     this.lastModelView.copy(modelView)
     this.lastProjection.copy(projectionMatrix)
-    this.lastActiveCount = activeCount
     this.preparedOnce = true
-    // Dispatch only `activeCount` invocations (the backend caches the workgroup
-    // split per count), so projection scales with the drawn subset.
+    // Non-LOD: the drawn set is the whole cloud, so mirror the count into the
+    // compact-count buffer the prepare guard reads (set once, then stable). The LOD
+    // path leaves it alone — SplatLodPipeline writes the GPU-compacted count there.
+    if (
+      setCompactCount &&
+      this.compactCountAttribute != null &&
+      this.lastDispatchCount !== dispatchCount
+    ) {
+      ;(this.compactCountAttribute.array as Uint32Array)[0] = dispatchCount
+      this.compactCountAttribute.needsUpdate = true
+    }
+    this.lastDispatchCount = dispatchCount
+    // Dispatch `dispatchCount` invocations. The LOD path over-dispatches the loaded
+    // count; the in-shader `invocation < compactCount` guard clips the projection to
+    // the drawn subset, so the heavy EWA/SH work still tracks the drawn count.
     void (
       renderer as unknown as {
         compute: (node: ComputeNode, dispatchSize: number) => unknown
       }
-    ).compute(this.prepareNode, Math.max(1, activeCount))
+    ).compute(this.prepareNode, Math.max(1, dispatchCount))
   }
 
   /**
@@ -528,16 +573,19 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   }
 
   /**
-   * Uploads the per-instance LOD-transition fade (parallel to the draw order), so
-   * splats crossing a LOD boundary dissolve instead of popping. Length matches the
-   * uploaded order; unused tail entries are ignored (instanceCount bounds the draw).
+   * The per-splat persistent alpha storage attribute (the LOD cross-fade), keyed by
+   * splat id. {@link SplatLodPipeline} ramps it on-GPU; the fragment reads it.
    */
-  uploadFade(fade: Float32Array): void {
-    if (this.fadeAttribute == null) {
-      return
-    }
-    ;(this.fadeAttribute.array as Float32Array).set(fade.subarray(0, this.count))
-    this.fadeAttribute.needsUpdate = true
+  getAlphaAttribute(): StorageInstancedBufferAttribute | null {
+    return this.alphaAttribute
+  }
+
+  /**
+   * The 1-element drawn-count storage attribute the prepare guard reads.
+   * {@link SplatLodPipeline} writes it on-GPU each frame.
+   */
+  getCompactCountAttribute(): StorageInstancedBufferAttribute | null {
+    return this.compactCountAttribute
   }
 
   override dispose(): void {

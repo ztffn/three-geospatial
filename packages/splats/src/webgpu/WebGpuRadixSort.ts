@@ -292,6 +292,10 @@ export class WebGpuRadixSort {
   private readonly numBits: number
   private readonly numPasses: number
   private readonly maxWorkgroupsPerDim: number
+  // When true (default), pass 0 seeds each value from its global index (the sort
+  // returns the index permutation). When false, pass 0 reads an explicit value
+  // buffer instead — used by the LOD path to carry the compacted splat ids.
+  private readonly seedGidValues: boolean
 
   private readonly histogramPipeline: GPUComputePipeline
   private readonly reorderPipeline: GPUComputePipeline
@@ -315,9 +319,10 @@ export class WebGpuRadixSort {
   private readonly radixUniformBuffers: GPUBuffer[] = []
   private prefixSumLevels: PrefixSumLevel[] = []
 
-  constructor(device: GPUDevice, numBits = 32) {
+  constructor(device: GPUDevice, numBits = 32, seedGidValues = true) {
     this.device = device
     this.numBits = numBits
+    this.seedGidValues = seedGidValues
     this.numPasses = numBits / BITS_PER_PASS
     const maxDim = device.limits.maxComputeWorkgroupsPerDimension
     this.maxWorkgroupsPerDim = maxDim > 0 ? maxDim : 65535
@@ -443,7 +448,7 @@ export class WebGpuRadixSort {
           workgroupCount,
           count,
           pass * BITS_PER_PASS,
-          pass === 0 ? 1 : 0,
+          this.seedGidValues && pass === 0 ? 1 : 0,
           pass === this.numPasses - 1 ? 1 : 0
         ])
       )
@@ -550,7 +555,47 @@ export class WebGpuRadixSort {
     count: number
   ): GPUBuffer {
     this.ensure(keysBuffer, count)
+    this.runPasses(encoder)
+    // numPasses is even (32-bit / 4-bit = 8), so the last reorder wrote values0.
+    return this.numPasses % 2 === 1 ? this.values1! : this.values0!
+  }
 
+  /**
+   * Like {@link encodeSort}, but pass 0 carries an explicit `valuesBuffer` (e.g.
+   * the compacted splat ids) instead of seeding from the global index, and the
+   * per-pass element count is read each frame from `elementCountBuffer` (a 1-u32
+   * GPU buffer) instead of the CPU `count` baked at allocation. The internal
+   * buffers stay sized to `count` (the capacity / upper bound); only the first
+   * `elementCount` entries are sorted, the rest skipped by the `GID < elementCount`
+   * guards — so the per-element work tracks the live (GPU-side) count while the
+   * dispatch stays fixed. Requires `seedGidValues = false`. Returns the buffer
+   * holding the sorted values (valid for `[0, elementCount)`).
+   */
+  encodeSortValues(
+    encoder: GPUCommandEncoder,
+    keysBuffer: GPUBuffer,
+    valuesBuffer: GPUBuffer,
+    count: number,
+    elementCountBuffer: GPUBuffer
+  ): GPUBuffer {
+    this.ensure(keysBuffer, count)
+    // Seed pass-0 values with the supplied ids (pass 0 reads currentValues, which
+    // is values0 since 0 % 2 === 0). Beyond the live count the entries are stale
+    // but never read (the validity guards drop them).
+    encoder.copyBufferToBuffer(valuesBuffer, 0, this.values0!, 0, count * 4)
+    // Overwrite the elementCount field (offset 4) of every per-pass uniform with
+    // the GPU-resident live count. Recorded before runPasses, so the passes read
+    // the updated value (WebGPU executes encoder commands in order).
+    for (const uniformBuffer of this.radixUniformBuffers) {
+      encoder.copyBufferToBuffer(elementCountBuffer, 0, uniformBuffer, 4, 4)
+    }
+    this.runPasses(encoder)
+    return this.numPasses % 2 === 1 ? this.values1! : this.values0!
+  }
+
+  // The 8-pass sequence (histogram → block-sum scan → ranked scatter) shared by
+  // both entry points. Buffers, bind groups, and uniforms are prepared by `ensure`.
+  private runPasses(encoder: GPUCommandEncoder): void {
     for (let pass = 0; pass < this.numPasses; pass++) {
       // Histogram → block sums.
       WebGpuRadixSort.pass(
@@ -587,9 +632,6 @@ export class WebGpuRadixSort {
         this.dispatch
       )
     }
-
-    // numPasses is even (32-bit / 4-bit = 8), so the last reorder wrote values0.
-    return this.numPasses % 2 === 1 ? this.values1! : this.values0!
   }
 
   private releaseBuffers(): void {
