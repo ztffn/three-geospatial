@@ -105,14 +105,30 @@ the synchronous `CPUSplatSorter` (fine up to a few hundred thousand splats — u
 
 ## React Three Fiber
 
+The `<GaussianSplats>` component is the simple path: it loads a **`.ply`** URL with
+`PLYSplatLoader` and renders with the **default WebGL** material + CPU sort. It drives
+`update` for you each frame.
+
 ```tsx
 import { Canvas } from '@react-three/fiber'
 import { GaussianSplats } from '@takram/three-geospatial-splats/r3f'
 
 ;<Canvas>
-  <GaussianSplats url="/scene.ply" />
+  <GaussianSplats url="/scene.ply" /> {/* or: data={preParsedData} */}
 </Canvas>
 ```
+
+To render an **SPZ** file through the component, decode it yourself and pass the
+result as `data` (the `url` prop is PLY-only):
+
+```tsx
+const data = await loadSpzSplatData(await (await fetch('/scene.spz')).arrayBuffer())
+;<GaussianSplats data={data} />
+```
+
+There is **no R3F wrapper for the WebGPU path** (node material, GPU sort, octree LOD).
+For that, construct `GaussianSplatMesh` directly as in the WebGPU quickstart above and
+call `mesh.update(renderer, camera)` from your own `useFrame`.
 
 ## Tiled splats via 3d-tiles-renderer
 

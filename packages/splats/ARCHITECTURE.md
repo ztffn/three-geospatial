@@ -184,6 +184,11 @@ WebGPU may not expose the hardware maxima; Chrome does.
   compaction, indirect draw).
 - **Octree build runs on the main thread at load** (~1–2 s for 8.3M splats). Could move
   to the worker.
-- **Extraction note:** this package depends on `@takram/three-geospatial` (core) for a
-  few utilities. A fully standalone open-source release would vendor or remove that
-  dependency.
+- **Extraction note (for a standalone open-source release):** the `src/` source
+  imports **nothing** from `@takram/three-geospatial` (the core dependency listed in
+  `package.json` is unused), and **nothing** from `3d-tiles-renderer` (the tiles plugin
+  uses a structural type only, so it stays version-agnostic). The real runtime
+  dependencies are just `spz-js` and `tiny-invariant`; `three` is a peer, and
+  `@react-three/fiber` / `react` / `3d-tiles-renderer` are optional peers for the
+  `r3f` / tiles entry points. A standalone release is therefore straightforward: drop
+  the unused `@takram/three-geospatial` dependency, rename the package, and ship.
