@@ -1,17 +1,16 @@
-// Per-frame LOD/cull/budget selection over a SplatOctree, ported from PlayCanvas's
+// Per-frame LOD/cull/budget selection over SplatOctreeData, ported from PlayCanvas's
 // unified gsplat pipeline (gsplat-octree-instance.evaluateNodeLods + budget-balancer
-// + frustum-culler, MIT). For each leaf: frustum-cull, pick a LOD from FOV-adjusted
-// camera distance via geometric bands, then coarsen farthest leaves to fit a global
-// splat budget. Gathers the surviving indices and sorts them back-to-front to draw.
+// + frustum-culler, MIT). For each leaf: frustum-cull, pick a LOD from camera
+// distance via geometric bands, then coarsen farthest leaves to fit a global splat
+// budget. Gathers survivors, sorts back-to-front, and emits a per-splat LOD-transition
+// fade so margin splats dissolve smoothly. Three-free, so it runs in a worker too.
 
-import { Box3, Vector3, type Frustum } from 'three'
-
-import type { SplatOctree, SplatOctreeLeaf } from './SplatOctree'
+import type { SplatOctreeData } from './SplatOctree'
 
 export interface SplatLodParams {
   /** Max splats rendered per frame. The budget the LOD balancer targets. */
   budget: number
-  /** FOV-adjusted distance at which a leaf drops from LOD 0 to LOD 1. */
+  /** Distance at which a leaf drops from LOD 0 to LOD 1. */
   lodBaseDistance: number
   /** Geometric distance multiplier between consecutive LOD bands. */
   lodMultiplier: number
@@ -20,63 +19,75 @@ export interface SplatLodParams {
 export interface SplatLodResult {
   /** Active splat indices, ordered back-to-front. Valid for `[0, count)`. */
   indices: Uint32Array
+  /** Per-instance LOD-transition fade in `[0, 1]`, parallel to {@link indices}. */
+  fade: Float32Array
   count: number
 }
 
-const scratchBox = /*#__PURE__*/ new Box3()
-const scratchMin = /*#__PURE__*/ new Vector3()
-const scratchMax = /*#__PURE__*/ new Vector3()
+function saturate(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x
+}
 
 /**
- * Selects, each frame, which splats of a {@link SplatOctree} to render: LOD per
- * leaf from camera distance, capped by a global budget, frustum-culled, then the
- * surviving indices sorted farthest-to-nearest for correct alpha compositing. The
- * mesh uploads the result as the draw order and sets `instanceCount` to `count`.
+ * Selects, each frame, which splats of a {@link SplatOctreeData} to render: a
+ * continuous LOD per leaf from camera distance, capped by a global budget,
+ * frustum-culled, the survivors sorted farthest-to-nearest, and each tagged with a
+ * fade so splats crossing a LOD boundary dissolve instead of popping. The frustum
+ * is six inward-facing planes packed `[nx, ny, nz, constant] × 6` (as Three's
+ * `Frustum.planes` yields); the camera is splat-local.
  */
 export class SplatLodSelector {
-  private readonly octree: SplatOctree
+  private readonly octree: SplatOctreeData
   private readonly positions: Float32Array
 
-  // Per-leaf scratch, sized to the leaf count: chosen LOD and distance this frame.
+  // Per-leaf scratch, sized to the leaf count.
   private readonly leafLod: Int32Array
+  private readonly leafContinuousLod: Float32Array
   private readonly leafDistance: Float32Array
-  private readonly leafVisible: Uint8Array
   private readonly leafOrder: Uint32Array
 
   // Active-set + counting-sort scratch, sized to the full splat count.
   private readonly active: Uint32Array
+  private readonly activeFade: Float32Array
   private readonly distances: Float32Array
   private readonly counts: Uint32Array
   private readonly starts: Uint32Array
   private readonly sorted: Uint32Array
+  private readonly sortedFade: Float32Array
   private static readonly BUCKET_COUNT = 256 * 256
 
-  constructor(octree: SplatOctree, positions: Float32Array) {
+  constructor(octree: SplatOctreeData, positions: Float32Array) {
     this.octree = octree
     this.positions = positions
     const leafCount = octree.leaves.length
     this.leafLod = new Int32Array(leafCount)
+    this.leafContinuousLod = new Float32Array(leafCount)
     this.leafDistance = new Float32Array(leafCount)
-    this.leafVisible = new Uint8Array(leafCount)
     this.leafOrder = new Uint32Array(leafCount)
 
     const total = octree.totalCount
     this.active = new Uint32Array(total)
+    this.activeFade = new Float32Array(total)
     this.distances = new Float32Array(total)
     this.sorted = new Uint32Array(total)
+    this.sortedFade = new Float32Array(total)
     this.counts = new Uint32Array(SplatLodSelector.BUCKET_COUNT)
     this.starts = new Uint32Array(SplatLodSelector.BUCKET_COUNT)
   }
 
   /**
-   * @param cameraLocal Camera position in splat-local space.
-   * @param frustum Frustum in splat-local space (clip = projection·modelView), or
+   * @param cameraX Camera X in splat-local space.
+   * @param cameraY Camera Y in splat-local space.
+   * @param cameraZ Camera Z in splat-local space.
+   * @param planes Six inward-facing frustum planes (`[nx,ny,nz,constant]×6`), or
    *   null to skip frustum culling.
    * @param params LOD/budget parameters.
    */
   select(
-    cameraLocal: Vector3,
-    frustum: Frustum | null,
+    cameraX: number,
+    cameraY: number,
+    cameraZ: number,
+    planes: Float32Array | null,
     params: SplatLodParams
   ): SplatLodResult {
     const { leaves } = this.octree
@@ -84,40 +95,41 @@ export class SplatLodSelector {
     const { budget, lodBaseDistance, lodMultiplier } = params
     const invLogMultiplier = 1 / Math.log(lodMultiplier)
 
-    // Pass 1: frustum cull + distance → optimal LOD per leaf.
+    // Pass 1: frustum cull + distance → continuous LOD per leaf.
     let visibleCount = 0
     let selectedSplats = 0
     for (let i = 0; i < leaves.length; i++) {
-      const leaf = leaves[i]
-      if (frustum != null && !SplatLodSelector.leafInFrustum(leaf, frustum)) {
-        this.leafVisible[i] = 0
+      const bounds = leaves[i].bounds
+      if (planes != null && !SplatLodSelector.aabbInFrustum(bounds, planes)) {
         continue
       }
-      const distance = SplatLodSelector.distanceToLeaf(leaf, cameraLocal)
-      let lod: number
+      const distance = SplatLodSelector.distanceToAabb(
+        bounds,
+        cameraX,
+        cameraY,
+        cameraZ
+      )
+      let continuousLod: number
       if (maxLod === 0 || distance < lodBaseDistance) {
-        lod = 0
+        continuousLod = 0
       } else {
-        lod = Math.min(
+        continuousLod = Math.min(
           maxLod,
-          Math.floor(Math.log(distance / lodBaseDistance) * invLogMultiplier) + 1
+          1 + Math.log(distance / lodBaseDistance) * invLogMultiplier
         )
       }
-      this.leafVisible[i] = 1
-      this.leafLod[i] = lod
+      this.leafContinuousLod[i] = continuousLod
+      this.leafLod[i] = Math.floor(continuousLod)
       this.leafDistance[i] = distance
       this.leafOrder[visibleCount] = i
       visibleCount++
-      selectedSplats += leaf.lodCounts[lod]
+      selectedSplats += leaves[i].lodCounts[this.leafLod[i]]
     }
 
-    // Pass 2: budget. Coarsen farthest-first until under budget (PlayCanvas degrades
-    // the farthest geometry first to preserve nearby quality).
+    // Pass 2: budget. Coarsen farthest-first until under budget.
     if (selectedSplats > budget) {
-      const order = this.leafOrder.subarray(0, visibleCount)
-      // Sort visible leaves farthest → nearest.
       const distance = this.leafDistance
-      const farFirst = Array.from(order).sort(
+      const farFirst = Array.from(this.leafOrder.subarray(0, visibleCount)).sort(
         (a, b) => distance[b] - distance[a]
       )
       let pass = 0
@@ -140,53 +152,81 @@ export class SplatLodSelector {
       }
     }
 
-    // Gather surviving indices into the active set.
+    // Gather surviving indices + LOD-transition fade. "Core" splats (present at the
+    // next coarser LOD) are opaque; "margin" splats (in this LOD but not the next)
+    // fade out as the leaf nears the next band, so the switch is invisible.
     let activeCount = 0
     const src = this.octree.sortedIndices
     const active = this.active
+    const activeFade = this.activeFade
     for (let v = 0; v < visibleCount; v++) {
       const i = this.leafOrder[v]
       const leaf = leaves[i]
-      const lodCount = leaf.lodCounts[this.leafLod[i]]
+      const lod = this.leafLod[i]
+      const lodCount = leaf.lodCounts[lod]
+      const coreCount = lod < maxLod ? leaf.lodCounts[lod + 1] : lodCount
+      const marginFade = 1 - saturate(this.leafContinuousLod[i] - lod)
       const base = leaf.offset
       for (let k = 0; k < lodCount; k++) {
-        active[activeCount++] = src[base + k]
+        active[activeCount] = src[base + k]
+        activeFade[activeCount] = k < coreCount ? 1 : marginFade
+        activeCount++
       }
     }
 
-    return this.sortBackToFront(active, activeCount, cameraLocal)
+    return this.sortBackToFront(
+      active,
+      activeFade,
+      activeCount,
+      cameraX,
+      cameraY,
+      cameraZ
+    )
   }
 
-  // True if the leaf's AABB intersects the (local-space) frustum.
-  private static leafInFrustum(leaf: SplatOctreeLeaf, frustum: Frustum): boolean {
-    const b = leaf.bounds
-    scratchMin.set(b[0], b[1], b[2])
-    scratchMax.set(b[3], b[4], b[5])
-    scratchBox.set(scratchMin, scratchMax)
-    return frustum.intersectsBox(scratchBox)
+  // AABB vs six inward-facing planes: outside if the AABB's positive vertex (the
+  // corner farthest along a plane's normal) is behind that plane.
+  private static aabbInFrustum(bounds: Float32Array, planes: Float32Array): boolean {
+    for (let p = 0; p < 6; p++) {
+      const nx = planes[p * 4]
+      const ny = planes[p * 4 + 1]
+      const nz = planes[p * 4 + 2]
+      const d = planes[p * 4 + 3]
+      const px = nx > 0 ? bounds[3] : bounds[0]
+      const py = ny > 0 ? bounds[4] : bounds[1]
+      const pz = nz > 0 ? bounds[5] : bounds[2]
+      if (nx * px + ny * py + nz * pz + d < 0) {
+        return false
+      }
+    }
+    return true
   }
 
-  // Distance from the camera to the closest point on the leaf's AABB.
-  private static distanceToLeaf(leaf: SplatOctreeLeaf, camera: Vector3): number {
-    const b = leaf.bounds
-    const dx = Math.max(b[0] - camera.x, 0, camera.x - b[3])
-    const dy = Math.max(b[1] - camera.y, 0, camera.y - b[4])
-    const dz = Math.max(b[2] - camera.z, 0, camera.z - b[5])
+  // Distance from the camera to the closest point on an AABB.
+  private static distanceToAabb(
+    bounds: Float32Array,
+    cx: number,
+    cy: number,
+    cz: number
+  ): number {
+    const dx = Math.max(bounds[0] - cx, 0, cx - bounds[3])
+    const dy = Math.max(bounds[1] - cy, 0, cy - bounds[4])
+    const dz = Math.max(bounds[2] - cz, 0, cz - bounds[5])
     return Math.sqrt(dx * dx + dy * dy + dz * dz)
   }
 
-  // Counting sort of the active set by squared distance, farthest-first (the same
-  // bucketed back-to-front order the CPU/GPU full-cloud sorters produce).
+  // Counting sort of the active set by squared distance, farthest-first, carrying
+  // the per-splat fade alongside each index.
   private sortBackToFront(
     active: Uint32Array,
+    activeFade: Float32Array,
     count: number,
-    camera: Vector3
+    cx: number,
+    cy: number,
+    cz: number
   ): SplatLodResult {
     const positions = this.positions
     const distances = this.distances
-    const cx = camera.x
-    const cy = camera.y
-    const cz = camera.z
 
     let minD = Infinity
     let maxD = -Infinity
@@ -216,11 +256,14 @@ export class SplatLodSelector {
       total += counts[b]
     }
     const sorted = this.sorted
+    const sortedFade = this.sortedFade
     for (let k = 0; k < count; k++) {
       const bucket = ((distances[k] - minD) * scale) | 0
-      sorted[starts[bucket]++] = active[k]
+      const pos = starts[bucket]++
+      sorted[pos] = active[k]
+      sortedFade[pos] = activeFade[k]
     }
 
-    return { indices: sorted, count }
+    return { indices: sorted, fade: sortedFade, count }
   }
 }

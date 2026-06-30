@@ -19,8 +19,9 @@ import {
   type GaussianSplatSorter,
   type GpuGaussianSplatSorter
 } from './GaussianSplatSorter'
-import { SplatLodSelector, type SplatLodParams } from './SplatLodSelector'
+import type { SplatLodParams } from './SplatLodSelector'
 import { computeSplatImportance, SplatOctree } from './SplatOctree'
+import { WorkerSplatLodSelector } from './WorkerSplatLodSelector'
 
 // Structural view of the renderer parts a splat material's `update` needs.
 // Satisfied by both `WebGLRenderer` and the WebGPU `Renderer`.
@@ -67,6 +68,11 @@ export interface SplatMaterial extends Material {
    * path use a CPU/worker sorter (the GPU sorter writes the buffer on-GPU instead).
    */
   uploadOrder?: (indices: Uint32Array) => void
+  /**
+   * Uploads the per-instance LOD-transition fade (parallel to the draw order), so
+   * margin splats dissolve across a LOD change instead of popping.
+   */
+  uploadFade?: (fade: Float32Array) => void
 }
 
 /**
@@ -111,6 +117,7 @@ const scratchView = new Matrix4()
 const scratchModelView = new Matrix4()
 const scratchProjScreen = new Matrix4()
 const scratchFrustum = new Frustum()
+const scratchPlanes = new Float32Array(24)
 
 /**
  * Renders a set of 3D Gaussian splats. Drop it into any three.js scene; call
@@ -126,8 +133,9 @@ export class GaussianSplatMesh extends Mesh<
   readonly lodParams: SplatLodParams
   private readonly trigger: SortTrigger
   private pendingSort = false
-  private readonly lodSelector: SplatLodSelector | null
+  private readonly lodSelector: WorkerSplatLodSelector | null
   private lodDirty = true
+  private pendingLodSelect = false
 
   constructor(data: GaussianSplatData, options: GaussianSplatMeshOptions = {}) {
     const geometry = new GaussianSplatGeometry(data)
@@ -157,7 +165,9 @@ export class GaussianSplatMesh extends Mesh<
         lodLevels: options.lod.lodLevels,
         lodMultiplier: options.lod.lodMultiplier
       })
-      this.lodSelector = new SplatLodSelector(octree, data.positions)
+      // The selector runs in a worker; the octree is flattened + shipped to it and
+      // not retained here (its sortedIndices buffer is transferred away).
+      this.lodSelector = new WorkerSplatLodSelector(octree, data.positions)
       const radius = this.geometry.boundingSphere?.radius ?? 1
       this.lodParams = {
         budget: options.lod.budget ?? 1_000_000,
@@ -202,11 +212,13 @@ export class GaussianSplatMesh extends Mesh<
     // the prepare pass so the prepare projects only the active subset.
     if (this.lodSelector != null) {
       if (
-        this.lodDirty ||
-        this.trigger.shouldSort(scratchCameraLocal, this.geometry.centroid)
+        !this.pendingLodSelect &&
+        (this.lodDirty ||
+          this.trigger.shouldSort(scratchCameraLocal, this.geometry.centroid))
       ) {
-        // Frustum in splat-local space (clip = projection · modelView), so leaves
-        // fully off-screen are dropped — the budget then goes to what's visible.
+        // Frustum in splat-local space (clip = projection · modelView), packed as
+        // 6 inward planes for the worker; leaves fully off-screen are dropped, so
+        // the budget goes to what's visible.
         scratchProjScreen.multiplyMatrices(
           camera.projectionMatrix,
           scratchModelView
@@ -215,20 +227,35 @@ export class GaussianSplatMesh extends Mesh<
           scratchProjScreen,
           renderer.coordinateSystem ?? WebGLCoordinateSystem
         )
-        const result = this.lodSelector.select(
-          scratchCameraLocal,
-          scratchFrustum,
-          this.lodParams
-        )
-        const active = result.indices.subarray(0, result.count)
-        if (this.material.uploadOrder != null) {
-          this.material.uploadOrder(active)
-        } else {
-          this.geometry.setSortedIndices(active)
+        for (let p = 0; p < 6; p++) {
+          const plane = scratchFrustum.planes[p]
+          scratchPlanes[p * 4] = plane.normal.x
+          scratchPlanes[p * 4 + 1] = plane.normal.y
+          scratchPlanes[p * 4 + 2] = plane.normal.z
+          scratchPlanes[p * 4 + 3] = plane.constant
         }
-        this.geometry.instanceCount = result.count
-        this.trigger.markSorted(scratchCameraLocal, this.geometry.centroid)
+        this.pendingLodSelect = true
         this.lodDirty = false
+        this.trigger.markSorted(scratchCameraLocal, this.geometry.centroid)
+        void this.lodSelector
+          .select(
+            scratchCameraLocal.x,
+            scratchCameraLocal.y,
+            scratchCameraLocal.z,
+            scratchPlanes,
+            this.lodParams
+          )
+          .then(result => {
+            this.pendingLodSelect = false
+            const active = result.indices.subarray(0, result.count)
+            if (this.material.uploadOrder != null) {
+              this.material.uploadOrder(active)
+              this.material.uploadFade?.(result.fade.subarray(0, result.count))
+            } else {
+              this.geometry.setSortedIndices(active)
+            }
+            this.geometry.instanceCount = result.count
+          })
       }
     }
 

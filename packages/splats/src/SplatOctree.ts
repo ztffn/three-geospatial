@@ -4,8 +4,6 @@
 // none, so this rebuilds that structure at load: subdivide into leaf nodes, then
 // per node sort splats by importance so LOD k = the top (count / multiplier^k).
 
-import { Vector3 } from 'three'
-
 // A leaf node: an axis-aligned cell holding `count` splats, whose global indices
 // occupy `sortedIndices[offset .. offset + count)` ordered by descending
 // importance. `lodCounts[k]` is how many of those (the most important) survive at
@@ -13,14 +11,34 @@ import { Vector3 } from 'three'
 export interface SplatOctreeLeaf {
   /** AABB min/max, flat `[minX, minY, minZ, maxX, maxY, maxZ]` in splat-local space. */
   readonly bounds: Float32Array
-  /** Centre of the AABB, for distance/LOD evaluation. */
-  readonly center: Vector3
   /** Start of this leaf's run in {@link SplatOctree.sortedIndices}. */
   readonly offset: number
   /** Splats in this leaf (LOD 0 count). */
   readonly count: number
   /** Per-LOD splat counts; `lodCounts[0] === count`, strictly decreasing. */
   readonly lodCounts: number[]
+}
+
+/**
+ * The octree data the LOD selector reads. {@link SplatOctree} satisfies it; the
+ * transferable-flat form ({@link octreeToFlat} / {@link octreeFromFlat}) rebuilds
+ * it inside a worker. Three-free so the worker bundle stays tiny.
+ */
+export interface SplatOctreeData {
+  readonly leaves: SplatOctreeLeaf[]
+  readonly sortedIndices: Uint32Array
+  readonly lodLevels: number
+  readonly totalCount: number
+}
+
+/** Flat, transferable form of {@link SplatOctreeData} for posting to a worker. */
+export interface SplatOctreeFlat {
+  leafBounds: Float32Array
+  leafOffsets: Uint32Array
+  leafCounts: Uint32Array
+  leafLodCounts: Uint32Array
+  lodLevels: number
+  sortedIndices: Uint32Array
 }
 
 export interface SplatOctreeOptions {
@@ -165,7 +183,6 @@ export class SplatOctree {
         prev = c
       }
 
-      // Tight AABB over the leaf's actual splats (cell bounds can be looser).
       const bounds = new Float32Array([
         cell.min[0],
         cell.min[1],
@@ -174,12 +191,7 @@ export class SplatOctree {
         cell.max[1],
         cell.max[2]
       ])
-      const center = new Vector3(
-        (cell.min[0] + cell.max[0]) * 0.5,
-        (cell.min[1] + cell.max[1]) * 0.5,
-        (cell.min[2] + cell.max[2]) * 0.5
-      )
-      leaves.push({ bounds, center, offset: cursor, count: leafCount, lodCounts })
+      leaves.push({ bounds, offset: cursor, count: leafCount, lodCounts })
       cursor += leafCount
     }
 
@@ -217,4 +229,58 @@ export function computeSplatImportance(
     importance[i] = size * opacity
   }
   return importance
+}
+
+/** Flattens octree data into transferable typed arrays for posting to a worker. */
+export function octreeToFlat(octree: SplatOctreeData): SplatOctreeFlat {
+  const { leaves, sortedIndices, lodLevels } = octree
+  const leafCount = leaves.length
+  const leafBounds = new Float32Array(leafCount * 6)
+  const leafOffsets = new Uint32Array(leafCount)
+  const leafCounts = new Uint32Array(leafCount)
+  const leafLodCounts = new Uint32Array(leafCount * lodLevels)
+  for (let i = 0; i < leafCount; i++) {
+    const leaf = leaves[i]
+    leafBounds.set(leaf.bounds, i * 6)
+    leafOffsets[i] = leaf.offset
+    leafCounts[i] = leaf.count
+    for (let l = 0; l < lodLevels; l++) {
+      leafLodCounts[i * lodLevels + l] = leaf.lodCounts[l]
+    }
+  }
+  return {
+    leafBounds,
+    leafOffsets,
+    leafCounts,
+    leafLodCounts,
+    lodLevels,
+    sortedIndices
+  }
+}
+
+/** Rebuilds {@link SplatOctreeData} from its flat form (inside a worker). */
+export function octreeFromFlat(flat: SplatOctreeFlat): SplatOctreeData {
+  const {
+    leafBounds,
+    leafOffsets,
+    leafCounts,
+    leafLodCounts,
+    lodLevels,
+    sortedIndices
+  } = flat
+  const leafCount = leafOffsets.length
+  const leaves: SplatOctreeLeaf[] = []
+  for (let i = 0; i < leafCount; i++) {
+    const lodCounts: number[] = []
+    for (let l = 0; l < lodLevels; l++) {
+      lodCounts.push(leafLodCounts[i * lodLevels + l])
+    }
+    leaves.push({
+      bounds: leafBounds.subarray(i * 6, i * 6 + 6),
+      offset: leafOffsets[i],
+      count: leafCounts[i],
+      lodCounts
+    })
+  }
+  return { leaves, sortedIndices, lodLevels, totalCount: sortedIndices.length }
 }

@@ -161,6 +161,10 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   // GpuSplatSorter (GPU-GPU copy, no upload) or a CPU sorter (uploadOrder).
   private orderAttribute: StorageInstancedBufferAttribute | null = null
   private orderArray: ReturnType<typeof storage> | null = null
+  // Per-instance LOD-transition fade [0,1]; the LOD selector writes it so splats
+  // crossing a LOD boundary dissolve instead of popping. 1 = fully opaque.
+  private fadeAttribute: StorageInstancedBufferAttribute | null = null
+  private fadeArray: ReturnType<typeof storage> | null = null
   private count = 0
 
   private readonly cameraLocalX = uniform(0)
@@ -225,6 +229,13 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     this.orderAttribute = orderAttribute
     this.orderArray = storage(orderAttribute, 'uint', geometry.count)
 
+    // Per-instance LOD fade, parallel to the order buffer. Identity-initialised to
+    // 1 (opaque) so the non-LOD path is unaffected.
+    const fadeData = new Float32Array(geometry.count).fill(1)
+    const fadeAttribute = new StorageInstancedBufferAttribute(fadeData, 1)
+    this.fadeAttribute = fadeAttribute
+    this.fadeArray = storage(fadeAttribute, 'float', geometry.count)
+
     // One prepare compute pass (projection + colour) fills a per-splat struct,
     // indexed by the splat's own id, for the active subset only.
     this.prepared = instancedArray(geometry.count, splatStruct)
@@ -239,6 +250,8 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     // color: rgb = resolved linear radiance, a = opacity (flat across the quad).
     const vColor = varying(splat.get('color'))
     const vQuad = varying(quadOffset)
+    // Per-instance LOD-transition fade (constant across the quad's verts).
+    const vFade = varying(this.fadeArray.element(instanceIndex))
 
     this.vertexNode = Fn(() => {
       const pc = splat.get('center') // xy = NDC centre, z = depth, w = valid flag
@@ -255,7 +268,8 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
       // quadOffset is in standard-deviation units; fade out beyond ~2σ.
       const power = vQuad.dot(vQuad).negate()
       const alpha = power.exp().mul(vColor.a)
-      const masked = power.lessThan(-4).select(float(0), alpha)
+      // LOD-transition fade scales coverage so margin splats dissolve smoothly.
+      const masked = power.lessThan(-4).select(float(0), alpha).mul(vFade)
       // Premultiplied "over"; `intensity` scales radiance only, not coverage.
       return vec4(vColor.rgb.mul(this.intensity).mul(masked), masked)
     })()
@@ -511,6 +525,19 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
       indices.subarray(0, this.count)
     )
     this.orderAttribute.needsUpdate = true
+  }
+
+  /**
+   * Uploads the per-instance LOD-transition fade (parallel to the draw order), so
+   * splats crossing a LOD boundary dissolve instead of popping. Length matches the
+   * uploaded order; unused tail entries are ignored (instanceCount bounds the draw).
+   */
+  uploadFade(fade: Float32Array): void {
+    if (this.fadeAttribute == null) {
+      return
+    }
+    ;(this.fadeAttribute.array as Float32Array).set(fade.subarray(0, this.count))
+    this.fadeAttribute.needsUpdate = true
   }
 
   override dispose(): void {

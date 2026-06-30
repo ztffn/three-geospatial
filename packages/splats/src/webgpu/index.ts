@@ -22,10 +22,21 @@ export type {
   SplatLodMeshOptions,
   SplatMaterial
 } from '../GaussianSplatMesh'
-export { SplatOctree, computeSplatImportance } from '../SplatOctree'
-export type { SplatOctreeLeaf, SplatOctreeOptions } from '../SplatOctree'
+export {
+  SplatOctree,
+  computeSplatImportance,
+  octreeToFlat,
+  octreeFromFlat
+} from '../SplatOctree'
+export type {
+  SplatOctreeLeaf,
+  SplatOctreeOptions,
+  SplatOctreeData,
+  SplatOctreeFlat
+} from '../SplatOctree'
 export { SplatLodSelector } from '../SplatLodSelector'
 export type { SplatLodParams, SplatLodResult } from '../SplatLodSelector'
+export { WorkerSplatLodSelector } from '../WorkerSplatLodSelector'
 export { GaussianSplatsPlugin } from '../GaussianSplatsPlugin'
 export type { GaussianSplatsPluginOptions } from '../GaussianSplatsPlugin'
 export {
