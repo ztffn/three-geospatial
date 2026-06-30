@@ -189,11 +189,14 @@ export class GaussianSplatMesh extends Mesh<
   private readonly lodSelector: SplatLodSelector | null
   private readonly lodPipeline: SplatLodPipelineLike | null
   private lodDirty = true
-  // Frames the GPU pipeline keeps running after the last selection change, so the
-  // temporal cross-fade settles before a static camera stops costing anything.
-  private readonly fadeStep: number
-  private readonly fadeFrames: number
-  private fadeFramesRemaining = 0
+  // Temporal cross-fade, time-based so its duration is independent of refresh rate.
+  // `fadeRate` is the per-second alpha change; the GPU pipeline keeps running for
+  // `fadeDurationMs` after the last selection change (tracked by `fadeElapsedMs`),
+  // so the fade fully settles before a static camera stops costing anything.
+  private readonly fadeRate: number
+  private readonly fadeDurationMs: number
+  private fadeElapsedMs = Infinity
+  private prevTimeMs = 0
 
   constructor(data: GaussianSplatData, options: GaussianSplatMeshOptions = {}) {
     const geometry = new GaussianSplatGeometry(data)
@@ -232,8 +235,11 @@ export class GaussianSplatMesh extends Mesh<
       if (this.lodPipeline != null) {
         this.geometry.setIndirect(this.lodPipeline.getDrawIndirect())
       }
-      this.fadeStep = options.lod.fadeStep ?? 0.1
-      this.fadeFrames = Math.ceil(1 / this.fadeStep) + 4
+      // `fadeStep` is the per-60fps-frame rate; convert to per-second. Run the
+      // pipeline for one full fade (1 / rate) plus a margin after the last change.
+      const fadeStep = options.lod.fadeStep ?? 0.1
+      this.fadeRate = fadeStep * 60
+      this.fadeDurationMs = 1000 / this.fadeRate + 120
       const radius = this.geometry.boundingSphere?.radius ?? 1
       this.lodParams = {
         budget: options.lod.budget ?? 1_000_000,
@@ -243,8 +249,8 @@ export class GaussianSplatMesh extends Mesh<
     } else {
       this.lodSelector = null
       this.lodPipeline = null
-      this.fadeStep = 0.1
-      this.fadeFrames = 0
+      this.fadeRate = 6
+      this.fadeDurationMs = 0
       this.lodParams = { budget: 0, lodBaseDistance: 1, lodMultiplier: 2 }
     }
   }
@@ -279,6 +285,13 @@ export class GaussianSplatMesh extends Mesh<
     // compaction → sort → indirect args) while the temporal cross-fade settles. The
     // prepare projects only the GPU-compacted drawn set, and the draw is indirect.
     if (this.lodSelector != null && this.lodPipeline != null) {
+      // Wall-clock delta for the time-based fade (clamped so a tab refocus / long
+      // stall doesn't snap the alphas). Defaults to one 60fps frame on the first call.
+      const nowMs = performance.now()
+      const dtMs =
+        this.prevTimeMs > 0 ? Math.min(nowMs - this.prevTimeMs, 100) : 1000 / 60
+      this.prevTimeMs = nowMs
+
       const moved =
         this.lodDirty ||
         this.trigger.shouldSort(scratchCameraLocal, this.geometry.centroid)
@@ -315,11 +328,14 @@ export class GaussianSplatMesh extends Mesh<
         }
         this.lodDirty = false
         this.trigger.markSorted(scratchCameraLocal, this.geometry.centroid)
-        // Keep the pipeline running long enough for the cross-fade to complete.
-        this.fadeFramesRemaining = this.fadeFrames
+        // Restart the fade settle window so the cross-fade runs to completion.
+        this.fadeElapsedMs = 0
       }
 
-      if (moved || this.fadeFramesRemaining > 0) {
+      if (moved || this.fadeElapsedMs < this.fadeDurationMs) {
+        // Per-frame alpha step, time-scaled so the fade duration is refresh-rate
+        // independent (clamped to a full transition so a long dt can't overshoot).
+        const fadeStep = Math.min(1, (this.fadeRate * dtMs) / 1000)
         const ran = this.lodPipeline.update(
           renderer,
           this.material.getOrderAttribute?.(),
@@ -328,17 +344,18 @@ export class GaussianSplatMesh extends Mesh<
           scratchCameraLocal.x,
           scratchCameraLocal.y,
           scratchCameraLocal.z,
-          this.fadeStep
+          fadeStep
         )
-        // Only count down once the pipeline is actually running (the first frame(s)
-        // no-op while Three lazily creates the storage/indirect buffers).
+        // Advance the settle window only once the pipeline is actually running (the
+        // first frame(s) no-op while Three lazily creates the storage/indirect
+        // buffers), so the warm-up can't consume the fade window.
         if (ran && !moved) {
-          this.fadeFramesRemaining--
+          this.fadeElapsedMs += dtMs
         }
-        // Prepare: over-dispatch the loaded count (the in-shader guard clips the
-        // heavy projection to the GPU-compacted drawn set). `setCompactCount = false`
-        // leaves the compact-count buffer to the pipeline. Always dispatched here
-        // (also on warm-up, so the compute creates the material's storage buffers).
+        // Prepare: dispatched indirectly over the GPU-compacted drawn set
+        // (`setCompactCount = false` leaves the compact-count buffer to the pipeline).
+        // Always called here — also on warm-up, so the compute creates the material's
+        // storage buffers and the indirect dispatch buffer.
         this.material.updatePrepare?.(
           renderer,
           scratchModelView,

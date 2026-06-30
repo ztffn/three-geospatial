@@ -74,14 +74,17 @@ const Content: FC = () => {
   const renderer = useThree<Renderer>(({ gl }) => gl as unknown as Renderer)
   const camera = useThree(({ camera }) => camera)
 
-  const { source, debug, intensity, lodSize, budget, maxSplats } = useControls(
-    'Splats',
-    {
+  const { source, lod, debug, intensity, lodSize, budget, maxSplats } =
+    useControls('Splats', {
     // SPZ is the default — this story exists to validate the real capture.
     source: {
       value: 'SPZ capture',
       options: ['SPZ capture', 'Procedural sphere']
     },
+    // Octree LOD on/off. ON = the fully-GPU pipeline (per-splat alpha cross-fade +
+    // compaction + sort + indirect draw). OFF = the full-cloud path (GPU radix sort,
+    // every loaded splat drawn, no fade) — exercises the non-LOD code path. Rebuilds.
+    lod: { value: true },
     // Coordinate/debug, mirrors SpzSplatLoader. flipYZ = RDF→RUB; raw = none;
     // isotropic = equal scales + identity rotation (round blobs). Reloads on change.
     debug: { value: 'flipYZ', options: ['flipYZ', 'raw', 'isotropic'] },
@@ -171,25 +174,30 @@ const Content: FC = () => {
       // budgeted target LOD per leaf. The injected GPU pipeline expands that into a
       // per-splat temporal cross-fade, compacts the drawn set, sorts it, and draws it
       // indirectly — bounding the rasterized count. `budget` is tuned live below.
-      lod: {
-        budget: 1_000_000,
-        createPipeline: (octree, positions, count) =>
-          new SplatLodPipeline(octree, positions, count)
-      },
+      // Toggled off → the full-cloud path (no pipeline, no fade, every splat drawn).
+      ...(lod
+        ? {
+            lod: {
+              budget: 1_000_000,
+              createPipeline: (octree, positions, count) =>
+                new SplatLodPipeline(octree, positions, count)
+            }
+          }
+        : {}),
       // GPU radix sort (PlayCanvas multipass port) for the non-LOD full-cloud path;
       // dormant while LOD is active (the LOD pipeline sorts its compacted subset).
       sorter: new GpuSplatSorter(),
-      // lodFade: scale coverage by the per-splat cross-fade alpha. Linear (non-log)
-      // depth, depthWrite off — matches this canvas (no logarithmicDepthBuffer) and
-      // the canonical sorted-no-depth splat compositing. None of the twin's
-      // log-depth / depthWrite / composite.
+      // lodFade: scale coverage by the per-splat cross-fade alpha (LOD path only).
+      // Linear (non-log) depth, depthWrite off — matches this canvas (no
+      // logarithmicDepthBuffer) and the canonical sorted-no-depth splat compositing.
+      // None of the twin's log-depth / depthWrite / composite.
       createMaterial: geometry => {
-        material = new GaussianSplatNodeMaterial(geometry, { lodFade: true })
+        material = new GaussianSplatNodeMaterial(geometry, { lodFade: lod })
         return material
       }
     })
     return { mesh, material }
-  }, [data])
+  }, [data, lod])
 
   useEffect(() => {
     const mesh = meshState?.mesh

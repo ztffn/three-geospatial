@@ -30,6 +30,7 @@ import {
   struct,
   texture,
   transpose,
+  uint,
   uniform,
   varying,
   vec2,
@@ -38,6 +39,7 @@ import {
   viewZToLogarithmicDepth
 } from 'three/tsl'
 import {
+  IndirectStorageBufferAttribute,
   MeshBasicNodeMaterial,
   StorageInstancedBufferAttribute,
   type ComputeNode,
@@ -163,6 +165,12 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
   // HighpVelocityNode).
   private prepared: ReturnType<typeof instancedArray> | null = null
   private prepareNode: ComputeNode | null = null
+  // LOD path only: the prepare is dispatched indirectly over the GPU-compacted draw
+  // count. `writeDispatchArgsNode` (a 1-thread compute) derives the workgroup count
+  // from `compactCount` and writes it into `dispatchIndirect`; binding the attribute
+  // there also makes Three create its INDIRECT buffer (nothing else would).
+  private dispatchIndirect: IndirectStorageBufferAttribute | null = null
+  private writeDispatchArgsNode: ComputeNode | null = null
 
   // Draw order: per-instance splat id (sorted back-to-front), in a GPU storage
   // buffer the vertex reads via `instanceIndex`. Rewritten each sort — by
@@ -263,6 +271,28 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     // indexed by the splat's own id, for the active subset only.
     this.prepared = instancedArray(geometry.count, splatStruct)
     this.prepareNode = this.buildPrepare(geometry)
+
+    // LOD path: a 1-thread compute that writes the prepare's indirect dispatch args
+    // from the GPU-compacted draw count, so the prepare dispatches exactly
+    // ceil(compactCount / 64) workgroups (matching the prepare's default [64]
+    // workgroup size) instead of over-dispatching the loaded count. Binding
+    // `dispatchIndirect` here is also what makes Three create its INDIRECT buffer.
+    if (this.lodFade) {
+      const dispatchAttribute = new IndirectStorageBufferAttribute(
+        new Uint32Array([0, 1, 1]),
+        1
+      )
+      this.dispatchIndirect = dispatchAttribute
+      const dispatchArray = storage(dispatchAttribute, 'uint', 3)
+      const compactCount = this.compactCountArray
+      this.writeDispatchArgsNode = Fn(() => {
+        const n = compactCount.element(0)
+        // ceil(n / 64) = (n + 63) >> 6.
+        dispatchArray.element(0).assign(n.add(uint(63)).shiftRight(uint(6)))
+        dispatchArray.element(1).assign(uint(1))
+        dispatchArray.element(2).assign(uint(1))
+      })().compute(1, [1])
+    }
 
     // Draw instance j reads order[j] = sorted splat id, then that splat's prepared
     // record. instanceIndex is the per-instance builtin; quadOffset is per-vertex.
@@ -527,11 +557,29 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     this.lastModelView.copy(modelView)
     this.lastProjection.copy(projectionMatrix)
     this.preparedOnce = true
-    // Non-LOD: the drawn set is the whole cloud, so mirror the count into the
-    // compact-count buffer the prepare guard reads (set once, then stable). The LOD
-    // path leaves it alone — SplatLodPipeline writes the GPU-compacted count there.
+    const computeRenderer = renderer as unknown as {
+      compute: (
+        node: ComputeNode,
+        dispatchSize: number | IndirectStorageBufferAttribute
+      ) => unknown
+    }
     if (
-      setCompactCount &&
+      !setCompactCount &&
+      this.writeDispatchArgsNode != null &&
+      this.dispatchIndirect != null
+    ) {
+      // LOD path: derive the dispatch args on-GPU from the compacted count (written
+      // by SplatLodPipeline), then dispatch the prepare indirectly so its workgroup
+      // launches track the drawn set, not the loaded count. The `invocation <
+      // compactCount` guard still clips the last (partial) workgroup. compactCount
+      // is left to the pipeline (GPU-owned).
+      void computeRenderer.compute(this.writeDispatchArgsNode, 1)
+      void computeRenderer.compute(this.prepareNode, this.dispatchIndirect)
+      return
+    }
+    // Non-LOD: the drawn set is the whole cloud, so mirror the count into the
+    // compact-count buffer the prepare guard reads (set once, then stable).
+    if (
       this.compactCountAttribute != null &&
       this.lastDispatchCount !== dispatchCount
     ) {
@@ -539,14 +587,7 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
       this.compactCountAttribute.needsUpdate = true
     }
     this.lastDispatchCount = dispatchCount
-    // Dispatch `dispatchCount` invocations. The LOD path over-dispatches the loaded
-    // count; the in-shader `invocation < compactCount` guard clips the projection to
-    // the drawn subset, so the heavy EWA/SH work still tracks the drawn count.
-    void (
-      renderer as unknown as {
-        compute: (node: ComputeNode, dispatchSize: number) => unknown
-      }
-    ).compute(this.prepareNode, Math.max(1, dispatchCount))
+    void computeRenderer.compute(this.prepareNode, Math.max(1, dispatchCount))
   }
 
   /**
