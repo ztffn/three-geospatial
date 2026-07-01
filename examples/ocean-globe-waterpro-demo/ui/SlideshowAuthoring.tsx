@@ -90,7 +90,8 @@ function run(promise: Promise<void>): void {
 const ManageSlidesButton: FC<{
   active: boolean
   onClick: () => void
-}> = ({ active, onClick }) => (
+  embedded?: boolean
+}> = ({ active, embedded = false, onClick }) => (
   <button
     type='button'
     aria-label='Manage slides'
@@ -99,7 +100,9 @@ const ManageSlidesButton: FC<{
     style={{
       ...deckButtonStyle(false),
       background: 'transparent',
+      border: embedded ? 'none' : PANEL_BORDER,
       opacity: active ? 1 : 0.82,
+      padding: embedded ? '0 0 6px' : '6px 8px',
       color: active ? ACCENT : TEXT
     }}
   >
@@ -215,13 +218,7 @@ export const SlideshowDeckLauncher: FC<{
           )}
         </div>
       ))}
-      <ManageSlidesButton
-        active={controls.adminOpen}
-        onClick={() => {
-          controls.setAdminOpen(!controls.adminOpen)
-        }}
-      />
-      {controls.adminOpen && (
+      {controls.adminOpen ? (
         <div
           style={{
             display: 'flex',
@@ -232,6 +229,13 @@ export const SlideshowDeckLauncher: FC<{
             border: PANEL_BORDER
           }}
         >
+          <ManageSlidesButton
+            active
+            embedded
+            onClick={() => {
+              controls.setAdminOpen(false)
+            }}
+          />
           <input
             type='password'
             value={controls.adminToken}
@@ -274,6 +278,13 @@ export const SlideshowDeckLauncher: FC<{
             </div>
           )}
         </div>
+      ) : (
+        <ManageSlidesButton
+          active={false}
+          onClick={() => {
+            controls.setAdminOpen(true)
+          }}
+        />
       )}
     </div>
   )
