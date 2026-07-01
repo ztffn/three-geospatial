@@ -15,18 +15,18 @@ async function jsonOrThrow<T>(response: Response): Promise<T> {
   return body as T
 }
 
-function authHeaders(token: string): HeadersInit {
-  return token.length > 0 ? { Authorization: `Bearer ${token}` } : {}
-}
-
 export interface ScenarioSlideshowsState {
   decks: RuntimeSlideshowDeck[]
   loading: boolean
   error: string | null
   adminOpen: boolean
   adminToken: string
+  adminAuthenticated: boolean
+  adminChecking: boolean
   setAdminOpen: (open: boolean) => void
   setAdminToken: (token: string) => void
+  unlockAdmin: () => Promise<void>
+  lockAdmin: () => Promise<void>
   refresh: () => Promise<void>
   createDeck: (label: string) => Promise<void>
   patchDeck: (
@@ -56,18 +56,30 @@ export function useScenarioSlideshows(
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [adminOpen, setAdminOpen] = useState(false)
-  const [adminToken, setAdminTokenState] = useState(
-    () => window.localStorage.getItem('twinAdminToken') ?? ''
-  )
+  const [adminToken, setAdminTokenState] = useState('')
+  const [adminAuthenticated, setAdminAuthenticated] = useState(false)
+  const [adminChecking, setAdminChecking] = useState(true)
 
   const setAdminToken = useCallback((token: string) => {
     setAdminTokenState(token)
-    if (token.length > 0) {
-      window.localStorage.setItem('twinAdminToken', token)
-    } else {
-      window.localStorage.removeItem('twinAdminToken')
+  }, [])
+
+  const checkAdminSession = useCallback(async () => {
+    setAdminChecking(true)
+    try {
+      const response = await fetch('/api/authoring/admin/session')
+      const data = await jsonOrThrow<{ ok: boolean }>(response)
+      setAdminAuthenticated(data.ok)
+    } catch {
+      setAdminAuthenticated(false)
+    } finally {
+      setAdminChecking(false)
     }
   }, [])
+
+  useEffect(() => {
+    void checkAdminSession()
+  }, [checkAdminSession])
 
   const refresh = useCallback(async () => {
     if (scenarioId == null) {
@@ -77,7 +89,7 @@ export function useScenarioSlideshows(
     setLoading(true)
     setError(null)
     try {
-      const suffix = adminOpen ? '?includeDisabled=1' : ''
+      const suffix = adminOpen && adminAuthenticated ? '?includeDisabled=1' : ''
       const response = await fetch(
         `/api/authoring/scenarios/${encodeURIComponent(
           scenarioId
@@ -90,7 +102,7 @@ export function useScenarioSlideshows(
     } finally {
       setLoading(false)
     }
-  }, [adminOpen, scenarioId])
+  }, [adminAuthenticated, adminOpen, scenarioId])
 
   useEffect(() => {
     void refresh()
@@ -109,6 +121,41 @@ export function useScenarioSlideshows(
     [refresh]
   )
 
+  const unlockAdmin = useCallback(async () => {
+    setError(null)
+    setAdminChecking(true)
+    try {
+      await jsonOrThrow<{ ok: boolean }>(
+        await fetch('/api/authoring/admin/session', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token: adminToken })
+        })
+      )
+      setAdminAuthenticated(true)
+      setAdminTokenState('')
+      await refresh()
+    } catch (err: unknown) {
+      setAdminAuthenticated(false)
+      setError(err instanceof Error ? err.message : 'admin unlock failed')
+    } finally {
+      setAdminChecking(false)
+    }
+  }, [adminToken, refresh])
+
+  const lockAdmin = useCallback(async () => {
+    setError(null)
+    setAdminChecking(true)
+    try {
+      await fetch('/api/authoring/admin/session', { method: 'DELETE' })
+    } finally {
+      setAdminAuthenticated(false)
+      setAdminTokenState('')
+      setAdminChecking(false)
+      await refresh()
+    }
+  }, [refresh])
+
   const createDeck = useCallback(
     async (label: string) => {
       if (scenarioId == null) return
@@ -117,14 +164,13 @@ export function useScenarioSlideshows(
           await fetch('/api/authoring/slideshows', {
             method: 'POST',
             headers: {
-              'content-type': 'application/json',
-              ...authHeaders(adminToken)
+              'content-type': 'application/json'
             },
             body: JSON.stringify({ scenarioId, label })
           })
       )
     },
-    [adminToken, mutate, scenarioId]
+    [mutate, scenarioId]
   )
 
   const patchDeck = useCallback(
@@ -135,16 +181,13 @@ export function useScenarioSlideshows(
             `/api/authoring/slideshows/${encodeURIComponent(deckId)}`,
             {
               method: 'PATCH',
-              headers: {
-                'content-type': 'application/json',
-                ...authHeaders(adminToken)
-              },
+              headers: { 'content-type': 'application/json' },
               body: JSON.stringify(patch)
             }
           )
       )
     },
-    [adminToken, mutate]
+    [mutate]
   )
 
   const deleteDeck = useCallback(
@@ -154,13 +197,12 @@ export function useScenarioSlideshows(
           await fetch(
             `/api/authoring/slideshows/${encodeURIComponent(deckId)}`,
             {
-              method: 'DELETE',
-              headers: authHeaders(adminToken)
+              method: 'DELETE'
             }
           )
       )
     },
-    [adminToken, mutate]
+    [mutate]
   )
 
   const moveDeck = useCallback(
@@ -179,16 +221,13 @@ export function useScenarioSlideshows(
             )}/slideshow-order`,
             {
               method: 'PATCH',
-              headers: {
-                'content-type': 'application/json',
-                ...authHeaders(adminToken)
-              },
+              headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ ids })
             }
           )
       )
     },
-    [adminToken, decks, mutate, scenarioId]
+    [decks, mutate, scenarioId]
   )
 
   const uploadSlide = useCallback(
@@ -202,13 +241,12 @@ export function useScenarioSlideshows(
             `/api/authoring/slideshows/${encodeURIComponent(deckId)}/slides`,
             {
               method: 'POST',
-              headers: authHeaders(adminToken),
               body: formData
             }
           )
       )
     },
-    [adminToken, mutate]
+    [mutate]
   )
 
   const patchSlide = useCallback(
@@ -221,16 +259,13 @@ export function useScenarioSlideshows(
             )}/slides/${encodeURIComponent(slideId)}`,
             {
               method: 'PATCH',
-              headers: {
-                'content-type': 'application/json',
-                ...authHeaders(adminToken)
-              },
+              headers: { 'content-type': 'application/json' },
               body: JSON.stringify(patch)
             }
           )
       )
     },
-    [adminToken, mutate]
+    [mutate]
   )
 
   const deleteSlide = useCallback(
@@ -242,13 +277,12 @@ export function useScenarioSlideshows(
               deckId
             )}/slides/${encodeURIComponent(slideId)}`,
             {
-              method: 'DELETE',
-              headers: authHeaders(adminToken)
+              method: 'DELETE'
             }
           )
       )
     },
-    [adminToken, mutate]
+    [mutate]
   )
 
   const moveSlide = useCallback(
@@ -266,16 +300,13 @@ export function useScenarioSlideshows(
             `/api/authoring/slideshows/${encodeURIComponent(deckId)}/slide-order`,
             {
               method: 'PATCH',
-              headers: {
-                'content-type': 'application/json',
-                ...authHeaders(adminToken)
-              },
+              headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ ids })
             }
           )
       )
     },
-    [adminToken, decks, mutate]
+    [decks, mutate]
   )
 
   return useMemo(
@@ -285,8 +316,12 @@ export function useScenarioSlideshows(
       error,
       adminOpen,
       adminToken,
+      adminAuthenticated,
+      adminChecking,
       setAdminOpen,
       setAdminToken,
+      unlockAdmin,
+      lockAdmin,
       refresh,
       createDeck,
       patchDeck,
@@ -299,6 +334,8 @@ export function useScenarioSlideshows(
     }),
     [
       adminOpen,
+      adminAuthenticated,
+      adminChecking,
       adminToken,
       createDeck,
       decks,
@@ -306,12 +343,14 @@ export function useScenarioSlideshows(
       deleteSlide,
       error,
       loading,
+      lockAdmin,
       moveDeck,
       moveSlide,
       patchDeck,
       patchSlide,
       refresh,
       setAdminToken,
+      unlockAdmin,
       uploadSlide
     ]
   )

@@ -192,7 +192,7 @@ export const SlideshowDeckLauncher: FC<{
               {deck.slides.length}
             </span>
           </button>
-          {controls.adminOpen && (
+          {controls.adminOpen && controls.adminAuthenticated && (
             <>
               <button
                 type='button'
@@ -236,42 +236,74 @@ export const SlideshowDeckLauncher: FC<{
               controls.setAdminOpen(false)
             }}
           />
-          <input
-            type='password'
-            value={controls.adminToken}
-            onChange={event => {
-              controls.setAdminToken(event.currentTarget.value)
-            }}
-            placeholder='Admin token'
-            style={inputStyle}
-          />
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input
-              value={newDeckLabel}
-              onChange={event => {
-                setNewDeckLabel(event.currentTarget.value)
-              }}
-              placeholder='Slideshow name'
-              style={{ ...inputStyle, flex: 1 }}
-            />
+          {!controls.adminAuthenticated ? (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                type='password'
+                value={controls.adminToken}
+                onChange={event => {
+                  controls.setAdminToken(event.currentTarget.value)
+                }}
+                placeholder='Admin token'
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button
+                type='button'
+                disabled={controls.adminChecking}
+                onClick={() => {
+                  run(controls.unlockAdmin())
+                }}
+                style={{
+                  ...buttonStyle(),
+                  padding: '4px 8px',
+                  fontSize: 10,
+                  opacity: controls.adminChecking ? 0.55 : 1
+                }}
+              >
+                Unlock
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                value={newDeckLabel}
+                onChange={event => {
+                  setNewDeckLabel(event.currentTarget.value)
+                }}
+                placeholder='Slideshow name'
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button
+                type='button'
+                onClick={() => {
+                  void controls.createDeck(newDeckLabel)
+                  setNewDeckLabel('')
+                }}
+                style={{ ...buttonStyle(), padding: '4px 8px', fontSize: 10 }}
+              >
+                Add
+              </button>
+            </div>
+          )}
+          {controls.adminAuthenticated && (
             <button
               type='button'
               onClick={() => {
-                void controls.createDeck(newDeckLabel)
-                setNewDeckLabel('')
+                run(controls.lockAdmin())
               }}
               style={{ ...buttonStyle(), padding: '4px 8px', fontSize: 10 }}
             >
-              Add
+              Lock admin
             </button>
-          </div>
-          {controls.decks.map(deck => (
-            <DeckAdminRow
-              key={`admin-${deck.id}`}
-              deck={deck}
-              controls={controls}
-            />
-          ))}
+          )}
+          {controls.adminAuthenticated &&
+            controls.decks.map(deck => (
+              <DeckAdminRow
+                key={`admin-${deck.id}`}
+                deck={deck}
+                controls={controls}
+              />
+            ))}
           {controls.error != null && (
             <div style={{ color: ACCENT, fontFamily: SANS, fontSize: 10 }}>
               {controls.error}
