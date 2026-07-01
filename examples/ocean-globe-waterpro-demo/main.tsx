@@ -232,11 +232,16 @@ const ReadinessProbe: FC<{
         const mgr = refs.getOceanManager()
         const chunkCount =
           mgr?.chunks_ != null ? Object.keys(mgr.chunks_).length : 0
+        // Reveal waits on the load-time compileAsync prewarm in addition to the
+        // chunk build, so the first visible frame is already pipeline-warm — no
+        // ~2 s synchronous WGSL compile hitch at reveal. isPrewarmed is optional
+        // for backward-compatibility with an un-updated Content.
         const oceanReady =
           mgr != null &&
           mgr.builder_ != null &&
           mgr.builder_.Busy === false &&
-          chunkCount > 0
+          chunkCount > 0 &&
+          (refs.isPrewarmed?.() ?? true)
         stableFrames = oceanReady ? stableFrames + 1 : 0
         if (stableFrames >= STABLE_FRAMES) {
           reportedOceanRef.current = true

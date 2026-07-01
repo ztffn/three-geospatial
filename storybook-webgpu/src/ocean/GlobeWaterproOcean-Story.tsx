@@ -2048,6 +2048,11 @@ const SCENE_RADIANCE_SCALE = 0.28
 export interface ContentReadinessRefs {
   atmosphereContext: AtmosphereContext
   getOceanManager: () => any | null
+  // True once the load-time compileAsync prewarm has warmed the heavy material
+  // pipelines. The host gates reveal on this in addition to the chunk-build test,
+  // so the splash only fades after the first visible frame is already warm (no
+  // synchronous compile hitch at reveal). See PERFORMANCE-FINDINGS.md item A.
+  isPrewarmed: () => boolean
 }
 
 export const Content: FC<{
@@ -2229,6 +2234,12 @@ export const Content: FC<{
   const orbitControlsRef = useRef<any>(null)
   orbitControlsRef.current = useThree(({ controls }) => controls)
   const [oceanManager, setOceanManager] = useState<any>(null)
+  // Set once the load-time compileAsync prewarm has warmed the heavy material
+  // pipelines under the splash. Until then, the beauty post-render is held (see
+  // the prewarm effect + the gated render loop below) so the first geometried-
+  // chunk draw can't compile the WaterPro ocean material synchronously and stall
+  // the chunk build. See PERFORMANCE-FINDINGS.md item A.
+  const [prewarmDone, setPrewarmDone] = useState(false)
   // Hero turbine engine position, reported by the farm; the camera orbits it.
   const [heroFocus, setHeroFocus] = useState<Vector3 | null>(null)
   const [oceanUniforms, setOceanUniforms] =
@@ -2257,13 +2268,18 @@ export const Content: FC<{
   // through React state.
   const oceanManagerRef = useRef<any>(null)
   oceanManagerRef.current = oceanManager
+  // Live mirror of prewarmDone so the once-reported readiness refs can expose it
+  // through a stable getter without re-reporting.
+  const prewarmDoneRef = useRef(false)
+  prewarmDoneRef.current = prewarmDone
   const readinessReportedRef = useRef(false)
   useEffect(() => {
     if (readinessReportedRef.current || onReadinessRefs == null) return
     readinessReportedRef.current = true
     onReadinessRefs({
       atmosphereContext: context,
-      getOceanManager: () => oceanManagerRef.current
+      getOceanManager: () => oceanManagerRef.current,
+      isPrewarmed: () => prewarmDoneRef.current
     })
   }, [context, onReadinessRefs])
 
@@ -3588,7 +3604,11 @@ export const Content: FC<{
     result.outputNode = lensControls.enabled
       ? lensDrops.apply(convertToTexture(composite))
       : composite
-    return { postProcessing: result, skyNode }
+    // passNode / splatPassNode / overlayPassNode are surfaced so the load-time
+    // prewarm effect can call each pass node's own compileAsync (which binds the
+    // pass render target + MRT) and warm the inner-scene material pipelines under
+    // the splash, off the first visible frame. See the prewarm effect below.
+    return { postProcessing: result, skyNode, passNode, splatPassNode, overlayPassNode }
   }, [
     atmosphereControls.exposure,
     atmosphereControls.moonIntensity,
@@ -3893,7 +3913,95 @@ export const Content: FC<{
     ).applyMatrix4(matrixECIToECEF)
   })
 
+  // ── Load-time pipeline prewarm (compileAsync) ─────────────────────────────
+  // The first ocean-phase beauty draw would otherwise compile the WaterPro ocean
+  // material (plus terrain/turbine/ship materials and the post graph) in one
+  // synchronous multi-second block on the render thread — which then can't drain
+  // the chunk-builder's per-frame worker results, serialising the ~3.6 s build.
+  // Instead, once the first chunk carries real geometry, hold the beauty render
+  // (below) and warm each pass node's material pipelines via compileAsync, which
+  // uses the async GPU pipeline path so the build keeps draining while the driver
+  // compiles. The pass node's own compileAsync binds its render target + MRT, so
+  // the warmed pipeline key matches the live draw. Terrain (FINDINGS item B),
+  // turbines and ships are warmed too when they are already present in the scene.
+  // postProcessingData is read through a ref so a leva-driven rebuild mid-prewarm
+  // can't cancel the in-flight warm and strand the gate. Runs in Storybook too
+  // (harmless: a sub-second hold at first load), gated only by real ocean state.
+  const postProcessingDataRef = useRef(postProcessingData)
+  postProcessingDataRef.current = postProcessingData
+  const prewarmStartedRef = useRef(false)
+  useEffect(() => {
+    if (prewarmStartedRef.current) return
+    if (disableOcean || oceanManager == null) return
+    prewarmStartedRef.current = true
+    let cancelled = false
+
+    const hasChunkGeometry = (): boolean => {
+      const chunks = oceanManager.chunks_
+      if (chunks == null) return false
+      for (const k in chunks) {
+        if (chunks[k]?.chunk?.mesh_?.geometry?.attributes?.position != null) {
+          return true
+        }
+      }
+      return false
+    }
+
+    const run = async (): Promise<void> => {
+      // Poll real state (no timer) for the first chunk to carry geometry, so the
+      // compile warms the exact vertex-layout pipeline the live draw will use.
+      await new Promise<void>(resolve => {
+        const tick = (): void => {
+          if (cancelled || hasChunkGeometry()) resolve()
+          else requestAnimationFrame(tick)
+        }
+        tick()
+      })
+      if (cancelled) return
+
+      const t0 = performance.now()
+      const data = postProcessingDataRef.current as any
+      try {
+        await data.passNode.compileAsync(renderer)
+        if (splatScene.children.length > 0) {
+          await data.splatPassNode.compileAsync(renderer)
+        }
+        if (overlayScene.children.length > 0) {
+          await data.overlayPassNode.compileAsync(renderer)
+        }
+        // Absorb the residual outer post-graph (aerial + tone-map quad) compile
+        // with one render, now that the inner-pass materials are already warm.
+        data.postProcessing.render()
+      } catch (err) {
+        console.error('[prewarm] compileAsync failed', err)
+      } finally {
+        // Always open the gate, even on error, so a failed warm can't strand the
+        // scene behind a frozen (black) canvas.
+        if (!cancelled) {
+          setPrewarmDone(true)
+          console.log(
+            `[prewarm] pipelines warmed in ${Math.round(performance.now() - t0)}ms`
+          )
+        }
+      }
+    }
+    void run()
+
+    return () => {
+      cancelled = true
+    }
+  }, [disableOcean, oceanManager, renderer, splatScene, overlayScene])
+
   useFrame(() => {
+    // Hold the beauty post-render during the load-time compileAsync prewarm so
+    // the first geometried-chunk draw can't compile the heavy materials
+    // synchronously before the async warm lands (which would stall the chunk
+    // build). The splash covers the held canvas; the depth pre-pass is paused in
+    // lock-step (see the skipDepthPrepass gate) so nothing renders during the
+    // compileAsync await windows. Once the prewarm resolves, both resume. Outside
+    // the ocean phase (atmosphere-only, or Storybook before the ocean mounts)
+    // this is a no-op.
+    if (!disableOcean && oceanManager != null && !prewarmDone) return
     postProcessingData.postProcessing.render()
   }, 1)
 
@@ -4178,7 +4286,15 @@ export const Content: FC<{
           envCubeTexture={(envNode as any).renderTarget.texture}
           numLayers={oceanDebugParams.numLayers}
           useDiagnosticMaterial={oceanDebugParams.useDiagnosticMaterial}
-          skipDepthPrepass={oceanDebugParams.skipDepthPrepass}
+          skipDepthPrepass={
+            oceanDebugParams.skipDepthPrepass ||
+            // Pause the depth pre-pass during the load-time prewarm so its
+            // per-frame scene render can't manipulate the renderer's render
+            // target inside a compileAsync await window. Resumes at prewarmDone
+            // (its cheap depth pipelines compile then). Nothing reads the depth
+            // texture meanwhile — the beauty render is held too.
+            (!disableOcean && oceanManager != null && !prewarmDone)
+          }
           depthPrepassStage={oceanDebugParams.depthPrepassStage}
           cloudReflect={cloudEffectsEnabled ? cloudField.reflect : undefined}
           cloudShadow={cloudEffectsEnabled ? cloudField.shadow : undefined}

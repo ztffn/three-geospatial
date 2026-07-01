@@ -64,6 +64,28 @@ Reveal waits for the entire initial quadtree (160 chunks, 7 workers,
   off the critical path (during the splash) would unblock the build and likely
   cut a large slice of the 3.6 s.
 
+  **Implemented (2026-07-01) — pending measurement.** Plan
+  `plans/2026-06-30-compileasync-prewarm-ocean-load-v1.md`. In
+  `GlobeWaterproOcean-Story.tsx`: the `postProcessingData` memo now returns the
+  three pass nodes; a prewarm effect polls for the first chunk with real geometry,
+  then holds the beauty post-render **and** the depth pre-pass (`skipDepthPrepass`
+  gate) while it awaits `passNode.compileAsync(renderer)` (and the splat/overlay
+  passes when non-empty) — the async GPU pipeline path, so the build keeps
+  draining during the driver compile — then does one post render to warm the outer
+  graph and flips `prewarmDone`. The main scene pass warms the ocean material,
+  terrain Lambert (item **B**), turbines and ships together (whatever is present
+  at warm time). `ContentReadinessRefs.isPrewarmed` is exposed and `main.tsx`
+  gates reveal on it in addition to the build test. Because compileAsync only
+  moves the GPU driver compile off-thread (TSL→WGSL codegen still runs
+  synchronously), the load spike should **move/shrink, not vanish** — verify with
+  the `[prewarm] pipelines warmed in …ms` log + the before/after
+  `[ready] ocean chunks built in …ms` and load-time rAF-violation capture.
+  **Not done:** a dedicated depth-material prewarm (the depth pass hides the ocean
+  group and skips the Int32-attribute chunks, so it never compiles the heavy ocean
+  material — only cheap position-only terrain/ship depth pipelines, which recompile
+  once when the pass resumes at `prewarmDone`); revisit only if measured as a
+  meaningful residual.
+
 ### A2. Steady-state frame rate (the recurring `requestAnimationFrame` violations)
 Two distinct things show up as DevTools rAF violations:
 - **1.5–2.4 s spikes** — the one-time WGSL compiles from A (under the splash).
