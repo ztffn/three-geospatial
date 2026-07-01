@@ -87,6 +87,45 @@ function run(promise: Promise<void>): void {
   promise.catch(() => {})
 }
 
+const ManageSlidesButton: FC<{
+  active: boolean
+  onClick: () => void
+}> = ({ active, onClick }) => (
+  <button
+    type='button'
+    aria-label='Manage slides'
+    title='Manage slides'
+    onClick={onClick}
+    style={{
+      ...deckButtonStyle(active),
+      opacity: active ? 1 : 0.82,
+      color: active ? ACCENT : TEXT
+    }}
+  >
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 7,
+        minWidth: 0
+      }}
+    >
+      <SlideshowIcon />
+      <span>Manage slides</span>
+    </span>
+    <span
+      style={{
+        flex: '0 0 auto',
+        color: active ? ACCENT : MUTED,
+        fontSize: 10,
+        letterSpacing: 0
+      }}
+    >
+      Admin
+    </span>
+  </button>
+)
+
 export const SlideshowDeckLauncher: FC<{
   controls: SlideshowControlsState
 }> = ({ controls }) => {
@@ -94,17 +133,12 @@ export const SlideshowDeckLauncher: FC<{
   const visible = controls.decks.length > 0 || controls.adminOpen
   if (!visible) {
     return (
-      <button
-        type='button'
-        aria-label='Authoring'
-        title='Authoring'
+      <ManageSlidesButton
+        active={controls.adminOpen}
         onClick={() => {
           controls.setAdminOpen(true)
         }}
-        style={{ ...iconButtonStyle, opacity: 0.28 }}
-      >
-        +
-      </button>
+      />
     )
   }
 
@@ -190,17 +224,12 @@ export const SlideshowDeckLauncher: FC<{
           )}
         </div>
       ))}
-      <button
-        type='button'
-        aria-label='Authoring'
-        title='Authoring'
+      <ManageSlidesButton
+        active={controls.adminOpen}
         onClick={() => {
           controls.setAdminOpen(!controls.adminOpen)
         }}
-        style={{ ...iconButtonStyle, opacity: controls.adminOpen ? 1 : 0.38 }}
-      >
-        *
-      </button>
+      />
       {controls.adminOpen && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <input
@@ -218,7 +247,7 @@ export const SlideshowDeckLauncher: FC<{
               onChange={event => {
                 setNewDeckLabel(event.currentTarget.value)
               }}
-              placeholder='New deck'
+              placeholder='Slideshow name'
               style={{ ...inputStyle, flex: 1 }}
             />
             <button
