@@ -102,17 +102,7 @@ const ManageSlidesButton: FC<{
       color: active ? ACCENT : TEXT
     }}
   >
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 7,
-        minWidth: 0
-      }}
-    >
-      <SlideshowIcon />
-      <span>Manage slides</span>
-    </span>
+    <span aria-hidden />
     <span
       style={{
         flex: '0 0 auto',
