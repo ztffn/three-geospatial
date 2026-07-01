@@ -51,6 +51,38 @@ const iconButtonStyle: React.CSSProperties = {
   fontSize: 12
 }
 
+const deckButtonStyle = (active = false): React.CSSProperties => ({
+  ...buttonStyle(active),
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  width: '100%',
+  minWidth: 0,
+  gap: 10,
+  padding: '6px 8px',
+  fontSize: 11,
+  letterSpacing: '0.04em'
+})
+
+const SlideshowIcon: FC = () => (
+  <svg width='12' height='12' viewBox='0 0 24 24' fill='none' aria-hidden>
+    <rect
+      x='4'
+      y='5'
+      width='16'
+      height='12'
+      stroke='currentColor'
+      strokeWidth='1.8'
+    />
+    <path
+      d='M8 20h8M12 17v3'
+      stroke='currentColor'
+      strokeWidth='1.8'
+      strokeLinecap='square'
+    />
+  </svg>
+)
+
 function run(promise: Promise<void>): void {
   promise.catch(() => {})
 }
@@ -93,20 +125,44 @@ export const SlideshowDeckLauncher: FC<{
               controls.onOpenDeck(deck.id)
             }}
             style={{
-              ...buttonStyle(
+              ...deckButtonStyle(
                 controls.activeDeckId === deck.id && controls.open
               ),
               flex: 1,
-              minWidth: 0,
-              padding: '4px 8px',
-              overflow: 'hidden',
-              textAlign: 'left',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontSize: 10
+              overflow: 'hidden'
             }}
           >
-            {deck.label}
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 7,
+                minWidth: 0,
+                overflow: 'hidden'
+              }}
+            >
+              <SlideshowIcon />
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {deck.label}
+              </span>
+            </span>
+            <span
+              style={{
+                flex: '0 0 auto',
+                color: MUTED,
+                fontSize: 10,
+                letterSpacing: 0
+              }}
+            >
+              {deck.slides.length}
+            </span>
           </button>
           {controls.adminOpen && (
             <>
