@@ -97,7 +97,8 @@ const ManageSlidesButton: FC<{
     title='Manage slides'
     onClick={onClick}
     style={{
-      ...deckButtonStyle(active),
+      ...deckButtonStyle(false),
+      background: 'transparent',
       opacity: active ? 1 : 0.82,
       color: active ? ACCENT : TEXT
     }}
@@ -221,7 +222,16 @@ export const SlideshowDeckLauncher: FC<{
         }}
       />
       {controls.adminOpen && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            padding: 8,
+            background: 'rgba(255,255,255,0.035)',
+            border: PANEL_BORDER
+          }}
+        >
           <input
             type='password'
             value={controls.adminToken}
