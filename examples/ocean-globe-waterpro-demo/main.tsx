@@ -36,6 +36,18 @@ import { NoToneMapping, SRGBColorSpace } from 'three'
 import { WebGPURenderer, type Renderer } from 'three/webgpu'
 
 import {
+  AtmosphereLight,
+  AtmosphereLightNode
+} from '@takram/three-atmosphere/webgpu'
+
+import {
+  Content,
+  locationPresets,
+  type ContentReadinessRefs,
+  type SelectedVesselNav,
+  type VesselMarker
+} from '../../storybook-webgpu/src/ocean/GlobeWaterproOcean-Story'
+import {
   DigitalTwinUI,
   type CameraControlsState,
   type CameraMode,
@@ -43,14 +55,12 @@ import {
   type ScenarioControlsState,
   type SelectedVessel
 } from './ui/DigitalTwinUI'
+import { IDLE_CLIP, INSTALL_CLIPS } from './ui/rigPhases'
 import { SCENARIOS, type Scenario, type Viewpoint } from './ui/scenarios'
-import { INSTALL_CLIPS, IDLE_CLIP } from './ui/rigPhases'
-import {
-  SHADOW_FLEET,
-  SHADOW_FLEET_GROUND_LABEL
-} from './ui/shadowFleet'
+import { SHADOW_FLEET, SHADOW_FLEET_GROUND_LABEL } from './ui/shadowFleet'
 import { modelTurbine } from './ui/turbineModel'
 import { useMetForecast } from './ui/useMetForecast'
+import { useScenarioSlideshows } from './ui/useScenarioSlideshows'
 import {
   useShadowFleetAis,
   type ShadowFleetPosition
@@ -74,19 +84,6 @@ const toMarker = (p: ShadowFleetPosition): VesselMarker => ({
   courseOverGround: p.courseOverGround,
   speedOverGround: p.speedOverGround
 })
-
-import {
-  AtmosphereLight,
-  AtmosphereLightNode
-} from '@takram/three-atmosphere/webgpu'
-
-import {
-  Content,
-  locationPresets,
-  type ContentReadinessRefs,
-  type SelectedVesselNav,
-  type VesselMarker
-} from '../../storybook-webgpu/src/ocean/GlobeWaterproOcean-Story'
 
 const rootElement = document.getElementById('root')
 const unsupportedElement = document.getElementById('unsupported')
@@ -129,8 +126,7 @@ function spawnFor(
       ? locationPresets[scenario.preset as keyof typeof locationPresets]
       : null
   const spawn = viewpoint.spawn
-  const longitude =
-    spawn?.longitude ?? viewpoint.longitude ?? anchor?.longitude
+  const longitude = spawn?.longitude ?? viewpoint.longitude ?? anchor?.longitude
   const latitude = spawn?.latitude ?? viewpoint.latitude ?? anchor?.latitude
   if (longitude == null || latitude == null) return null
   // FPS spawn is a STANDING position, not camera framing. Never inherit the
@@ -376,13 +372,32 @@ const App: FC = () => {
   const [activeViewpoint, setActiveViewpoint] = useState<string | null>(
     'overview'
   )
+  const [activeSlideshowId, setActiveSlideshowId] = useState<string | null>(
+    null
+  )
+  const [slideshowOpen, setSlideshowOpen] = useState(false)
+  const slideshows = useScenarioSlideshows(activeScenario)
+
+  useEffect(() => {
+    setActiveSlideshowId(null)
+    setSlideshowOpen(false)
+  }, [activeScenario])
+
+  useEffect(() => {
+    if (
+      activeSlideshowId != null &&
+      !slideshows.decks.some(deck => deck.id === activeSlideshowId)
+    ) {
+      setActiveSlideshowId(null)
+      setSlideshowOpen(false)
+    }
+  }, [activeSlideshowId, slideshows.decks])
 
   // Camera mode (orbit / first-person) + the FPS spawn pose. The nonce forces
   // a respawn even when re-entering FPS at the same scenario.
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit')
   const [fpsSpawn, setFpsSpawn] = useState<
-    | (NonNullable<ReturnType<typeof spawnFor>> & { nonce: number })
-    | null
+    (NonNullable<ReturnType<typeof spawnFor>> & { nonce: number }) | null
   >(null)
   const spawnNonceRef = useRef(0)
   // Monotonic fly id. A viewpoint CLICK is the fly trigger, not an incidental
@@ -451,6 +466,8 @@ const App: FC = () => {
       setTurbineCount(scenario.turbines ?? 0)
       setActiveScenario(scenario.id)
       setActiveViewpoint(viewpoint.id)
+      setActiveSlideshowId(null)
+      setSlideshowOpen(false)
       if (cameraMode === 'fps') {
         respawnAt(scenario, viewpoint)
       }
@@ -722,7 +739,9 @@ const App: FC = () => {
           flyTo={flyTo}
           cameraMode={cameraMode}
           fpsSpawn={fpsSpawn}
-          shadowFleetVessels={layerVisible.shadow ? shadowFleetVessels : NO_VESSELS}
+          shadowFleetVessels={
+            layerVisible.shadow ? shadowFleetVessels : NO_VESSELS
+          }
           patrolVessels={layerVisible.patrol ? patrolVessels : NO_VESSELS}
           onVesselSelect={handleVesselSelect}
           selectedVesselId={selectedId}
@@ -769,9 +788,7 @@ const App: FC = () => {
           SCENARIOS.find(s => s.id === activeScenario)?.bunkering ?? null
         }
         splat={SCENARIOS.find(s => s.id === activeScenario)?.splat ?? null}
-        process={
-          SCENARIOS.find(s => s.id === activeScenario)?.process ?? null
-        }
+        process={SCENARIOS.find(s => s.id === activeScenario)?.process ?? null}
         selectedVessel={selectedVessel}
         onCloseVessel={() => setSelectedId(null)}
         installControls={
@@ -829,6 +846,19 @@ const App: FC = () => {
                 onChange: setWingsOn
               },
               cover: { label: 'Cover', on: coverOn, onChange: setCoverOn }
+            },
+            slideshows: {
+              ...slideshows,
+              activeDeckId: activeSlideshowId,
+              open: slideshowOpen,
+              onOpenDeck: deckId => {
+                setActiveSlideshowId(deckId)
+                setSlideshowOpen(true)
+              },
+              onClose: () => {
+                setSlideshowOpen(false)
+                setActiveSlideshowId(null)
+              }
             }
           } satisfies ScenarioControlsState
         }
@@ -850,8 +880,8 @@ const App: FC = () => {
 const BrandMark: FC = () => (
   <div style={{ position: 'fixed', top: 8, left: 8, zIndex: 5 }}>
     <a
-      href="/"
-      className="huma-brand"
+      href='/'
+      className='huma-brand'
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -877,12 +907,19 @@ const BrandMark: FC = () => (
         }}
       >
         <img
-          src="/public/brand/huma-favicon.png"
-          alt="Huma"
+          src='/public/brand/huma-favicon.png'
+          alt='Huma'
           style={{ width: '1.25rem', height: '1.25rem' }} // size-5
         />
       </div>
-      <div style={{ display: 'grid', flex: 1, textAlign: 'left', lineHeight: 1.25 }}>
+      <div
+        style={{
+          display: 'grid',
+          flex: 1,
+          textAlign: 'left',
+          lineHeight: 1.25
+        }}
+      >
         <span
           style={{
             fontFamily: "'HumaDisplay', sans-serif",

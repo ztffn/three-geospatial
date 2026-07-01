@@ -6,14 +6,14 @@
 
 import { createServer, type ServerResponse } from 'node:http'
 import path from 'node:path'
-
 import sirv from 'sirv'
 
-import { fetchMergedForecast } from '../../../netlify/functions/_met-core'
 import {
   fetchAisPositions,
   fetchVesselTrack
 } from '../../../netlify/functions/_ais-core'
+import { fetchMergedForecast } from '../../../netlify/functions/_met-core'
+import { handleAuthoringRequest } from '../authoring/api'
 import { SHADOW_FLEET } from '../ui/shadowFleet'
 
 const SHADOW_FLEET_IMOS = SHADOW_FLEET.map(v => v.imo)
@@ -41,7 +41,7 @@ const serveStatic = sirv(STATIC_DIR, {
     } else {
       res.setHeader('cache-control', 'no-cache')
     }
-  },
+  }
 })
 
 // Write a JSON response with an optional cache-control header.
@@ -59,6 +59,8 @@ function sendJson(
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
+
+  if (handleAuthoringRequest(req, res)) return
 
   // Liveness probe — used by the compose healthcheck and the deploy script.
   if (url.pathname === '/health') {

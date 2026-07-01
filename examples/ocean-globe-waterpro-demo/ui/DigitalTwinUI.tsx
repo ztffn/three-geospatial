@@ -7,8 +7,15 @@
 
 import { useEffect, useState, type FC } from 'react'
 
-import type { MetSample } from './useMetForecast'
-import type { TurbineTelemetry, TurbineStatus } from './turbineModel'
+import type { VesselPosition } from '../../../netlify/functions/_ais-core'
+import {
+  IDLE_CLIP,
+  loadColor,
+  PHASE_CLIPS,
+  RAM_SWL,
+  RIG_PHASES,
+  WINCH_SWL
+} from './rigPhases'
 import type {
   AisReadings,
   BunkeringReadings,
@@ -17,15 +24,13 @@ import type {
   SplatReadings,
   Viewpoint
 } from './scenarios'
-import type { VesselPosition } from '../../../netlify/functions/_ais-core'
 import {
-  PHASE_CLIPS,
-  IDLE_CLIP,
-  RIG_PHASES,
-  WINCH_SWL,
-  RAM_SWL,
-  loadColor
-} from './rigPhases'
+  SlideshowDeckLauncher,
+  SlideshowModal,
+  type SlideshowControlsState
+} from './SlideshowAuthoring'
+import type { TurbineStatus, TurbineTelemetry } from './turbineModel'
+import type { MetSample } from './useMetForecast'
 
 // --- design tokens (Huma system, tuned for legibility over a 3D scene) -------
 const PANEL_BG = 'rgba(10, 18, 30, 0.55)'
@@ -77,11 +82,24 @@ const pillStyle = (active: boolean): React.CSSProperties => ({
 })
 
 const CARDINALS = [
-  'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
-  'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'
+  'N',
+  'NNE',
+  'NE',
+  'ENE',
+  'E',
+  'ESE',
+  'SE',
+  'SSE',
+  'S',
+  'SSW',
+  'SW',
+  'WSW',
+  'W',
+  'WNW',
+  'NW',
+  'NNW'
 ]
-const cardinal = (deg: number): string =>
-  CARDINALS[Math.round(deg / 22.5) % 16]
+const cardinal = (deg: number): string => CARDINALS[Math.round(deg / 22.5) % 16]
 
 // Render a numeric field as an em dash when MET has no value (rather than a
 // fabricated 0). `dir` renders the compass bearing + cardinal.
@@ -123,10 +141,10 @@ const conditionText = (code: string | null): string => {
 
 const ChevronIcon: FC<{ open: boolean }> = ({ open }) => (
   <svg
-    width="9"
-    height="9"
-    viewBox="0 0 24 24"
-    fill="none"
+    width='9'
+    height='9'
+    viewBox='0 0 24 24'
+    fill='none'
     aria-hidden
     style={{
       transform: open ? 'rotate(90deg)' : 'none',
@@ -134,11 +152,11 @@ const ChevronIcon: FC<{ open: boolean }> = ({ open }) => (
     }}
   >
     <path
-      d="M9 5l8 7-8 7"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      d='M9 5l8 7-8 7'
+      stroke='currentColor'
+      strokeWidth='2.5'
+      strokeLinecap='round'
+      strokeLinejoin='round'
     />
   </svg>
 )
@@ -187,7 +205,7 @@ const Card: FC<{
       }}
     >
       <button
-        type="button"
+        type='button'
         onClick={() => setOpen(o => !o)}
         style={{
           display: 'flex',
@@ -295,7 +313,7 @@ const ConditionsCard: FC<{
   <Card
     pos={{ top: 60, right: 16 }}
     width={248}
-    title="Conditions"
+    title='Conditions'
     headerRight={
       <span style={{ fontFamily: SANS, fontSize: 11, color: MUTED }}>
         {locationName}
@@ -312,25 +330,25 @@ const ConditionsCard: FC<{
       </div>
     ) : (
       <>
-        <Row label="Sky">{conditionText(sample.symbolCode)}</Row>
-        <Row label="Wind">
+        <Row label='Sky'>{conditionText(sample.symbolCode)}</Row>
+        <Row label='Wind'>
           {fmt(sample.windSpeed, 'm/s')}{' '}
           <span style={{ color: MUTED }}>
             {fmtDir(sample.windFromDirection)}
           </span>
         </Row>
-        <Row label="Gust">{fmt(sample.windGust, 'm/s')}</Row>
-        <Row label="Precip">{fmt(sample.precipitation, 'mm', 1)}</Row>
-        <Row label="Wave">
+        <Row label='Gust'>{fmt(sample.windGust, 'm/s')}</Row>
+        <Row label='Precip'>{fmt(sample.precipitation, 'mm', 1)}</Row>
+        <Row label='Wave'>
           {fmt(sample.waveHeight, 'm')}{' '}
           <span style={{ color: MUTED }}>
             {fmtDir(sample.waveFromDirection)}
           </span>
         </Row>
-        <Row label="Sea temp">{fmt(sample.seaTemperature, '°C')}</Row>
-        <Row label="Current">{fmt(sample.currentSpeed, 'm/s')}</Row>
-        <Row label="Air temp">{fmt(sample.airTemperature, '°C')}</Row>
-        <Row label="Pressure">{fmt(sample.airPressure, 'hPa', 0)}</Row>
+        <Row label='Sea temp'>{fmt(sample.seaTemperature, '°C')}</Row>
+        <Row label='Current'>{fmt(sample.currentSpeed, 'm/s')}</Row>
+        <Row label='Air temp'>{fmt(sample.airTemperature, '°C')}</Row>
+        <Row label='Pressure'>{fmt(sample.airPressure, 'hPa', 0)}</Row>
       </>
     )}
     <Footnote>MET Norway · CC BY 4.0</Footnote>
@@ -342,7 +360,10 @@ const ConditionsCard: FC<{
 // weather is meaningless. Toggles the marker layers on/off and shows their live
 // vessel counts. Colour swatch + switch match each layer's marker colour.
 const ago = (iso: string): string => {
-  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+  const s = Math.max(
+    0,
+    Math.round((Date.now() - new Date(iso).getTime()) / 1000)
+  )
   return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`
 }
 
@@ -354,7 +375,7 @@ const LayerToggle: FC<{
   onChange: () => void
 }> = ({ swatch, label, count, on, onChange }) => (
   <button
-    type="button"
+    type='button'
     onClick={onChange}
     style={{
       display: 'flex',
@@ -376,9 +397,17 @@ const LayerToggle: FC<{
     }}
   >
     <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <span style={{ width: 10, height: 10, background: swatch, flexShrink: 0 }} />
+      <span
+        style={{ width: 10, height: 10, background: swatch, flexShrink: 0 }}
+      />
       {label}
-      <span style={{ fontFamily: MONO, color: MUTED, fontVariantNumeric: 'tabular-nums' }}>
+      <span
+        style={{
+          fontFamily: MONO,
+          color: MUTED,
+          fontVariantNumeric: 'tabular-nums'
+        }}
+      >
         {count}
       </span>
     </span>
@@ -462,7 +491,7 @@ const AisLayersCard: FC<AisLayersState> = ({
   <Card
     pos={{ top: 60, right: 16 }}
     width={248}
-    title="AIS layers"
+    title='AIS layers'
     interactive
     gap={8}
     headerRight={
@@ -473,37 +502,37 @@ const AisLayersCard: FC<AisLayersState> = ({
   >
     <LayerToggle
       swatch={ACCENT}
-      label="Shadow fleet"
+      label='Shadow fleet'
       count={shadowCount}
       on={shadowVisible}
       onChange={() => onToggle('shadow')}
     />
     <LayerToggle
       swatch={PATROL_ACCENT}
-      label="Coast Guard / Navy"
+      label='Coast Guard / Navy'
       count={patrolCount}
       on={patrolVisible}
       onChange={() => onToggle('patrol')}
     />
     <SectionLabel>Selected vessel</SectionLabel>
     <Toggle
-      label="24 h track"
+      label='24 h track'
       on={trackVisible}
       onChange={() => onToggleOverlay('track')}
     />
     <Toggle
-      label="Course projection"
+      label='Course projection'
       on={projectionVisible}
       onChange={() => onToggleOverlay('projection')}
     />
     <SectionLabel>Subsea cables</SectionLabel>
     <Toggle
-      label="Power grid"
+      label='Power grid'
       on={cablePowerVisible}
       onChange={() => onToggleCable('power')}
     />
     <Toggle
-      label="Telecom"
+      label='Telecom'
       on={cableTelecomVisible}
       onChange={() => onToggleCable('telecom')}
     />
@@ -513,7 +542,9 @@ const AisLayersCard: FC<AisLayersState> = ({
         : updatedAt != null
           ? `Live · BarentsWatch · updated ${ago(updatedAt)}`
           : 'Live · BarentsWatch'}
-      {' · power © OpenStreetMap (ODbL) · telecom © TeleGeography (CC BY-NC-SA)'}
+      {
+        ' · power © OpenStreetMap (ODbL) · telecom © TeleGeography (CC BY-NC-SA)'
+      }
     </Footnote>
   </Card>
 )
@@ -534,7 +565,7 @@ const TurbineInspector: FC<{
   <Card
     pos={{ top: 76, left: 16 }}
     width={232}
-    title="Turbine"
+    title='Turbine'
     headerRight={
       <span
         style={{
@@ -555,7 +586,7 @@ const TurbineInspector: FC<{
       </div>
     ) : (
       <>
-        <Row label="Power">
+        <Row label='Power'>
           {fmt(telemetry.powerMW, 'MW', 2)}
           {telemetry.capacityFactor != null && (
             <span style={{ color: MUTED }}>
@@ -564,9 +595,9 @@ const TurbineInspector: FC<{
             </span>
           )}
         </Row>
-        <Row label="Rotor">{fmt(telemetry.rpm, 'rpm')}</Row>
-        <Row label="Blade pitch">{fmt(telemetry.pitchDeg, '°')}</Row>
-        <Row label="Yaw">
+        <Row label='Rotor'>{fmt(telemetry.rpm, 'rpm')}</Row>
+        <Row label='Blade pitch'>{fmt(telemetry.pitchDeg, '°')}</Row>
+        <Row label='Yaw'>
           <span style={{ color: MUTED }}>{fmtDir(telemetry.yawHeading)}</span>
         </Row>
         <Row label={`Farm · ${count}×`}>
@@ -609,16 +640,16 @@ const AisCard: FC<{ ais: AisReadings }> = ({ ais }) => (
       </span>
     }
   >
-    <Row label="AIS status">{ais.navigationalStatus}</Row>
-    <Row label="Speed">{fmt(ais.speedKn, 'kn', 1)}</Row>
-    <Row label="Course">
+    <Row label='AIS status'>{ais.navigationalStatus}</Row>
+    <Row label='Speed'>{fmt(ais.speedKn, 'kn', 1)}</Row>
+    <Row label='Course'>
       <span style={{ color: MUTED }}>{fmtDir(ais.courseDeg)}</span>
     </Row>
-    <Row label="True heading">
+    <Row label='True heading'>
       <span style={{ color: MUTED }}>{fmtDir(ais.headingDeg)}</span>
     </Row>
-    <Row label="Rate of turn">{fmt(ais.rateOfTurnDegMin, '°/min', 0)}</Row>
-    <Row label="Draught">{fmt(ais.draughtM, 'm', 1)}</Row>
+    <Row label='Rate of turn'>{fmt(ais.rateOfTurnDegMin, '°/min', 0)}</Row>
+    <Row label='Draught'>{fmt(ais.draughtM, 'm', 1)}</Row>
     <Footnote>AIS · static demo values</Footnote>
   </Card>
 )
@@ -641,9 +672,7 @@ const Mono: FC<{ children: React.ReactNode; color?: string }> = ({
   children,
   color = TEXT
 }) => (
-  <span
-    style={{ fontFamily: MONO, color, fontVariantNumeric: 'tabular-nums' }}
-  >
+  <span style={{ fontFamily: MONO, color, fontVariantNumeric: 'tabular-nums' }}>
     {children}
   </span>
 )
@@ -654,7 +683,7 @@ const SplatPanel: FC<{ splat: SplatReadings }> = ({ splat }) => {
     <Card
       pos={{ top: 76, left: 16 }}
       width={248}
-      title="Gaussian Splats"
+      title='Gaussian Splats'
       headerRight={
         <span
           style={{
@@ -669,23 +698,23 @@ const SplatPanel: FC<{ splat: SplatReadings }> = ({ splat }) => {
         </span>
       }
     >
-      <Row label="Splats">
+      <Row label='Splats'>
         <Mono color={ACCENT}>{splat.totalSplats.toLocaleString('en-US')}</Mono>
       </Row>
-      <Row label="Parameters">
+      <Row label='Parameters'>
         <Mono>~{compact(params)}</Mono>
       </Row>
-      <Row label="SH bands">
-        <Mono>
-          deg {splat.shDegree}
-        </Mono>{' '}
+      <Row label='SH bands'>
+        <Mono>deg {splat.shDegree}</Mono>{' '}
         <span style={{ color: MUTED }}>· {splat.shCoeffs} coeffs</span>
       </Row>
-      <Row label="Format">
+      <Row label='Format'>
         <Mono>{splat.format}</Mono>{' '}
-        <span style={{ color: MUTED }}>· {compact(splat.compressedMB * 1e6)}B</span>
+        <span style={{ color: MUTED }}>
+          · {compact(splat.compressedMB * 1e6)}B
+        </span>
       </Row>
-      <Row label="Capture">
+      <Row label='Capture'>
         <span style={{ color: MUTED, fontSize: 11 }}>{splat.source}</span>
       </Row>
       <Footnote>{splat.sceneName}</Footnote>
@@ -726,7 +755,7 @@ const ProcessPanel: FC<{ proc: ProcessReadings }> = ({ proc }) => (
   <Card
     pos={{ top: 76, left: 16 }}
     width={248}
-    title="Process Stack"
+    title='Process Stack'
     headerRight={
       <span
         style={{
@@ -744,30 +773,30 @@ const ProcessPanel: FC<{ proc: ProcessReadings }> = ({ proc }) => (
     <SplatPanelStageStrip
       stages={['BIOMASS', 'KILN', 'CARBOX', 'ARX', 'WAX']}
     />
-    <Row label="Feedstock">
+    <Row label='Feedstock'>
       <Mono>{proc.biomassTPerDay}</Mono>{' '}
       <span style={{ color: MUTED }}>t/day</span>
     </Row>
-    <Row label="Caera wax">
+    <Row label='Caera wax'>
       <Mono color={ACCENT}>{proc.waxKgPerDay.toLocaleString('en-US')}</Mono>{' '}
       <span style={{ color: MUTED }}>kg/day · {proc.waxTPerYear} t/yr</span>
     </Row>
-    <Row label="Wax energy">
+    <Row label='Wax energy'>
       <Mono>{proc.waxEnergyMWhPerDay}</Mono>{' '}
       <span style={{ color: MUTED }}>MWh/day</span>
     </Row>
-    <Row label="Oxygen">
+    <Row label='Oxygen'>
       <Mono>{proc.oxygenTPerYear.toLocaleString('en-US')}</Mono>{' '}
       <span style={{ color: MUTED }}>t/yr</span>
     </Row>
-    <Row label="Biochar">
+    <Row label='Biochar'>
       <Mono>{proc.biocharTPerYear.toLocaleString('en-US')}</Mono>{' '}
       <span style={{ color: MUTED }}>t/yr</span>
     </Row>
-    <Row label="Carbon → products">
+    <Row label='Carbon → products'>
       <Mono color={GOOD}>{proc.carbonToProductsPct}%</Mono>
     </Row>
-    <Row label="CO₂ vented">
+    <Row label='CO₂ vented'>
       <Mono color={GOOD}>{proc.co2VentedTPerYear} t/yr</Mono>{' '}
       <span style={{ color: GOOD, fontSize: 10 }}>· ZERO</span>
     </Row>
@@ -821,7 +850,7 @@ const Sparkline: FC<{ points: number[]; color?: string }> = ({
       />
       <polyline
         points={line.join(' ')}
-        fill="none"
+        fill='none'
         stroke={color}
         strokeWidth={1.25}
       />
@@ -845,9 +874,13 @@ const FtTelemetryCard: FC<{ proc: ProcessReadings }> = ({ proc }) => {
   // evaluated over the last N ticks so each channel is a live rolling series.
   const N = 32
   const wobAt = (tt: number, amp: number, phase: number): number =>
-    amp * (Math.sin(tt * 0.7 + phase) * 0.6 + Math.sin(tt * 1.9 + phase * 2) * 0.4)
+    amp *
+    (Math.sin(tt * 0.7 + phase) * 0.6 + Math.sin(tt * 1.9 + phase * 2) * 0.4)
   const series = (base: number, amp: number, phase: number): number[] =>
-    Array.from({ length: N }, (_, k) => base + wobAt(t - (N - 1) + k, amp, phase))
+    Array.from(
+      { length: N },
+      (_, k) => base + wobAt(t - (N - 1) + k, amp, phase)
+    )
   const convSeries = series(proc.ftConversionPct, 0.6, 0)
   const waxSeries = series(proc.ftWaxRateKgH, 3.5, 2)
   const conv = convSeries[N - 1]
@@ -858,7 +891,7 @@ const FtTelemetryCard: FC<{ proc: ProcessReadings }> = ({ proc }) => {
     <Card
       pos={{ top: 60, right: 16 }}
       width={248}
-      title="Arx F-T Reactor"
+      title='Arx F-T Reactor'
       headerRight={
         <span
           style={{
@@ -873,28 +906,28 @@ const FtTelemetryCard: FC<{ proc: ProcessReadings }> = ({ proc }) => {
         </span>
       }
     >
-      <Row label="CO conversion">
+      <Row label='CO conversion'>
         <Mono color={ACCENT}>{conv.toFixed(1)}%</Mono>{' '}
         <span style={{ color: MUTED }}>per pass</span>
       </Row>
       <Sparkline points={convSeries} />
-      <Row label="Reactor temp">
+      <Row label='Reactor temp'>
         <Mono>{proc.ftTempC}</Mono> <span style={{ color: MUTED }}>°C</span>
       </Row>
-      <Row label="H₂:CO feed">
+      <Row label='H₂:CO feed'>
         <Mono>{ratio.toFixed(2)}</Mono>
         <span style={{ color: MUTED }}>:1</span>
       </Row>
-      <Row label="Chain growth α">
+      <Row label='Chain growth α'>
         <Mono>{proc.ftChainGrowthAlpha.toFixed(2)}</Mono>{' '}
         <span style={{ color: MUTED }}>ASF · wax</span>
       </Row>
-      <Row label="Wax rate">
+      <Row label='Wax rate'>
         <Mono color={ACCENT}>{wax.toFixed(0)}</Mono>{' '}
         <span style={{ color: MUTED }}>kg/h</span>
       </Row>
       <Sparkline points={waxSeries} color={GOOD} />
-      <Row label="Heat duty">
+      <Row label='Heat duty'>
         <Mono>{heat.toFixed(0)}</Mono>{' '}
         <span style={{ color: MUTED }}>kW · exotherm</span>
       </Row>
@@ -992,7 +1025,7 @@ const BunkeringPanel: FC<{
     <Card
       pos={{ top: 76, left: 16 }}
       width={248}
-      title="Bunkering"
+      title='Bunkering'
       headerRight={
         <span
           style={{
@@ -1009,7 +1042,7 @@ const BunkeringPanel: FC<{
     >
       <SectionLabel>Wax carrier</SectionLabel>
       <MeterBar
-        label="Cargo"
+        label='Cargo'
         fill={
           readings.cubesTotal > 0
             ? readings.cubesTransferred / readings.cubesTotal
@@ -1019,15 +1052,17 @@ const BunkeringPanel: FC<{
           readings.cubesTotal
         )} cubes`}
       />
-      <Row label="Transfer">{fmt(readings.transferRateCubesH, 'cubes/h', 0)}</Row>
-      <Row label="Cube">{`${readings.cubeVolumeM3} m³ · ${readings.cubeMassT} t`}</Row>
-      <Row label="Product">{readings.product}</Row>
+      <Row label='Transfer'>
+        {fmt(readings.transferRateCubesH, 'cubes/h', 0)}
+      </Row>
+      <Row label='Cube'>{`${readings.cubeVolumeM3} m³ · ${readings.cubeMassT} t`}</Row>
+      <Row label='Product'>{readings.product}</Row>
       <SectionLabel>Substation vessel</SectionLabel>
       <Row label={`Collected · ${count}×`}>
         {collectedMW == null ? '—' : `${collectedMW.toFixed(1)} MW`}
       </Row>
       <MeterBar
-        label="Battery"
+        label='Battery'
         fill={readings.batterySoc}
         value={`${Math.round(readings.batterySoc * 100)}% · ${fmt(
           readings.batteryCapacityMWh,
@@ -1036,11 +1071,11 @@ const BunkeringPanel: FC<{
         )}`}
         color={GOOD}
       />
-      <Row label="Charging">{fmt(readings.batteryChargeMW, 'MW', 1)}</Row>
-      <Row label="Export">
+      <Row label='Charging'>{fmt(readings.batteryChargeMW, 'MW', 1)}</Row>
+      <Row label='Export'>
         {exportMW == null ? '—' : `${exportMW.toFixed(1)} MW`}
       </Row>
-      <Row label="DC bus">{fmt(readings.busKv, 'kV', 0)}</Row>
+      <Row label='DC bus'>{fmt(readings.busKv, 'kV', 0)}</Row>
       <Footnote>
         Transfer &amp; battery: static demo · collected power modelled from
         forecast wind
@@ -1079,8 +1114,8 @@ const TimeScrubber: FC<{
   return (
     <Card
       pos={{ bottom: 20, left: '50%' }}
-      width="min(620px, 86vw)"
-      title="Forecast time"
+      width='min(620px, 86vw)'
+      title='Forecast time'
       interactive
       style={{ transform: 'translateX(-50%)' }}
       headerRight={
@@ -1112,8 +1147,8 @@ const TimeScrubber: FC<{
             }}
           />
           <input
-            className="dt-scrub"
-            type="range"
+            className='dt-scrub'
+            type='range'
             min={rangeStart}
             max={rangeEnd}
             step={HOUR / 4}
@@ -1123,7 +1158,7 @@ const TimeScrubber: FC<{
           />
         </div>
         <button
-          type="button"
+          type='button'
           onClick={() => onChange(null)}
           style={{
             fontFamily: SANS,
@@ -1170,25 +1205,25 @@ export interface CameraControlsState {
 }
 
 const PinIcon: FC = () => (
-  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden>
+  <svg width='11' height='11' viewBox='0 0 24 24' fill='none' aria-hidden>
     <path
-      d="M12 21s7-6.3 7-11a7 7 0 1 0-14 0c0 4.7 7 11 7 11z"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinejoin="round"
+      d='M12 21s7-6.3 7-11a7 7 0 1 0-14 0c0 4.7 7 11 7 11z'
+      stroke='currentColor'
+      strokeWidth='2'
+      strokeLinejoin='round'
     />
-    <circle cx="12" cy="10" r="2.2" fill="currentColor" />
+    <circle cx='12' cy='10' r='2.2' fill='currentColor' />
   </svg>
 )
 
 // On/off pill, gray when off, accent when on ("color for meaning").
-const Toggle: FC<{ label: string; on: boolean; onChange: (v: boolean) => void }> = ({
-  label,
-  on,
-  onChange
-}) => (
+const Toggle: FC<{
+  label: string
+  on: boolean
+  onChange: (v: boolean) => void
+}> = ({ label, on, onChange }) => (
   <button
-    type="button"
+    type='button'
     onClick={() => onChange(!on)}
     style={{
       display: 'flex',
@@ -1243,7 +1278,13 @@ const ControlsPanel: FC<CameraControlsState> = ({
   zoomMax,
   onZoom
 }) => (
-  <Card pos={{ bottom: 16, left: 16 }} width={220} title="Camera" interactive gap={10}>
+  <Card
+    pos={{ bottom: 16, left: 16 }}
+    width={220}
+    title='Camera'
+    interactive
+    gap={10}
+  >
     {/* View mode switch */}
     <div style={{ display: 'flex', gap: 6 }}>
       {(
@@ -1256,9 +1297,14 @@ const ControlsPanel: FC<CameraControlsState> = ({
         return (
           <button
             key={value}
-            type="button"
+            type='button'
             onClick={() => onMode(value)}
-            style={{ flex: 1, padding: '5px 9px', fontSize: 11, ...pillStyle(active) }}
+            style={{
+              flex: 1,
+              padding: '5px 9px',
+              fontSize: 11,
+              ...pillStyle(active)
+            }}
           >
             {label}
           </button>
@@ -1337,13 +1383,15 @@ const OrbitControlsBody: FC<{
           }}
         >
           <span>Zoom</span>
-          <span style={{ fontFamily: MONO, fontVariantNumeric: 'tabular-nums' }}>
+          <span
+            style={{ fontFamily: MONO, fontVariantNumeric: 'tabular-nums' }}
+          >
             {fmtDistance(zoom)}
           </span>
         </div>
         <input
-          className="dt-scrub"
-          type="range"
+          className='dt-scrub'
+          type='range'
           min={0}
           max={1}
           step={0.001}
@@ -1353,7 +1401,7 @@ const OrbitControlsBody: FC<{
         />
       </div>
 
-      <Toggle label="Auto-rotate" on={autoRotate} onChange={onAutoRotate} />
+      <Toggle label='Auto-rotate' on={autoRotate} onChange={onAutoRotate} />
     </>
   )
 }
@@ -1372,6 +1420,7 @@ export interface ScenarioControlsState {
   onSelect: (scenario: Scenario, viewpoint: Viewpoint) => void
   // Registry the scenarios' `settings` ids resolve against (host-owned state).
   settings?: Record<string, ScenarioSettingControl>
+  slideshows?: SlideshowControlsState
 }
 
 // Accordion: exactly one scenario (the active one) shows its viewpoint chips
@@ -1383,12 +1432,13 @@ const ScenarioPanel: FC<ScenarioControlsState> = ({
   activeScenario,
   activeViewpoint,
   onSelect,
-  settings
+  settings,
+  slideshows
 }) => (
   <Card
     pos={{ bottom: 16, right: 16 }}
     width={232}
-    title="Scenarios"
+    title='Scenarios'
     interactive
     gap={6}
   >
@@ -1397,7 +1447,7 @@ const ScenarioPanel: FC<ScenarioControlsState> = ({
       return (
         <div key={scenario.id}>
           <button
-            type="button"
+            type='button'
             onClick={() => onSelect(scenario, scenario.viewpoints[0])}
             style={{
               display: 'flex',
@@ -1427,7 +1477,7 @@ const ScenarioPanel: FC<ScenarioControlsState> = ({
                 return (
                   <button
                     key={viewpoint.id}
-                    type="button"
+                    type='button'
                     onClick={() => onSelect(scenario, viewpoint)}
                     style={{
                       display: 'flex',
@@ -1467,6 +1517,16 @@ const ScenarioPanel: FC<ScenarioControlsState> = ({
                   />
                 )
               })}
+            </div>
+          )}
+          {active && slideshows != null && (
+            <div
+              style={{
+                display: 'flex',
+                padding: '4px 0 2px 12px'
+              }}
+            >
+              <SlideshowDeckLauncher controls={slideshows} />
             </div>
           )}
         </div>
@@ -1566,9 +1626,9 @@ const VesselCallout: FC<{
           {v.name ?? `IMO ${v.imo}`}
         </span>
         <button
-          type="button"
+          type='button'
           onClick={onClose}
-          aria-label="Close"
+          aria-label='Close'
           style={{
             fontFamily: SANS,
             fontSize: 14,
@@ -1602,15 +1662,15 @@ const VesselCallout: FC<{
       </div>
 
       {v.groundLabel != null && (
-        <Row label="Grounds">
+        <Row label='Grounds'>
           <span style={{ fontFamily: SANS, fontSize: 11, color: TEXT }}>
             {v.groundLabel}
           </span>
         </Row>
       )}
-      {v.formerly != null && <Row label="Ex-name">{v.formerly}</Row>}
+      {v.formerly != null && <Row label='Ex-name'>{v.formerly}</Row>}
 
-      <Row label="Status">
+      <Row label='Status'>
         <span style={{ color: moving ? GOOD : MUTED }}>
           {v.navigationalStatus != null
             ? (NAV_STATUS[v.navigationalStatus] ??
@@ -1618,32 +1678,32 @@ const VesselCallout: FC<{
             : '—'}
         </span>
       </Row>
-      <Row label="IMO">{v.imo ?? '—'}</Row>
-      <Row label="MMSI">{v.mmsi ?? '—'}</Row>
-      <Row label="Call sign">{v.callSign ?? '—'}</Row>
-      <Row label="Type">{shipTypeLabel(v.shipType)}</Row>
-      <Row label="Destination">{v.destination ?? '—'}</Row>
-      <Row label="ETA">{v.eta ?? '—'}</Row>
-      <Row label="Speed">{fmt(v.speedOverGround, 'kn', 1)}</Row>
-      <Row label="Course">
+      <Row label='IMO'>{v.imo ?? '—'}</Row>
+      <Row label='MMSI'>{v.mmsi ?? '—'}</Row>
+      <Row label='Call sign'>{v.callSign ?? '—'}</Row>
+      <Row label='Type'>{shipTypeLabel(v.shipType)}</Row>
+      <Row label='Destination'>{v.destination ?? '—'}</Row>
+      <Row label='ETA'>{v.eta ?? '—'}</Row>
+      <Row label='Speed'>{fmt(v.speedOverGround, 'kn', 1)}</Row>
+      <Row label='Course'>
         <span style={{ color: MUTED }}>{fmtDir(v.courseOverGround)}</span>
       </Row>
-      <Row label="Heading">
+      <Row label='Heading'>
         <span style={{ color: MUTED }}>{fmtDir(v.trueHeading)}</span>
       </Row>
-      <Row label="Rate of turn">{fmt(v.rateOfTurn, '°/min', 0)}</Row>
-      <Row label="Size">
+      <Row label='Rate of turn'>{fmt(v.rateOfTurn, '°/min', 0)}</Row>
+      <Row label='Size'>
         {v.shipLength != null && v.shipWidth != null
           ? `${Math.round(v.shipLength)} × ${Math.round(v.shipWidth)} m`
           : '—'}
       </Row>
-      <Row label="Draught">{fmt(v.draught, 'm', 1)}</Row>
-      <Row label="Position">
+      <Row label='Draught'>{fmt(v.draught, 'm', 1)}</Row>
+      <Row label='Position'>
         <span style={{ fontSize: 11 }}>
           {v.latitude.toFixed(3)}, {v.longitude.toFixed(3)}
         </span>
       </Row>
-      <Row label="AIS fix">{fmtClock(v.msgtime)}</Row>
+      <Row label='AIS fix'>{fmtClock(v.msgtime)}</Row>
 
       {/* Link-out to the public vessel page (photo + registry). We can't embed
           those photos (provider ToS / no free image API), so a one-click link is
@@ -1651,10 +1711,17 @@ const VesselCallout: FC<{
           often omit IMO); hidden only if the vessel has neither. */}
       {(() => {
         const key =
-          v.imo != null ? `imo:${v.imo}` : v.mmsi != null ? `mmsi:${v.mmsi}` : null
+          v.imo != null
+            ? `imo:${v.imo}`
+            : v.mmsi != null
+              ? `mmsi:${v.mmsi}`
+              : null
         if (key == null) return null
         const links: Array<[string, string]> = [
-          ['Photo & registry', `https://www.marinetraffic.com/en/ais/details/ships/${key}`],
+          [
+            'Photo & registry',
+            `https://www.marinetraffic.com/en/ais/details/ships/${key}`
+          ],
           [
             'VesselFinder',
             v.imo != null
@@ -1668,8 +1735,8 @@ const VesselCallout: FC<{
               <a
                 key={label}
                 href={href}
-                target="_blank"
-                rel="noopener noreferrer"
+                target='_blank'
+                rel='noopener noreferrer'
                 style={{
                   flex: 1,
                   textAlign: 'center',
@@ -1719,11 +1786,14 @@ const LoadGauge: FC<{ label: string; load: number; swl: number }> = ({
   const ratio = swl > 0 ? load / swl : 0
   return (
     <div
-      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '2px 0'
+      }}
     >
-      <span
-        style={{ fontFamily: MONO, fontSize: 10, color: MUTED, width: 22 }}
-      >
+      <span style={{ fontFamily: MONO, fontSize: 10, color: MUTED, width: 22 }}>
         {label}
       </span>
       <div
@@ -1780,7 +1850,7 @@ const InstallationPanel: FC<InstallControlsState> = ({
     <Card
       pos={{ top: 76, left: 16 }}
       width={252}
-      title="Installation"
+      title='Installation'
       interactive
       gap={10}
       headerRight={
@@ -1801,7 +1871,7 @@ const InstallationPanel: FC<InstallControlsState> = ({
         {PHASE_CLIPS.map((clip, i) => (
           <button
             key={clip}
-            type="button"
+            type='button'
             onClick={() => onSelectPhase(clip)}
             style={{
               display: 'flex',
@@ -1821,7 +1891,7 @@ const InstallationPanel: FC<InstallControlsState> = ({
         ))}
       </div>
       <button
-        type="button"
+        type='button'
         onClick={onPlaySequence}
         style={{
           width: '100%',
@@ -1849,8 +1919,8 @@ const InstallationPanel: FC<InstallControlsState> = ({
           <span style={{ fontFamily: MONO }}>{speed.toFixed(2)}×</span>
         </div>
         <input
-          className="dt-scrub"
-          type="range"
+          className='dt-scrub'
+          type='range'
           min={0.25}
           max={3}
           step={0.05}
@@ -1859,7 +1929,9 @@ const InstallationPanel: FC<InstallControlsState> = ({
           style={{ width: '100%', display: 'block' }}
         />
       </div>
-      <div style={{ fontFamily: SANS, fontSize: 11, color: TEXT, lineHeight: 1.4 }}>
+      <div
+        style={{ fontFamily: SANS, fontSize: 11, color: TEXT, lineHeight: 1.4 }}
+      >
         {phase.narrative}
         <div style={{ marginTop: 3, fontSize: 10, color: MUTED }}>
           {phase.capability}
@@ -1868,18 +1940,28 @@ const InstallationPanel: FC<InstallControlsState> = ({
       <div>
         <SectionLabel>{`Winch ×3 · SWL ${WINCH_SWL} t/drum`}</SectionLabel>
         {phase.winch.map((load, i) => (
-          <LoadGauge key={`w${i}`} label={`${i + 1}`} load={load} swl={WINCH_SWL} />
+          <LoadGauge
+            key={`w${i}`}
+            label={`${i + 1}`}
+            load={load}
+            swl={WINCH_SWL}
+          />
         ))}
         <div style={{ marginTop: 7 }}>
           <SectionLabel>{`Beam rams ×3 · SWL ${RAM_SWL} t`}</SectionLabel>
         </div>
         {phase.beam.map((load, i) => (
-          <LoadGauge key={`r${i}`} label={`R${i + 1}`} load={load} swl={RAM_SWL} />
+          <LoadGauge
+            key={`r${i}`}
+            label={`R${i + 1}`}
+            load={load}
+            swl={RAM_SWL}
+          />
         ))}
         <div style={{ marginTop: 7 }}>
           <SectionLabel>{`Guy ram · SWL ${RAM_SWL} t`}</SectionLabel>
         </div>
-        <LoadGauge label="G" load={phase.guy} swl={RAM_SWL} />
+        <LoadGauge label='G' load={phase.guy} swl={RAM_SWL} />
       </div>
     </Card>
   )
@@ -1944,49 +2026,52 @@ export const DigitalTwinUI: FC<{
   // vessel callout → the scenario's AIS card → the bunkering two-vessel panel →
   // the installation panel (rig scenario) → the turbine inspector.
   return (
-  <>
-    {selectedVessel != null && onCloseVessel != null ? (
-      <VesselCallout vessel={selectedVessel} onClose={onCloseVessel} />
-    ) : ais != null ? (
-      <AisCard ais={ais} />
-    ) : bunkering != null ? (
-      <BunkeringPanel
-        readings={bunkering}
-        telemetry={telemetry}
-        count={turbineCount}
-      />
-    ) : installControls != null ? (
-      <InstallationPanel {...installControls} />
-    ) : splat != null ? (
-      <SplatPanel splat={splat} />
-    ) : process != null ? (
-      <ProcessPanel proc={process} />
-    ) : (
-      <TurbineInspector telemetry={telemetry} count={turbineCount} />
-    )}
-    {aisLayers != null && aisLayers.overview ? (
-      <AisLayersCard {...aisLayers} />
-    ) : process != null ? (
-      <FtTelemetryCard proc={process} />
-    ) : (
-      <ConditionsCard
-        locationName={locationName}
-        sample={sample}
-        loading={loading}
-        error={error}
-      />
-    )}
-    {cameraControls != null && <ControlsPanel {...cameraControls} />}
-    {scenarioControls != null && <ScenarioPanel {...scenarioControls} />}
-    {rangeStart != null && rangeEnd != null && (
-      <TimeScrubber
-        rangeStart={rangeStart}
-        rangeEnd={rangeEnd}
-        now={now}
-        selected={selected}
-        onChange={onScrub}
-      />
-    )}
-  </>
+    <>
+      {selectedVessel != null && onCloseVessel != null ? (
+        <VesselCallout vessel={selectedVessel} onClose={onCloseVessel} />
+      ) : ais != null ? (
+        <AisCard ais={ais} />
+      ) : bunkering != null ? (
+        <BunkeringPanel
+          readings={bunkering}
+          telemetry={telemetry}
+          count={turbineCount}
+        />
+      ) : installControls != null ? (
+        <InstallationPanel {...installControls} />
+      ) : splat != null ? (
+        <SplatPanel splat={splat} />
+      ) : process != null ? (
+        <ProcessPanel proc={process} />
+      ) : (
+        <TurbineInspector telemetry={telemetry} count={turbineCount} />
+      )}
+      {aisLayers != null && aisLayers.overview ? (
+        <AisLayersCard {...aisLayers} />
+      ) : process != null ? (
+        <FtTelemetryCard proc={process} />
+      ) : (
+        <ConditionsCard
+          locationName={locationName}
+          sample={sample}
+          loading={loading}
+          error={error}
+        />
+      )}
+      {cameraControls != null && <ControlsPanel {...cameraControls} />}
+      {scenarioControls != null && <ScenarioPanel {...scenarioControls} />}
+      {scenarioControls?.slideshows != null && (
+        <SlideshowModal controls={scenarioControls.slideshows} />
+      )}
+      {rangeStart != null && rangeEnd != null && (
+        <TimeScrubber
+          rangeStart={rangeStart}
+          rangeEnd={rangeEnd}
+          now={now}
+          selected={selected}
+          onChange={onScrub}
+        />
+      )}
+    </>
   )
 }
