@@ -20,10 +20,9 @@ export interface GetObjectResult {
   metadata: ObjectMetadata
 }
 
-const DEFAULT_ROOT = path.resolve(
-  process.cwd(),
-  'examples/ocean-globe-waterpro-demo/.local/authoring'
-)
+// Dev and self-hosted runtime both write under the process cwd by default.
+// Production deploys should set TWIN_STORAGE_ROOT to a mounted volume path.
+const DEFAULT_ROOT = path.resolve(process.cwd(), '.local/authoring')
 
 const configuredRoot = process.env.TWIN_STORAGE_ROOT?.trim()
 const STORAGE_ROOT =

@@ -11,12 +11,15 @@ import type { RuntimeSlideshowDeck } from '../authoring/types'
 import type { ScenarioSlideshowsState } from './useScenarioSlideshows'
 
 const PANEL_BG = 'rgba(10, 18, 30, 0.72)'
+const MODAL_BG = 'rgba(3, 8, 14, 0.86)'
+const MEDIA_BG = 'rgba(3, 8, 14, 0.58)'
 const PANEL_BORDER = '1px solid rgba(255, 255, 255, 0.10)'
 const TEXT = '#e8eef5'
 const MUTED = 'rgba(232, 238, 245, 0.55)'
 const ACCENT = 'oklch(0.6671 0.2199 26.4681)'
 const SANS =
   "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+const MODAL_Z_INDEX = 2147483000
 
 export interface SlideshowRuntimeState {
   activeDeckId: string | null
@@ -381,10 +384,14 @@ export const SlideshowModal: FC<{
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 12,
+        zIndex: MODAL_Z_INDEX,
         display: 'grid',
-        gridTemplateRows: '48px minmax(0, 1fr) 54px',
-        background: 'rgba(2, 6, 12, 0.78)',
+        gridTemplateRows: 'auto minmax(0, 1fr) auto',
+        gap: 12,
+        padding: 16,
+        background: MODAL_BG,
+        backdropFilter: 'blur(14px)',
+        WebkitBackdropFilter: 'blur(14px)',
         color: TEXT,
         fontFamily: SANS,
         pointerEvents: 'auto'
@@ -395,20 +402,53 @@ export const SlideshowModal: FC<{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '0 18px',
-          borderBottom: PANEL_BORDER
+          minHeight: 48,
+          gap: 16,
+          padding: '0 14px 0 16px',
+          background: PANEL_BG,
+          border: PANEL_BORDER,
+          boxShadow: '0 18px 45px rgba(0, 0, 0, 0.30)'
         }}
       >
         <div
-          style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            minWidth: 0,
+            overflow: 'hidden'
+          }}
         >
-          {deck.label}
+          <span
+            style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontSize: 13,
+              fontWeight: 600
+            }}
+          >
+            {deck.label}
+          </span>
+          <span style={{ color: MUTED, fontSize: 10 }}>
+            {deck.slides.length === 0
+              ? 'No slides'
+              : `${index + 1} / ${deck.slides.length}`}
+          </span>
         </div>
         <button
           type='button'
           aria-label='Close'
           onClick={controls.onClose}
-          style={iconButtonStyle}
+          style={{
+            ...iconButtonStyle,
+            width: 34,
+            height: 30,
+            flex: '0 0 auto',
+            color: TEXT,
+            background: 'rgba(255,255,255,0.07)',
+            fontSize: 18,
+            lineHeight: 1
+          }}
         >
           ×
         </button>
@@ -418,11 +458,25 @@ export const SlideshowModal: FC<{
           display: 'grid',
           placeItems: 'center',
           minHeight: 0,
-          padding: 18
+          overflow: 'hidden',
+          padding: 12,
+          background: MEDIA_BG,
+          border: PANEL_BORDER,
+          boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.03)'
         }}
       >
         {slide == null ? (
-          <div style={{ color: MUTED, fontSize: 13 }}>No slides</div>
+          <div
+            style={{
+              color: MUTED,
+              fontSize: 13,
+              padding: 18,
+              background: PANEL_BG,
+              border: PANEL_BORDER
+            }}
+          >
+            No slides in this deck
+          </div>
         ) : slide.type === 'video' ? (
           <video
             key={slide.id}
@@ -433,7 +487,7 @@ export const SlideshowModal: FC<{
             style={{
               width: '100%',
               height: '100%',
-              maxHeight: 'calc(100vh - 140px)',
+              maxHeight: 'calc(100vh - 162px)',
               objectFit: 'contain'
             }}
           />
@@ -445,7 +499,7 @@ export const SlideshowModal: FC<{
             style={{
               width: '100%',
               height: '100%',
-              maxHeight: 'calc(100vh - 140px)',
+              maxHeight: 'calc(100vh - 162px)',
               objectFit: 'contain'
             }}
           />
@@ -454,12 +508,14 @@ export const SlideshowModal: FC<{
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '80px minmax(0, 1fr) 80px',
+          gridTemplateColumns: '92px minmax(0, 1fr) 92px',
           alignItems: 'center',
           gap: 12,
-          padding: '0 18px',
-          borderTop: PANEL_BORDER,
-          background: PANEL_BG
+          minHeight: 52,
+          padding: '0 14px',
+          background: PANEL_BG,
+          border: PANEL_BORDER,
+          boxShadow: '0 -18px 45px rgba(0, 0, 0, 0.22)'
         }}
       >
         <button
@@ -467,7 +523,7 @@ export const SlideshowModal: FC<{
           onClick={() => {
             setIndex(i => wrapped(i - 1, deck.slides.length))
           }}
-          style={{ ...buttonStyle(), height: 32 }}
+          style={{ ...buttonStyle(), height: 32, fontSize: 11 }}
         >
           Prev
         </button>
@@ -479,7 +535,8 @@ export const SlideshowModal: FC<{
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
             color: slide?.title != null ? TEXT : MUTED,
-            fontSize: 12
+            fontSize: 12,
+            lineHeight: 1.25
           }}
         >
           {slide?.title ?? `${index + 1} / ${Math.max(1, deck.slides.length)}`}
@@ -489,7 +546,7 @@ export const SlideshowModal: FC<{
           onClick={() => {
             setIndex(i => wrapped(i + 1, deck.slides.length))
           }}
-          style={{ ...buttonStyle(), height: 32 }}
+          style={{ ...buttonStyle(), height: 32, fontSize: 11 }}
         >
           Next
         </button>
