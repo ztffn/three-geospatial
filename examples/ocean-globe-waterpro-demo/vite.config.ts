@@ -44,8 +44,9 @@ const oceanIfftResources = path.resolve(
 )
 
 // Files referenced at runtime by GlobeWaterproOcean-Story.tsx +
-// OceanChunksWaterpro.tsx. Atmosphere LUTs are computed on-GPU in the WebGPU
-// pipeline (no .bin LUTs needed); stars.bin is bundled via `new URL(...)`.
+// OceanChunksWaterpro.tsx. The atmosphere LUT .bin files and stars.bin are
+// bundled via `new URL(..., import.meta.url)` (hashed assets), so they need
+// no entry here — see BakedAtmosphereLUT.ts.
 const staticAssets: Array<{ from: string; to: string }> = [
   // Subsea cable network: submarine power (OSM/ODbL) + telecom (TeleGeography/
   // CC BY-NC-SA) for the North Sea/Arctic overview, fetched and drawn as ECEF

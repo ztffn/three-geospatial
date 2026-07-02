@@ -86,6 +86,39 @@ Reveal waits for the entire initial quadtree (160 chunks, 7 workers,
   once when the pass resumes at `prewarmDone`); revisit only if measured as a
   meaningful residual.
 
+### A3. Baked atmosphere LUTs — implemented 2026-07-02 (pending measurement)
+The atmosphere phase no longer runs the `AtmosphereLUTNode` GPU compute at all.
+`BakedAtmosphereLUT.ts` (this directory) fetches the precomputed Bruneton LUTs
+shipped in `packages/atmosphere/assets/*.bin` — the same files the WebGL demos
+load — and exposes them through a node that duck-types `AtmosphereLUTNode`
+(`getTextureNode`, `currentVersion`/`updating`, the `'update'` event), injected
+into `AtmosphereContext` by the story. No atmosphere-package edits. Details:
+
+- Only 4 of the 5 LUTs are fetched (~16.9 MB raw, ~11 MB gzipped):
+  `single_mie_scattering.bin` is skipped because the default
+  `combinedScatteringTextures = true` path derives Mie from the combined
+  scattering texture's alpha and never samples that node (a 1×1×1 placeholder
+  keeps the shader binding valid). Baked linear transmittance matches the
+  default `transmittancePrecisionLog = false` decode.
+- The fetch starts at module-import time (before renderer init) and overlaps
+  it; full-size zeroed half-float placeholders keep every binding valid if a
+  frame renders first, and the loaded bytes are filled into the SAME texture
+  instances (`needsUpdate` re-upload — no TextureNode value swap).
+- Assets ride the same `new URL(..., import.meta.url)` bundling as stars.bin —
+  hashed, immutable, no `staticAssets` entry; verified emitted in a build and
+  served in dev (`/@fs`, exact byte counts).
+- **This deleted `installIdleCallbackShim.ts`** — nothing in the twin calls
+  `requestIdleCallback` anymore (the "Fixed this session" item 1 above is
+  historical). One of the two Firefox-hang suspects is gone structurally; the
+  remaining one is the render-loop size gate, still diagnosable via the
+  `[render] first frame` / `[atmosphere-probe]` logs.
+- The two-phase preload STAYS: the atmosphere phase still isolates the sky/post
+  first compiles from the ocean spin-up and keeps the reveal order.
+
+Also 2026-07-02: `_NUM_WORKERS` in `ocean-builder-threaded.js` now derives from
+`hardwareConcurrency - 1` (was a fixed 7 tuned for an 8-core tablet), so the
+chunk build can actually use a 10-16-core desktop (lever from A).
+
 ### A2. Steady-state frame rate (the recurring `requestAnimationFrame` violations)
 Two distinct things show up as DevTools rAF violations:
 - **1.5–2.4 s spikes** — the one-time WGSL compiles from A (under the splash).

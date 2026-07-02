@@ -13,7 +13,7 @@ import {
   extend,
   useFrame,
   useThree,
-  type ThreeElement,
+  type ThreeElement
 } from '@react-three/fiber'
 import { CesiumIonAuthPlugin } from '3d-tiles-renderer/plugins'
 import {
@@ -31,10 +31,11 @@ import {
   useMemo,
   useRef,
   useState,
-  type FC,
+  type FC
 } from 'react'
 import {
   AgXToneMapping,
+  Color,
   MathUtils,
   Matrix4,
   Mesh,
@@ -47,28 +48,36 @@ import {
   Vector2,
   Vector3,
   type Group,
-  type Object3D,
+  type Object3D
 } from 'three'
-import { convertToTexture, pass, toneMapping, uniform, uv, vec4 } from 'three/tsl'
-import * as THREE from 'three/webgpu'
-import {
-  MeshLambertNodeMaterial,
-  PostProcessing,
-  type Renderer,
-} from 'three/webgpu'
 // Fat (wide, optionally dashed) screen-space lines for the AIS overlays. These
 // are the WebGPURenderer variants — `Line2NodeMaterial` reads the viewport for
 // pixel-width + dashing automatically (no manual resolution).
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
-import { Line2 } from 'three/addons/lines/webgpu/Line2.js'
 // Disjoint fat lines for the subsea-cable network (one merged draw per layer).
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
+import { Line2 } from 'three/addons/lines/webgpu/Line2.js'
 import { LineSegments2 } from 'three/addons/lines/webgpu/LineSegments2.js'
+import {
+  convertToTexture,
+  pass,
+  toneMapping,
+  uniform,
+  uv,
+  vec4
+} from 'three/tsl'
+import * as THREE from 'three/webgpu'
+import {
+  MeshLambertNodeMaterial,
+  PostProcessing,
+  type Renderer
+} from 'three/webgpu'
+import type { Node, UniformNode } from 'three/webgpu'
 
 import {
   getECIToECEFRotationMatrix,
   getMoonDirectionECI,
-  getSunDirectionECI,
+  getSunDirectionECI
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
@@ -77,6 +86,7 @@ import {
   AtmosphereLightNode,
   skyEnvironment,
   StarsNode,
+  type AtmosphereLUTNode
 } from '@takram/three-atmosphere/webgpu'
 import {
   Ellipsoid,
@@ -84,7 +94,7 @@ import {
   PointOfView,
   radians,
   remapClamped,
-  smoothstep,
+  smoothstep
 } from '@takram/three-geospatial'
 import {
   cameraFar,
@@ -94,56 +104,51 @@ import {
   inverseProjectionMatrix,
   lensFlare,
   projectionMatrix,
-  screenToPositionView,
+  screenToPositionView
 } from '@takram/three-geospatial/webgpu'
 
+import { sampleGerstnerUniformsCPU } from '../../../packages/ocean-ifft/src/ocean/gerstner-cpu'
 import {
   applyWaterproPreset,
+  createUnderwaterUniforms,
+  UNDERWATER_DEFAULTS,
+  underwaterPostNode,
   WATERPRO_PRESET_NAMES,
   type WaterproPresetName,
-  type WaterproPresetUniformBag,
-  createUnderwaterUniforms,
-  underwaterPostNode,
-  UNDERWATER_DEFAULTS,
+  type WaterproPresetUniformBag
 } from '../../../packages/ocean-ifft/src/waterpro/index.js'
-import { sampleGerstnerUniformsCPU } from '../../../packages/ocean-ifft/src/ocean/gerstner-cpu'
-import { Color } from 'three'
-
+import type { StoryFC } from '../components/createStory'
+import { WebGPUCanvas } from '../components/WebGPUCanvas'
+import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
+import { useGLTF } from '../hooks/useGLTF'
+import { PRECIP_DEFAULTS } from '../weather/createPrecipitationSystem'
+import { createLensDrops, LENS_DROPS_DEFAULTS } from '../weather/lensDropsNode'
+import { Precipitation } from '../weather/Precipitation'
+import { getBakedAtmosphereLUTNode } from './BakedAtmosphereLUT'
+import type { WaterproOceanUniforms } from './buildWaterproOceanMaterial'
+import { CABLE_BAKE } from './cable-bake'
+import { createCloudField, type CloudField } from './cloud-coverage'
+import {
+  CLOUD_PRESET_NAMES,
+  CLOUD_PRESETS,
+  type CloudPresetName
+} from './cloud-presets'
+import { CloudLayer } from './CloudLayer'
+import { bearingVector, enuBasis } from './enu'
+import { InstallationRig } from './InstallationRig'
 import OceanChunksWaterpro, {
-  type VertexUniformsBag,
+  type VertexUniformsBag
 } from './OceanChunksWaterpro'
-import { enuBasis, bearingVector } from './enu'
 import {
   SHIP_DEFS,
   ShipModel,
   useShip,
   WaxCubes,
-  type ShipMotionControls,
+  type ShipMotionControls
 } from './ShipModel'
-import { InstallationRig } from './InstallationRig'
-import { TwinFishSchools } from './TwinFishSchool'
-import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
-import { CABLE_BAKE } from './cable-bake'
-import { CloudLayer } from './CloudLayer'
 import { SplatLayer } from './SplatLayer'
-import {
-  CLOUD_PRESETS,
-  CLOUD_PRESET_NAMES,
-  type CloudPresetName,
-} from './cloud-presets'
-import { createCloudField, type CloudField } from './cloud-coverage'
-import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
-import type { WaterproOceanUniforms } from './buildWaterproOceanMaterial'
-import type { Node, UniformNode } from 'three/webgpu'
-
-
-
-import type { StoryFC } from '../components/createStory'
-import { WebGPUCanvas } from '../components/WebGPUCanvas'
-import { useGLTF } from '../hooks/useGLTF'
-import { Precipitation } from '../weather/Precipitation'
-import { PRECIP_DEFAULTS } from '../weather/createPrecipitationSystem'
-import { createLensDrops, LENS_DROPS_DEFAULTS } from '../weather/lensDropsNode'
+import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
+import { TwinFishSchools } from './TwinFishSchool'
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
@@ -197,7 +202,7 @@ export const locationPresets = {
   // listing's own coords (63.0,7.0) contradict its "west of Karmøy" text.
   Zefyros: { longitude: 5.04, latitude: 59.16, height: 20 },
   // At sea ~7 km NW of Bodø (patrol-ship scenario anchor).
-  'Bodø': { longitude: 14.25, latitude: 67.3, height: 20 },
+  Bodø: { longitude: 14.25, latitude: 67.3, height: 20 },
   // Open Vestfjorden / Norwegian Sea, ~50 km out from Bodø (platform scenario).
   'Norwegian Sea': { longitude: 13.2, latitude: 67.5, height: 20 },
   // Offshore wind installation site for the rig (turbine-install scenario).
@@ -215,8 +220,8 @@ export const locationPresets = {
   'Realtime Geospatial': {
     longitude: 5.300927,
     latitude: 59.402448,
-    height: 20,
-  },
+    height: 20
+  }
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -236,9 +241,7 @@ function getLocalDate(
 ): Date {
   const epoch = Date.UTC(year, 0, 1, 0, 0, 0, 0)
   const offset = longitudeDegrees / 15
-  return new Date(
-    epoch + ((dayOfYear - 1) * 24 + timeOfDay - offset) * 3600000
-  )
+  return new Date(epoch + ((dayOfYear - 1) * 24 + timeOfDay - offset) * 3600000)
 }
 
 function isInsideJapanRegionalTerrain(
@@ -283,7 +286,7 @@ class TileMaterialReplacementPlugin {
   }
 
   private readonly handleLoadModel = ({
-    scene,
+    scene
   }: {
     scene: THREE.Object3D
   }): void => {
@@ -294,7 +297,7 @@ class TileMaterialReplacementPlugin {
   }
 
   private readonly handleDisposeModel = ({
-    scene,
+    scene
   }: {
     scene: THREE.Object3D
   }): void => {
@@ -315,7 +318,7 @@ function replaceMaterial(object: THREE.Object3D): void {
   object.geometry.computeVertexNormals()
 
   const material = new MeshLambertNodeMaterial({
-    color: '#6f7f68',
+    color: '#6f7f68'
   })
   if ('map' in sourceMaterial && sourceMaterial.map != null) {
     material.map = sourceMaterial.map.clone()
@@ -384,7 +387,10 @@ const OceanSurface: FC<{
   useDiagnosticMaterial: boolean
   skipDepthPrepass: boolean
   depthPrepassStage: number
-  cloudReflect?: (reflectDir: Node, originWorld: Node) => {
+  cloudReflect?: (
+    reflectDir: Node,
+    originWorld: Node
+  ) => {
     color: Node
     blend: Node
   }
@@ -401,7 +407,7 @@ const OceanSurface: FC<{
   skipDepthPrepass,
   depthPrepassStage,
   cloudReflect,
-  cloudShadow,
+  cloudShadow
 }) => {
   const [oceanParent, setOceanParent] = useState<THREE.Group | null>(null)
   const handleOceanParent = useCallback((group: THREE.Group | null) => {
@@ -622,7 +628,11 @@ const CameraRig: FC<{
     const nonceChanged = flyNonce != null && flyNonce !== lastNonce.current
     if (lastTarget.current == null) {
       place(startAim, dist)
-    } else if (!lastTarget.current.equals(target) || aimChanged || nonceChanged) {
+    } else if (
+      !lastTarget.current.equals(target) ||
+      aimChanged ||
+      nonceChanged
+    ) {
       const fromAim = controls?.target?.clone() ?? lastTarget.current.clone()
       const fromDist =
         controls?.target != null
@@ -992,13 +1002,12 @@ const FpsRig: FC<{
       const m = nearestObj.matrixWorld
       const ride = rideRef.current
       if (ride != null && ride.id === nearestId) {
-        const w = 1 - MathUtils.smoothstep(nearestDist, FPS_RIDE_NEAR, FPS_RIDE_FAR)
+        const w =
+          1 - MathUtils.smoothstep(nearestDist, FPS_RIDE_NEAR, FPS_RIDE_FAR)
         if (w > 0) {
           fpsTmpM1.copy(ride.matrix).invert()
           fpsTmpM2.copy(m).multiply(fpsTmpM1)
-          const ridden = fpsTmpRide
-            .copy(camera.position)
-            .applyMatrix4(fpsTmpM2)
+          const ridden = fpsTmpRide.copy(camera.position).applyMatrix4(fpsTmpM2)
           camera.position.lerp(ridden, w)
         }
         ride.matrix.copy(m)
@@ -1269,7 +1278,7 @@ const VesselMarkers: FC<{
                   }}
                   width={sz}
                   height={sz}
-                  viewBox="0 0 24 24"
+                  viewBox='0 0 24 24'
                   style={{
                     flexShrink: 0,
                     // Rotation is set imperatively each frame to the on-screen
@@ -1282,18 +1291,18 @@ const VesselMarkers: FC<{
                   {cog != null ? (
                     // Ship dart pointing N: bow tip, two stern corners, notch.
                     <path
-                      d="M12 2 L19 21 L12 16.5 L5 21 Z"
+                      d='M12 2 L19 21 L12 16.5 L5 21 Z'
                       fill={fill}
                       stroke={stroke}
                       strokeWidth={1.3}
-                      strokeLinejoin="round"
+                      strokeLinejoin='round'
                     />
                   ) : (
                     // Heading unknown — neutral disc.
                     <circle
-                      cx="12"
-                      cy="12"
-                      r="6"
+                      cx='12'
+                      cy='12'
+                      r='6'
                       fill={fill}
                       stroke={stroke}
                       strokeWidth={1.3}
@@ -1688,7 +1697,9 @@ const TilesTerrainBridge: FC<{
 const TerrainClamp: FC<{ seaLevelRadius: number }> = ({ seaLevelRadius }) => {
   const camera = useThree(({ camera }) => camera)
   const controls = useThree(({ controls }) => controls as any)
-  const tiles = useContext(TilesRendererContext) as { group?: THREE.Group } | null
+  const tiles = useContext(TilesRendererContext) as {
+    group?: THREE.Group
+  } | null
   const frameRef = useRef(0)
   const up = useRef(new Vector3())
 
@@ -1919,7 +1930,7 @@ const TurbineFarm: FC<{
     count,
     crosswindSpacing,
     downwindSpacing,
-    stagger,
+    stagger
   ])
 
   // Base positions as Vector3[] for the cable router — memoised so the (one-off)
@@ -1981,9 +1992,7 @@ const TurbineFarm: FC<{
     //   number  (deploy):      modelled rpm → rad/s, so the rotor matches the HUD.
     //   null    (deploy, no wind data): idle — never the fast fallback.
     const rate =
-      rotorRpm === undefined
-        ? spinSpeed
-        : ((rotorRpm ?? 0) * Math.PI * 2) / 60
+      rotorRpm === undefined ? spinSpeed : ((rotorRpm ?? 0) * Math.PI * 2) / 60
     // Ramp to a halt / back up when toggled, instead of an instant cut.
     spinGainRef.current = MathUtils.damp(
       spinGainRef.current,
@@ -2054,6 +2063,9 @@ export interface ContentReadinessRefs {
   // synchronous compile hitch at reveal). See PERFORMANCE-FINDINGS.md item A.
   isPrewarmed: () => boolean
 }
+
+// TEMP boot-trace flag — see the marker at the top of Content.
+let contentRenderLogged = false
 
 export const Content: FC<{
   onReadinessRefs?: (refs: ContentReadinessRefs) => void
@@ -2227,6 +2239,15 @@ export const Content: FC<{
   rigTimeScale = 1,
   onRigClipFinished
 }) => {
+  // TEMP boot-trace (once per load): proves the Content function body started
+  // executing. If this is present but the readiness refs never report, a hook
+  // below is suspending forever (R3F's internal Suspense keeps the whole
+  // subtree unmounted with no console output) or the render threw.
+  if (!contentRenderLogged) {
+    contentRenderLogged = true
+    // eslint-disable-next-line no-console
+    console.log('[boot] Content render started')
+  }
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
@@ -2251,7 +2272,19 @@ export const Content: FC<{
   // composite AFTER the atmosphere (approach A) — premultiplied splats blended in
   // the main pass darken their soft edges against the black clear color (halo).
   const splatScene = useMemo(() => new Scene(), [])
-  const context = useMemo(() => new AtmosphereContext(), [])
+  // Baked LUTs: the context samples the precomputed .bin LUTs (fetched at
+  // module import, see BakedAtmosphereLUT.ts) instead of running the
+  // AtmosphereLUTNode GPU compute at startup — the atmosphere phase becomes a
+  // texture fetch that overlaps renderer init, and the requestIdleCallback
+  // machinery the compute needed (incl. the twin's shim) drops out entirely.
+  const context = useMemo(
+    () =>
+      new AtmosphereContext(
+        undefined,
+        getBakedAtmosphereLUTNode() as unknown as AtmosphereLUTNode
+      ),
+    []
+  )
   context.camera = camera
   useAtmosphereContextNode(context)
 
@@ -2301,33 +2334,33 @@ export const Content: FC<{
     preset: {
       value: 'Karmøy',
       options: [...Object.keys(locationPresets), 'Custom'],
-      label: 'Fly to',
+      label: 'Fly to'
     },
     longitude: {
       value: locationPresets.Karmøy.longitude,
       min: -180,
       max: 180,
-      step: 0.0001,
+      step: 0.0001
     },
     latitude: {
       value: locationPresets.Karmøy.latitude,
       min: -90,
       max: 90,
-      step: 0.0001,
+      step: 0.0001
     },
     height: {
       value: locationPresets.Karmøy.height,
       min: -500,
       max: 5000,
-      step: 1,
-    },
+      step: 1
+    }
   }))
   const activeLocation =
     locationControls.preset === 'Custom'
       ? locationControls
-      : locationPresets[
+      : (locationPresets[
           locationControls.preset as keyof typeof locationPresets
-        ] ?? locationPresets.Karmøy
+        ] ?? locationPresets.Karmøy)
   const target = useTargetECEF(
     activeLocation.longitude,
     activeLocation.latitude,
@@ -2466,7 +2499,7 @@ export const Content: FC<{
     orbitalBlendEndKm: { value: 1800, min: 0, max: 30000, step: 50 },
     // Shapes the fade across the band: applied as f^power. <1 front-loads it
     // (clears fast right after startKm), 1 = linear, >1 eases in slowly.
-    orbitalBlendPower: { value: 0.2, min: 0.1, max: 3, step: 0.05 },
+    orbitalBlendPower: { value: 0.2, min: 0.1, max: 3, step: 0.05 }
   })
 
   // Aerial-perspective inscatter scale as a stable uniform so the orbital-clarity
@@ -2493,7 +2526,7 @@ export const Content: FC<{
     contrast: { value: 1.3, min: 0.5, max: 5, step: 0.1 },
     // Analytic effects on the ocean (shared coverage; no extra passes).
     reflectionStrength: { value: 0.05, min: 0, max: 1, step: 0.01 },
-    shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 },
+    shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 }
   }))
 
   // Apply a preset's field bag to the sliders when the selector changes.
@@ -2515,7 +2548,7 @@ export const Content: FC<{
     () =>
       createCloudField({
         source: cloudControls.source as 'procedural' | 'live',
-        sunDirection: context.sunDirectionECEF as any,
+        sunDirection: context.sunDirectionECEF as any
       }),
     [cloudControls.source, context]
   )
@@ -2532,7 +2565,7 @@ export const Content: FC<{
     intensity: cloudControls.intensity,
     contrast: cloudControls.contrast,
     reflectionStrength: cloudControls.reflectionStrength,
-    shadowStrength: cloudControls.shadowStrength,
+    shadowStrength: cloudControls.shadowStrength
   })
   const cloudEffectsEnabled = cloudControls.enabled
 
@@ -2542,15 +2575,15 @@ export const Content: FC<{
       min: -500,
       max: 5000,
       step: 1,
-      label: 'Sea level offset',
+      label: 'Sea level offset'
     },
     oceanScale: {
       value: 0.5,
       min: 0.1,
       max: 5,
       step: 0.05,
-      label: 'Ocean scale',
-    },
+      label: 'Ocean scale'
+    }
   })
 
   // Sea scenario without an explicit spawn: the anchor sits seaLevelOffset below
@@ -2606,7 +2639,7 @@ export const Content: FC<{
       // on/off near the surface. Enter submerged 0.35 m below the estimate,
       // leave at 0.05 m, and ease underwaterT over ~0.2 s.
       submerged: false,
-      t: 0,
+      t: 0
     }),
     []
   )
@@ -2682,7 +2715,7 @@ export const Content: FC<{
       min: 0.05,
       max: 5,
       step: 0.05,
-      label: 'Murkiness',
+      label: 'Murkiness'
     },
     waterTint: { value: UNDERWATER_DEFAULTS.waterTint, label: 'Water tint' },
     fogIntensity: {
@@ -2690,39 +2723,39 @@ export const Content: FC<{
       min: 0,
       max: 10,
       step: 0.1,
-      label: 'Fog intensity',
+      label: 'Fog intensity'
     },
     ambientFalloff: {
       value: UNDERWATER_DEFAULTS.ambientFalloff,
       min: 0,
       max: 0.2,
       step: 0.005,
-      label: 'Depth darkening',
+      label: 'Depth darkening'
     },
     causticsIntensity: {
       value: UNDERWATER_DEFAULTS.causticsIntensity,
       min: 0,
       max: 5,
-      step: 0.05,
+      step: 0.05
     },
     causticsScale: {
       value: UNDERWATER_DEFAULTS.causticsScale,
       min: 1,
       max: 300,
-      step: 1,
+      step: 1
     },
     causticsSpeed: {
       value: UNDERWATER_DEFAULTS.causticsSpeed,
       min: 0,
       max: 3,
-      step: 0.05,
+      step: 0.05
     },
     causticsSharpness: {
       value: UNDERWATER_DEFAULTS.causticsSharpness,
       min: 1,
       max: 16,
-      step: 0.5,
-    },
+      step: 0.5
+    }
   })
   useEffect(() => {
     const u = underwaterUniforms
@@ -2739,7 +2772,7 @@ export const Content: FC<{
   }, [underwaterControls, underwaterUniforms])
 
   const oceanMaterialParams = useControls('Ocean Material', {
-    wireframe: { value: false },
+    wireframe: { value: false }
   })
 
   // Full WaterPro control set — mirrors WaterproAtmosphere-Story.tsx
@@ -2749,7 +2782,7 @@ export const Content: FC<{
     []
   )
   const presetControls = useControls('Ocean Preset', {
-    preset: { value: 'choppy', options: presetOptions },
+    preset: { value: 'choppy', options: presetOptions }
   })
 
   const toggleControls = useControls('Ocean Toggles', {
@@ -2759,7 +2792,7 @@ export const Content: FC<{
     surfaceFoam: { value: true },
     waveFoam: { value: true },
     turbulentFoam: { value: true },
-    shorelineFoam: { value: true },
+    shorelineFoam: { value: true }
   })
 
   const turbineControls = useControls('Turbine', {
@@ -2771,7 +2804,13 @@ export const Content: FC<{
     // Wake-aware spacing in rotor diameters (D = 164 m). Offshore arrays sit
     // ~7–10 D apart along the wind, ~4–5 D across it.
     downwindD: { value: 8, min: 3, max: 15, step: 0.5, label: 'Downwind (D)' },
-    crosswindD: { value: 5, min: 2, max: 12, step: 0.5, label: 'Crosswind (D)' },
+    crosswindD: {
+      value: 5,
+      min: 2,
+      max: 12,
+      step: 0.5,
+      label: 'Crosswind (D)'
+    },
     stagger: { value: true, label: 'Offset rows' },
     // Manual wind bearing for Storybook (no MET feed); the deploy overrides this
     // with live MET wind via the windHeading prop.
@@ -2781,9 +2820,9 @@ export const Content: FC<{
       min: -180,
       max: 180,
       step: 1,
-      label: 'Rotor offset (°)',
+      label: 'Rotor offset (°)'
     },
-    cover: { value: true, label: 'Hero: cover' },
+    cover: { value: true, label: 'Hero: cover' }
   })
 
   // Effective fly heading. For close-ups anchored to the yawing turbine
@@ -2906,7 +2945,7 @@ export const Content: FC<{
       anchor: patrolAnchor,
       buoyant: true,
       waterOcclusion: true
-    },
+    }
   ]
 
   // Shared buoyancy + hull-occlusion rig for both ships. Motion amplitude
@@ -2921,7 +2960,7 @@ export const Content: FC<{
       min: 0.1,
       max: 5,
       step: 0.05,
-      label: 'Response (s)',
+      label: 'Response (s)'
     },
     hullOcclusion: { value: true, label: 'Hull occlusion' },
     showOccluders: { value: false, label: 'Show occluder boxes' },
@@ -2930,22 +2969,22 @@ export const Content: FC<{
       min: 0.1,
       max: 1,
       step: 0.01,
-      label: 'Occluder length',
+      label: 'Occluder length'
     },
     occWidthFrac: {
       value: 0.8,
       min: 0.1,
       max: 1,
       step: 0.01,
-      label: 'Occluder width',
+      label: 'Occluder width'
     },
     occTopFrac: {
       value: 0.3,
       min: 0.02,
       max: 1,
       step: 0.01,
-      label: 'Occluder height',
-    },
+      label: 'Occluder height'
+    }
   })
 
   // Auto-routed subsea inter-array cables — every turbine string runs to a hub
@@ -2960,9 +2999,15 @@ export const Content: FC<{
     enabled: { value: false },
     // Fallback floor only — where terrain raycasts have coverage, the
     // cables drape onto the sampled tile surface instead.
-    seabedDepth: { value: 35, min: -100, max: 200, step: 1, label: 'Seabed depth (m)' },
+    seabedDepth: {
+      value: 35,
+      min: -100,
+      max: 200,
+      step: 1,
+      label: 'Seabed depth (m)'
+    },
     slack: { value: 0.3, min: 0, max: 0.5, step: 0.01 },
-    radius: { value: 0.7, min: 0.1, max: 10, step: 0.1, label: 'Radius (m)' },
+    radius: { value: 0.7, min: 0.1, max: 10, step: 0.1, label: 'Radius (m)' }
   })
   // Latest LIVE bake snapshot (ref — onBake fires during render). The button
   // emits a ready-to-paste cable-bake.ts so production loads skip the solve.
@@ -2980,7 +3025,9 @@ export const Content: FC<{
     'Copy bake': button(() => {
       const snapshot = latestCableBakeRef.current
       if (snapshot == null) {
-        console.warn('[TurbineCables] no live bake to copy yet (snapshot in use or still solving)')
+        console.warn(
+          '[TurbineCables] no live bake to copy yet (snapshot in use or still solving)'
+        )
         return
       }
       const file =
@@ -2997,7 +3044,7 @@ export const Content: FC<{
         '\n'
       console.log(file)
       void navigator.clipboard?.writeText(file)
-    }),
+    })
   })
   // Terrain handle + re-sample counter from the TilesTerrainBridge. The
   // cables' coverage lock turns most of these signals into no-ops.
@@ -3021,7 +3068,7 @@ export const Content: FC<{
             onBake: handleCableBake,
             // Sampled floors are clamped under the rendered ocean surface —
             // offshore photogrammetry bakes the sea itself as geometry.
-            maxFloorY: oceanFrameControls.seaLevelOffset - 3,
+            maxFloorY: oceanFrameControls.seaLevelOffset - 3
           }
         : null,
     [
@@ -3035,7 +3082,7 @@ export const Content: FC<{
       oceanFrameControls.seaLevelOffset,
       handleCableBake,
       cableRebakeNonce,
-      disableOcean,
+      disableOcean
     ]
   )
 
@@ -3043,7 +3090,12 @@ export const Content: FC<{
     minDistance: { value: 1, min: 0.1, max: 5000, step: 0.1 },
     // 30,000 km lets the camera pull back to a planetary full-disk view (earth
     // radius ~6,371 km); the deploy's zoom slider maps to this same ceiling.
-    maxDistance: { value: 30_000_000, min: 1000, max: 50_000_000, step: 100_000 },
+    maxDistance: {
+      value: 30_000_000,
+      min: 1000,
+      max: 50_000_000,
+      step: 100_000
+    },
     autoOrbit: { value: true },
     orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
     // After a full load, frame the view you want, then click this. It logs +
@@ -3061,7 +3113,7 @@ export const Content: FC<{
       // eslint-disable-next-line no-console
       console.log('[camera dump]\n' + json)
       void navigator.clipboard?.writeText(json)
-    }),
+    })
   })
 
   // Snapshot button — dumps every leva value (across all panels) as JSON to
@@ -3087,15 +3139,15 @@ export const Content: FC<{
       const json = JSON.stringify(out, null, 2)
       console.log('[snapshot]\n' + json)
       void navigator.clipboard?.writeText(json).catch(() => {})
-    }),
+    })
   })
 
   const pickControls = useControls('Pick', {
     enabled: { value: false, label: 'Click → reposition fly-to' },
     keepHeight: {
       value: true,
-      label: 'Keep current height',
-    },
+      label: 'Keep current height'
+    }
   })
 
   // Raycast-pick on click. When enabled, a stationary mouse click on any
@@ -3136,7 +3188,7 @@ export const Content: FC<{
       const next: Record<string, number | string> = {
         preset: 'Custom',
         longitude: lonDeg,
-        latitude: latDeg,
+        latitude: latDeg
       }
       if (!pickControls.keepHeight) {
         next.height = geodetic.height
@@ -3151,33 +3203,33 @@ export const Content: FC<{
     renderer,
     camera,
     scene,
-    setLocation,
+    setLocation
   ])
 
   const waveControls = useControls('Waves', {
     fftAmplitude: { value: 1.0, min: 0, max: 2, step: 0.01 },
-    gerstnerAmplitude: { value: 1.0, min: 0, max: 6, step: 0.01 },
+    gerstnerAmplitude: { value: 1.0, min: 0, max: 6, step: 0.01 }
   })
 
   const reflectionControls = useControls('Reflection', {
     skyReflectionColor: '#ffffff',
     skyReflectionExposure: { value: 0.2, min: 0.01, max: 2, step: 0.01 },
-    skyReflectionScale: { value: 1.0, min: 0, max: 3, step: 0.05 },
+    skyReflectionScale: { value: 1.0, min: 0, max: 3, step: 0.05 }
   })
 
   const fresnelControls = useControls('Fresnel', {
     fresnelPower: { value: 3.0, min: 1, max: 8, step: 0.1 },
-    normalStrength: { value: 0.1, min: 0, max: 1, step: 0.01 },
+    normalStrength: { value: 0.1, min: 0, max: 1, step: 0.01 }
   })
 
   const sparkleControls = useControls('Sparkle', {
     sparkleIntensity: { value: 1.5, min: 0, max: 10, step: 0.1 },
-    sparkleFocusPower: { value: 75.7, min: 1, max: 1000, step: 1 },
+    sparkleFocusPower: { value: 75.7, min: 1, max: 1000, step: 1 }
   })
 
   const sssControls = useControls('SSS', {
     sssIntensity: { value: 0.5, min: 0, max: 5, step: 0.05 },
-    sssPower: { value: 16.0, min: 0.5, max: 64, step: 0.1 },
+    sssPower: { value: 16.0, min: 0.5, max: 64, step: 0.1 }
   })
 
   const surfaceFoamControls = useControls('Surface Foam', {
@@ -3190,28 +3242,28 @@ export const Content: FC<{
       min: 200,
       max: 8000,
       step: 50,
-      label: 'Blob scale (m)',
+      label: 'Blob scale (m)'
     },
     regionThreshold: {
       value: 0.5,
       min: 0,
       max: 1,
       step: 0.01,
-      label: 'Blob coverage',
+      label: 'Blob coverage'
     },
     regionDrift: {
       value: 0.0005,
       min: 0,
       max: 0.01,
       step: 0.0001,
-      label: 'Blob drift (tex/s)',
-    },
+      label: 'Blob drift (tex/s)'
+    }
   })
 
   const waveFoamControls = useControls('Wave Foam', {
     waveFoamCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
     waveFoamOpacity: { value: 0.6, min: 0, max: 1, step: 0.01 },
-    waveFoamCrestCoverage: { value: 0.3, min: 0, max: 1, step: 0.01 },
+    waveFoamCrestCoverage: { value: 0.3, min: 0, max: 1, step: 0.01 }
   })
 
   const swellControls = useControls('Swell Variance', {
@@ -3220,15 +3272,15 @@ export const Content: FC<{
       min: 0,
       max: 1,
       step: 0.01,
-      label: 'Strength (0=uniform)',
+      label: 'Strength (0=uniform)'
     },
     swellScale: {
       value: 800,
       min: 50,
       max: 5000,
       step: 10,
-      label: 'Variance scale (m)',
-    },
+      label: 'Variance scale (m)'
+    }
   })
 
   // Couple the sea STRENGTH to the wind: blend wave amplitude from calm → storm
@@ -3239,9 +3291,21 @@ export const Content: FC<{
   // are the operator-tuned heavy-condition values; calm endpoints are defaults.
   const windWaveControls = useControls('Wind → Waves', {
     enabled: { value: true, label: 'Couple to wind' },
-    windSpeed: { value: 10, min: 0, max: 30, step: 0.5, label: 'Wind speed (m/s)' },
+    windSpeed: {
+      value: 10,
+      min: 0,
+      max: 30,
+      step: 0.5,
+      label: 'Wind speed (m/s)'
+    },
     calmWind: { value: 4, min: 0, max: 15, step: 0.5, label: 'Calm at (m/s)' },
-    stormWind: { value: 22, min: 5, max: 30, step: 0.5, label: 'Storm at (m/s)' },
+    stormWind: {
+      value: 22,
+      min: 5,
+      max: 30,
+      step: 0.5,
+      label: 'Storm at (m/s)'
+    }
   })
   // Effective wind speed: live MET in the deploy, else the leva slider.
   const effWindSpeed = windSpeed ?? windWaveControls.windSpeed
@@ -3249,7 +3313,10 @@ export const Content: FC<{
   const stormT = windWaveControls.enabled
     ? MathUtils.clamp(
         (effWindSpeed - windWaveControls.calmWind) /
-          Math.max(1e-3, windWaveControls.stormWind - windWaveControls.calmWind),
+          Math.max(
+            1e-3,
+            windWaveControls.stormWind - windWaveControls.calmWind
+          ),
         0,
         1
       )
@@ -3261,32 +3328,117 @@ export const Content: FC<{
   const precipControls = useControls('Precipitation', {
     enabled: { value: true },
     source: { value: 'met', options: ['met', 'manual'] },
-    intensity: { value: 0.6, min: 0, max: 1, step: 0.01, label: 'Intensity (manual)' },
-    fullAtMm: { value: 50, min: 5, max: 150, step: 1, label: 'Whiteout at (mm/h)' },
+    intensity: {
+      value: 0.6,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Intensity (manual)'
+    },
+    fullAtMm: {
+      value: 50,
+      min: 5,
+      max: 150,
+      step: 1,
+      label: 'Whiteout at (mm/h)'
+    },
     mode: { value: 'auto', options: ['auto', 'rain', 'snow'] },
-    windFrom: { value: 225, min: 0, max: 360, step: 1, label: 'Wind from° (manual)' },
-    windSpeed: { value: 12, min: 0, max: 35, step: 0.5, label: 'Wind speed (manual)' },
+    windFrom: {
+      value: 225,
+      min: 0,
+      max: 360,
+      step: 1,
+      label: 'Wind from° (manual)'
+    },
+    windSpeed: {
+      value: 12,
+      min: 0,
+      max: 35,
+      step: 0.5,
+      label: 'Wind speed (manual)'
+    },
     // Defaults come from PRECIP_DEFAULTS (single source shared with the factory +
     // wrapper); only the leva ranges/labels are local. Fade controls are in km.
     opacity: { value: PRECIP_DEFAULTS.opacity, min: 0, max: 1, step: 0.01 },
     area: { value: PRECIP_DEFAULTS.area, min: 10, max: 300, step: 5 },
     height: { value: PRECIP_DEFAULTS.height, min: 10, max: 300, step: 5 },
-    dropLength: { value: PRECIP_DEFAULTS.dropLength, min: 0.2, max: 20, step: 0.1 },
-    dropWidth: { value: PRECIP_DEFAULTS.dropWidth, min: 0.01, max: 1, step: 0.01 },
-    flakeSize: { value: PRECIP_DEFAULTS.flakeSize, min: 0.02, max: 2, step: 0.01 },
-    fallSpeedRain: { value: PRECIP_DEFAULTS.fallSpeedRain, min: 2, max: 60, step: 0.5 },
-    fallSpeedSnow: { value: PRECIP_DEFAULTS.fallSpeedSnow, min: 0.3, max: 10, step: 0.1 },
+    dropLength: {
+      value: PRECIP_DEFAULTS.dropLength,
+      min: 0.2,
+      max: 20,
+      step: 0.1
+    },
+    dropWidth: {
+      value: PRECIP_DEFAULTS.dropWidth,
+      min: 0.01,
+      max: 1,
+      step: 0.01
+    },
+    flakeSize: {
+      value: PRECIP_DEFAULTS.flakeSize,
+      min: 0.02,
+      max: 2,
+      step: 0.01
+    },
+    fallSpeedRain: {
+      value: PRECIP_DEFAULTS.fallSpeedRain,
+      min: 2,
+      max: 60,
+      step: 0.5
+    },
+    fallSpeedSnow: {
+      value: PRECIP_DEFAULTS.fallSpeedSnow,
+      min: 0.3,
+      max: 10,
+      step: 0.1
+    },
     // Altitude fade band (km): rain is full below 'start', gone above 'end'. Raise
     // 'end' to keep rain visible from higher up (it silently hides everything when
     // the camera is above the band, which can make every slider look dead).
-    fadeStartKm: { value: PRECIP_DEFAULTS.fadeStartAlt / 1000, min: 0, max: 40, step: 0.5, label: 'Fade start (km)' },
-    fadeEndKm: { value: PRECIP_DEFAULTS.fadeEndAlt / 1000, min: 0.5, max: 80, step: 0.5, label: 'Fade end (km)' },
+    fadeStartKm: {
+      value: PRECIP_DEFAULTS.fadeStartAlt / 1000,
+      min: 0,
+      max: 40,
+      step: 0.5,
+      label: 'Fade start (km)'
+    },
+    fadeEndKm: {
+      value: PRECIP_DEFAULTS.fadeEndAlt / 1000,
+      min: 0.5,
+      max: 80,
+      step: 0.5,
+      label: 'Fade end (km)'
+    },
     // Underwater: suspended specks (slow rise + sideways drift), always present
     // when submerged regardless of rain above. Driven by the underwater detector.
-    underwaterIntensity: { value: PRECIP_DEFAULTS.underwaterIntensity, min: 0, max: 1, step: 0.01, label: 'UW density' },
-    uwRise: { value: PRECIP_DEFAULTS.uwRise, min: 0, max: 2, step: 0.01, label: 'UW rise (m/s)' },
-    uwSize: { value: PRECIP_DEFAULTS.uwSize, min: 0.01, max: 0.5, step: 0.01, label: 'UW speck size (m)' },
-    uwOpacity: { value: PRECIP_DEFAULTS.uwOpacity, min: 0, max: 1, step: 0.01, label: 'UW opacity' }
+    underwaterIntensity: {
+      value: PRECIP_DEFAULTS.underwaterIntensity,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'UW density'
+    },
+    uwRise: {
+      value: PRECIP_DEFAULTS.uwRise,
+      min: 0,
+      max: 2,
+      step: 0.01,
+      label: 'UW rise (m/s)'
+    },
+    uwSize: {
+      value: PRECIP_DEFAULTS.uwSize,
+      min: 0.01,
+      max: 0.5,
+      step: 0.01,
+      label: 'UW speck size (m)'
+    },
+    uwOpacity: {
+      value: PRECIP_DEFAULTS.uwOpacity,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'UW opacity'
+    }
   })
   // Wet-lens raindrop refraction — a screen-space POST effect (not scene geometry
   // like the rain plugin). Defaults from LENS_DROPS_DEFAULTS (single source shared
@@ -3299,20 +3451,80 @@ export const Content: FC<{
     // whenever the panel is on (the gates normally hide it from orbit / in clear
     // weather). Off by default — flip on to tune the look from any view.
     forceVisible: { value: false, label: 'Force visible (debug)' },
-    strength: { value: LENS_DROPS_DEFAULTS.strength, min: 0, max: 1, step: 0.01, label: 'Strength (max)' },
-    density: { value: LENS_DROPS_DEFAULTS.density, min: 0, max: 1, step: 0.01, label: 'Drop density' },
-    refract: { value: LENS_DROPS_DEFAULTS.refract, min: 0, max: 4, step: 0.05, label: 'Refraction' },
-    blur: { value: LENS_DROPS_DEFAULTS.blur, min: 0, max: 6, step: 0.1, label: 'Wet blur (px)' },
-    dropOpacity: { value: LENS_DROPS_DEFAULTS.dropOpacity, min: 0, max: 1, step: 0.01, label: 'Drop opacity' },
-    rim: { value: LENS_DROPS_DEFAULTS.rim, min: 0, max: 1, step: 0.01, label: 'Edge highlight' },
+    strength: {
+      value: LENS_DROPS_DEFAULTS.strength,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Strength (max)'
+    },
+    density: {
+      value: LENS_DROPS_DEFAULTS.density,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Drop density'
+    },
+    refract: {
+      value: LENS_DROPS_DEFAULTS.refract,
+      min: 0,
+      max: 4,
+      step: 0.05,
+      label: 'Refraction'
+    },
+    blur: {
+      value: LENS_DROPS_DEFAULTS.blur,
+      min: 0,
+      max: 6,
+      step: 0.1,
+      label: 'Wet blur (px)'
+    },
+    dropOpacity: {
+      value: LENS_DROPS_DEFAULTS.dropOpacity,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Drop opacity'
+    },
+    rim: {
+      value: LENS_DROPS_DEFAULTS.rim,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Edge highlight'
+    },
     // Max 7: beyond ~7 the longest tail (radius·streak) exceeds one cell and the
     // one-row vertical neighbour sampler can no longer cover it → tail clips.
-    streak: { value: LENS_DROPS_DEFAULTS.streak, min: 1, max: 7, step: 0.1, label: 'Streak max (1=round)' },
-    linger: { value: LENS_DROPS_DEFAULTS.linger, min: 0.3, max: 4, step: 0.1, label: 'Linger (lifespan)' },
-    lifeJitter: { value: LENS_DROPS_DEFAULTS.lifeJitter, min: 0, max: 1, step: 0.01, label: 'Disappear randomness' },
+    streak: {
+      value: LENS_DROPS_DEFAULTS.streak,
+      min: 1,
+      max: 7,
+      step: 0.1,
+      label: 'Streak max (1=round)'
+    },
+    linger: {
+      value: LENS_DROPS_DEFAULTS.linger,
+      min: 0.3,
+      max: 4,
+      step: 0.1,
+      label: 'Linger (lifespan)'
+    },
+    lifeJitter: {
+      value: LENS_DROPS_DEFAULTS.lifeJitter,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      label: 'Disappear randomness'
+    },
     // Seconds the lens stays wet after breaching the surface (water sheeting off
     // the camera). 0 disables the surfacing trigger, leaving rain as the only one.
-    surfaceWet: { value: 3, min: 0, max: 8, step: 0.1, label: 'Surface wet (s)' }
+    surfaceWet: {
+      value: 3,
+      min: 0,
+      max: 8,
+      step: 0.1,
+      label: 'Surface wet (s)'
+    }
   })
   // Built once; the post memo wires its node graph and a useFrame pushes the gate.
   const lensDrops = useMemo(() => createLensDrops(), [])
@@ -3337,7 +3549,9 @@ export const Content: FC<{
         )
       : null
   const precipIntensity =
-    precipManual || metIntensity == null ? precipControls.intensity : metIntensity
+    precipManual || metIntensity == null
+      ? precipControls.intensity
+      : metIntensity
   // 0 = rain, 1 = snow. 'auto' maps air temperature across a 2→0 °C melt band.
   const precipMode =
     precipControls.mode === 'rain'
@@ -3349,10 +3563,10 @@ export const Content: FC<{
           : remapClamped(airTemperature, 2, 0)
   const precipWindFrom = precipManual
     ? precipControls.windFrom
-    : windHeading ?? precipControls.windFrom
+    : (windHeading ?? precipControls.windFrom)
   const precipWindSpeed = precipManual
     ? precipControls.windSpeed
-    : windSpeed ?? precipControls.windSpeed
+    : (windSpeed ?? precipControls.windSpeed)
 
   // Wet-lens strength gate — recomputed every frame because underwaterT and the
   // altitude change faster than React renders. Two triggers, both gated to
@@ -3365,7 +3579,8 @@ export const Content: FC<{
     // 1 underwater), then bleed off linearly over `surfaceWet` seconds once above
     // water — water lingering on the lens after a breach, independent of rain.
     const sub = underwaterUniforms.underwaterT.value
-    const fall = lensControls.surfaceWet > 0 ? delta / lensControls.surfaceWet : 1
+    const fall =
+      lensControls.surfaceWet > 0 ? delta / lensControls.surfaceWet : 1
     lensWetRef.current = Math.max(sub, lensWetRef.current - fall)
     // DEBUG bypass: forceVisible drives strength straight from the slider, ignoring
     // weather/water/altitude, so the node is visible for tuning from any view.
@@ -3418,23 +3633,23 @@ export const Content: FC<{
       min: 0,
       max: 5,
       step: 0.05,
-      label: 'Height threshold (m)',
+      label: 'Height threshold (m)'
     },
     softness: {
       value: 0.4,
       min: 0.05,
       max: 2,
       step: 0.05,
-      label: 'Threshold softness (m)',
+      label: 'Threshold softness (m)'
     },
     rarity: {
       value: 0.65,
       min: 0,
       max: 1,
       step: 0.01,
-      label: 'Rarity (1=rare)',
+      label: 'Rarity (1=rare)'
     },
-    size: { value: 8.0, min: 1, max: 100, step: 0.5, label: 'Tile size (m)' },
+    size: { value: 8.0, min: 1, max: 100, step: 0.5, label: 'Tile size (m)' }
   })
 
   const shorelineFoamControls = useControls('Shoreline Foam', {
@@ -3443,11 +3658,11 @@ export const Content: FC<{
     shorelineBandOpacity: { value: 1.0, min: 0, max: 1, step: 0.01 },
     shorelineTintRange: { value: 30.0, min: 1, max: 200, step: 1 },
     shorelineTintCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
-    shorelineTintOpacity: { value: 0.3, min: 0, max: 1, step: 0.01 },
+    shorelineTintOpacity: { value: 0.3, min: 0, max: 1, step: 0.01 }
   })
 
   const turbulentFoamControls = useControls('Turbulent Foam', {
-    turbulentIntensity: { value: 0.2, min: 0, max: 2, step: 0.05 },
+    turbulentIntensity: { value: 0.2, min: 0, max: 2, step: 0.05 }
   })
 
   const waterColorControls = useControls('Water Color', {
@@ -3455,7 +3670,7 @@ export const Content: FC<{
     waterDepth: { value: 20.0, min: 1, max: 100, step: 1 },
     // sRGB hex equivalents of the linear (0,0.8,0.8) / (0,0.2,0.4) defaults
     shallowColor: '#00e7e7',
-    deepColor: '#007baa',
+    deepColor: '#007baa'
   })
   const oceanDebugParams = useControls('Ocean Debug', {
     numLayers: {
@@ -3463,36 +3678,36 @@ export const Content: FC<{
       min: 1,
       max: 15,
       step: 1,
-      label: 'Quadtree LOD layers',
+      label: 'Quadtree LOD layers'
     },
     enableOcean: {
       value: true,
-      label: 'Enable ocean',
+      label: 'Enable ocean'
     },
     useDiagnosticMaterial: {
       value: false,
-      label: 'Diagnostic material (flat blue)',
+      label: 'Diagnostic material (flat blue)'
     },
     skipDepthPrepass: {
       // Default OFF — the pre-pass works as of the envNode-strip fix.
       // Flip on as a fallback if a future regression breaks it.
       value: false,
-      label: 'Skip depth pre-pass',
+      label: 'Skip depth pre-pass'
     },
     depthPrepassStage: {
       value: 4,
       min: 1,
       max: 4,
       step: 1,
-      label: 'Pre-pass stage (1-4)',
-    },
+      label: 'Pre-pass stage (1-4)'
+    }
   })
 
   const terrainControls = useControls('Terrain', {
     source: {
       value: 'Auto',
-      options: ['Auto', 'Global', 'Japan Regional'],
-    },
+      options: ['Auto', 'Global', 'Japan Regional']
+    }
   })
   const terrainAssetId =
     terrainControls.source === 'Japan Regional' ||
@@ -3576,7 +3791,7 @@ export const Content: FC<{
       oceanPos: viewToOceanUniform.mul(vec4(uwPosView, 1)).xyz,
       dist: uwPosView.length(),
       time: underwaterTimeUniform,
-      u: underwaterUniforms,
+      u: underwaterUniforms
     })
 
     const lensFlareNode = lensFlare(underwaterNode)
@@ -3587,7 +3802,7 @@ export const Content: FC<{
     )
     const overlayPassNode = pass(overlayScene, camera, {
       samples: 0,
-      depthBuffer: false,
+      depthBuffer: false
     })
 
     const composite = toneMappingNode
@@ -3608,7 +3823,13 @@ export const Content: FC<{
     // prewarm effect can call each pass node's own compileAsync (which binds the
     // pass render target + MRT) and warm the inner-scene material pipelines under
     // the splash, off the first visible frame. See the prewarm effect below.
-    return { postProcessing: result, skyNode, passNode, splatPassNode, overlayPassNode }
+    return {
+      postProcessing: result,
+      skyNode,
+      passNode,
+      splatPassNode,
+      overlayPassNode
+    }
   }, [
     atmosphereControls.exposure,
     atmosphereControls.moonIntensity,
@@ -3627,7 +3848,7 @@ export const Content: FC<{
     underwaterTimeUniform,
     inscatterScaleUniform,
     lensDrops,
-    lensControls.enabled,
+    lensControls.enabled
   ])
 
   const atmosphereDate = useMemo(() => {
@@ -3645,7 +3866,7 @@ export const Content: FC<{
     activeLocation.longitude,
     atmosphereControls.dayOfYear,
     atmosphereControls.timeOfDay,
-    atmosphereControls.year,
+    atmosphereControls.year
   ])
 
   // (lodScale slider removed — it's a WGSL-vertex-stage uniform local to
@@ -3694,7 +3915,7 @@ export const Content: FC<{
       sssIntensity: u.sssIntensity,
       sssPower: u.sssPower,
       fftAmplitude: u.fftAmplitude,
-      gerstnerAmplitude: u.gerstnerAmplitude,
+      gerstnerAmplitude: u.gerstnerAmplitude
     }
   }, [oceanUniforms])
 
@@ -3781,12 +4002,10 @@ export const Content: FC<{
     oceanUniforms.surfaceFoamSize.value = surfaceFoamControls.surfaceFoamSize
     oceanUniforms.surfaceFoamRegionEnabled.value =
       surfaceFoamControls.regionEnabled ? 1 : 0
-    oceanUniforms.surfaceFoamRegionScale.value =
-      surfaceFoamControls.regionScale
+    oceanUniforms.surfaceFoamRegionScale.value = surfaceFoamControls.regionScale
     oceanUniforms.surfaceFoamRegionThreshold.value =
       surfaceFoamControls.regionThreshold
-    oceanUniforms.surfaceFoamRegionDrift.value =
-      surfaceFoamControls.regionDrift
+    oceanUniforms.surfaceFoamRegionDrift.value = surfaceFoamControls.regionDrift
   }, [oceanUniforms, surfaceFoamControls])
 
   useEffect(() => {
@@ -3879,10 +4098,7 @@ export const Content: FC<{
       }
     }
     if (presetControls.preset === 'custom') return
-    applyWaterproPreset(
-      presetControls.preset as WaterproPresetName,
-      presetBag
-    )
+    applyWaterproPreset(presetControls.preset as WaterproPresetName, presetBag)
   }, [presetBag, presetControls.preset])
 
   useEffect(() => {
@@ -3992,7 +4208,29 @@ export const Content: FC<{
     }
   }, [disableOcean, oceanManager, renderer, splatScene, overlayScene])
 
+  // Last drawing-buffer size seen by the render loop, to detect mid-resize frames.
+  const lastDrawSizeRef = useRef({ w: 0, h: 0 })
+  // Diagnostic: one-time confirmation the size gate opened and a frame rendered
+  // (tells a "gate never opens" regression apart from a downstream compute hang).
+  const firstRenderLoggedRef = useRef(false)
   useFrame(() => {
+    // Size gate (all phases). Never render while the canvas is at the 300×150 HTML
+    // default or mid-resize: during those frames the renderer's colour and
+    // depth/stencil attachments can momentarily differ in size (colour follows the
+    // canvas element immediately, the depth buffer only reallocates on the next
+    // render), which is a fatal WebGPU validation error ("attachment sizes differ")
+    // that never recovers on Firefox and floods Chrome with dropped frames. Waiting
+    // for a real, stable size means the depth buffer is first allocated at the
+    // correct size. The splash covers the few skipped frames. `<= 300 && <= 150`
+    // catches the pre-resize default; the stability check catches live resizes.
+    const canvas = renderer.domElement
+    const w = canvas.width
+    const h = canvas.height
+    const last = lastDrawSizeRef.current
+    const stable = w === last.w && h === last.h
+    lastDrawSizeRef.current = { w, h }
+    if ((w <= 300 && h <= 150) || !stable) return
+
     // Hold the beauty post-render during the load-time compileAsync prewarm so
     // the first geometried-chunk draw can't compile the heavy materials
     // synchronously before the async warm lands (which would stall the chunk
@@ -4002,6 +4240,10 @@ export const Content: FC<{
     // the ocean phase (atmosphere-only, or Storybook before the ocean mounts)
     // this is a no-op.
     if (!disableOcean && oceanManager != null && !prewarmDone) return
+    if (!firstRenderLoggedRef.current) {
+      firstRenderLoggedRef.current = true
+      console.log(`[render] first frame at ${w}x${h}`)
+    }
     postProcessingData.postProcessing.render()
   }, 1)
 
@@ -4058,7 +4300,9 @@ export const Content: FC<{
         enabled={cameraMode !== 'fps'}
         minDistance={cameraControls.minDistance}
         maxDistance={cameraControls.maxDistance}
-        autoRotate={cameraMode !== 'fps' && (autoRotate ?? cameraControls.autoOrbit)}
+        autoRotate={
+          cameraMode !== 'fps' && (autoRotate ?? cameraControls.autoOrbit)
+        }
         autoRotateSpeed={cameraControls.orbitSpeed}
       />
       {/* Unmounted entirely in FPS mode so its placement/fly logic can't fight
@@ -4226,7 +4470,7 @@ export const Content: FC<{
       {!disableOcean && (
         <Suspense fallback={null}>
           <InstallationRig
-            url="public/hregg_pivot.glb"
+            url='public/hregg_pivot.glb'
             anchor={rigAnchor}
             scale={1}
             heightOffset={oceanFrameControls.seaLevelOffset}
@@ -4269,7 +4513,7 @@ export const Content: FC<{
           args={{
             apiToken: ionToken,
             assetId: terrainAssetId,
-            autoRefreshToken: true,
+            autoRefreshToken: true
           }}
         />
         <TilesPlugin plugin={TileMaterialReplacementPlugin} />
@@ -4309,11 +4553,12 @@ export const Content: FC<{
 
 interface StoryArgs {}
 
-// Staged load. Mounting the atmosphere, the (heavy, cloud-reflection/shadow-
-// augmented) ocean, and the cloud shell all on the first frame makes the ocean
-// pipeline compile race the atmosphere LUT compute — the LUT loses and the sky
-// never resolves (permanent black/white). So keep the ocean UNMOUNTED until the
-// LUT has finished, then mount it. Readiness is polled from real state
+// Staged load. Keep the ocean UNMOUNTED until the atmosphere LUTs are ready,
+// then mount it — the atmosphere-phase scene stays minimal so its sky/post
+// pipeline compiles don't pile onto the ocean chunk-builder spin-up, and the
+// reveal order stays deterministic. (The LUTs are baked textures fetched at
+// module import — see BakedAtmosphereLUT.ts — not a GPU compute anymore, so
+// readiness is fetch completion.) Readiness is polled from real state
 // (lutNode.currentVersion / .updating), not a timer — mirrors the standalone
 // (examples/ocean-globe-waterpro-demo/main.tsx) and the project's no-timer rule.
 // The 8 s fallback is only a safety net so a stuck probe can't hide the ocean
@@ -4380,7 +4625,7 @@ export const Story: StoryFC<{}, StoryArgs> = () => {
           // (~0.4 m) as the camera moves; thin meshes like cables show it worst.
           r.highPrecision = true
           r.library.addLight(AtmosphereLightNode, AtmosphereLight)
-        },
+        }
       }}
     >
       <Content

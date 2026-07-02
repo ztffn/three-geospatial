@@ -2,25 +2,17 @@
 // Mounts the storybook story's Content component inside a fullscreen
 // react-three-fiber Canvas backed by WebGPURenderer — no Storybook chrome,
 // no 85vw side panel. Holds a loading splash over the canvas until the
-// atmosphere LUT compute and ocean chunk-builder pool both report ready;
+// baked atmosphere LUTs and the ocean chunk-builder pool both report ready;
 // no fixed timer, no hope-based reveal. Also renders the digital-twin DOM
 // overlay siblings: the top-left Huma brand mark (BrandMark, ported from the
 // humatopia-frontend sidebar), the live MET conditions HUD + forecast scrubber
 // + camera/scenario panels (DigitalTwinUI, fed by the active scene location),
 // and a collapsed Leva debug panel.
 
-// requestIdleCallback shim — MUST be the first import. The atmosphere package
-// (AtmosphereLUTNode -> helpers/requestIdleCallback) drives its multi-stage LUT
-// compute via requestIdleCallback, and that helper captures
-// window.requestIdleCallback into a module-level const the first time it
-// evaluates. Under the twin's heavy WebGPU render loop Chrome starves the
-// native idle callback, so the LUT precompute hangs ("Precomputing atmosphere").
-// The shim must therefore be installed BEFORE any atmosphere code evaluates —
-// an inline shim here would be too late, because ES module imports are hoisted
-// and evaluated before this module's own body runs. Keeping it as the first
-// import guarantees its module body wins the capture. See installIdleCallbackShim.ts.
-import './installIdleCallbackShim'
-
+// NOTE: the atmosphere LUTs are baked textures fetched at module import (see
+// storybook-webgpu/src/ocean/BakedAtmosphereLUT.ts, injected into the
+// AtmosphereContext by the story) — the runtime AtmosphereLUTNode GPU compute
+// and the requestIdleCallback shim it required no longer exist in this app.
 import { Canvas, useThree } from '@react-three/fiber'
 import { Leva } from 'leva'
 import {
@@ -84,6 +76,14 @@ const toMarker = (p: ShadowFleetPosition): VesselMarker => ({
   courseOverGround: p.courseOverGround,
   speedOverGround: p.speedOverGround
 })
+
+// TEMP boot-trace diagnostics (remove once the Firefox init stall is solved).
+// The whole readiness pipeline lives INSIDE <Canvas>, so when the async gl
+// factory never resolves the console is silent — these logs bracket each boot
+// stage so a stall pinpoints itself: module eval → adapter probe → renderer
+// construction → renderer.init() → readiness refs from Content.
+// eslint-disable-next-line no-console
+console.log('[boot] main.tsx module evaluated')
 
 const rootElement = document.getElementById('root')
 const unsupportedElement = document.getElementById('unsupported')
@@ -166,12 +166,20 @@ async function detectWebGPU(): Promise<boolean> {
   }
 }
 
+// Reveal the static "WebGPU unsupported" overlay from index.html. Idempotent —
+// called both from the up-front adapter probe (no adapter at all) and from the
+// runtime device-lost handler (adapter existed but the device died mid-run).
+function showUnsupported(): void {
+  unsupportedElement?.classList.add('show')
+}
+
 // Two-phase readiness orchestration:
 //
-//   Phase 'atmosphere': Ocean is NOT mounted. The atmosphere LUT compute
-//     pipeline runs without GPU contention from ocean chunk-builder workers
-//     or the IFFT wave simulation. We poll lutNode.currentVersion +
-//     lutNode.updating to detect completion.
+//   Phase 'atmosphere': Ocean is NOT mounted. The baked atmosphere LUTs
+//     download and upload, and the sky/post pipelines take their first compile,
+//     without contention from ocean chunk-builder workers or the IFFT wave
+//     simulation. We poll lutNode.currentVersion + lutNode.updating (fetch
+//     completion on the baked node) to detect readiness.
 //
 //   Phase 'ocean': LUTs are done. Mount the ocean. Poll the OceanChunkManager
 //     until the worker pool has actually delivered chunks (chunks_ dict has
@@ -212,10 +220,20 @@ const ReadinessProbe: FC<{
         cb(performance.now() - phaseStart)
       })
     }
+    let diagFrames = 0
     const tick = (): void => {
       if (cancelled) return
       if (phase === 'atmosphere' && !reportedAtmRef.current) {
         const lut = (refs.atmosphereContext as any)?.lutNode
+        // Diagnostic (~1/s): surface LUT progress so a stuck atmosphere phase
+        // can be told apart from a slow one. The LUTs are fetched baked
+        // textures now — currentVersion stuck at null means the .bin fetch
+        // never resolved (network/404), not a GPU stall. Remove once stable.
+        if (diagFrames++ % 60 === 0) {
+          console.log(
+            `[atmosphere-probe] lut=${lut != null} currentVersion=${lut?.currentVersion ?? 'null'} updating=${lut?.updating}`
+          )
+        }
         const atmosphereReady =
           lut != null && lut.currentVersion != null && lut.updating === false
         stableFrames = atmosphereReady ? stableFrames + 1 : 0
@@ -263,8 +281,9 @@ const ReadinessProbe: FC<{
 // Electron wrapper) — leaving the backbuffer + depth attachment at the 300x150
 // canvas default while the color attachment is retina-fullscreen, which trips
 // the WebGPU "depthBuffer size does not match color attachment" validation and
-// blacks out the scene. The canvas is position:fixed inset:0, so window.inner*
-// IS the canvas size; re-applying setSize/setDpr on the events that matter
+// blacks out the scene. The canvas container fills #root, which is styled
+// 100%×100% of the viewport (index.html), so window.inner* IS the canvas
+// size; re-applying setSize/setDpr on the events that matter
 // (rAF after mount, window 'resize' — Electron OS-fullscreen fires this, not
 // document 'fullscreenchange' — and 'fullscreenchange' for the browser path)
 // repairs the whole size pipeline: backbuffer (gl.setSize), the pass node
@@ -308,10 +327,56 @@ const App: FC = () => {
     name: 'Karmøy'
   })
 
-  const handleReadinessRefs = useCallback(
-    (r: ContentReadinessRefs) => setRefs(r),
-    []
-  )
+  const handleReadinessRefs = useCallback((r: ContentReadinessRefs) => {
+    // eslint-disable-next-line no-console
+    console.log('[boot] readiness refs received — Content is mounted')
+    setRefs(r)
+  }, [])
+
+  // True once R3F has created the renderer (Canvas onCreated). Gates the
+  // Firefox measurement pump below off.
+  const [canvasCreated, setCanvasCreated] = useState(false)
+
+  // WORKAROUND (Firefox): R3F invokes the async gl factory only after
+  // react-use-measure reports a nonzero container size. Firefox drops the
+  // ResizeObserver's initial notification for the container div, and in this
+  // app nothing ever scrolls or resizes to trigger a re-measure — so the
+  // measured state sits at 0×0 forever and the renderer is never constructed
+  // (splash hang with an empty console), even though getBoundingClientRect()
+  // returns the true size (verified via the boot-trace rect log; the
+  // storybook only escapes because its UI chrome generates scroll events).
+  // react-use-measure also re-measures on window 'resize', so pump synthetic
+  // resize events (rAF-paced) until R3F reports the canvas created — the loop
+  // stops on that real signal, not a timer. Harmless where measurement works:
+  // re-measuring an unchanged layout compares equal and triggers nothing.
+  useEffect(() => {
+    if (canvasCreated) return
+    let raf = 0
+    const pump = (): void => {
+      window.dispatchEvent(new Event('resize'))
+      raf = requestAnimationFrame(pump)
+    }
+    raf = requestAnimationFrame(pump)
+    return () => cancelAnimationFrame(raf)
+  }, [canvasCreated])
+
+  // TEMP boot-trace: R3F only invokes the gl factory once its container div
+  // measures a nonzero size. If `[boot] gl: constructing` never appears, this
+  // reports what the container actually measured vs the window (a nonzero
+  // rect here with no gl log means the measurement library, not layout, is
+  // what's stuck).
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const container = rootElement?.querySelector('div')
+      const rect = container?.getBoundingClientRect()
+      // eslint-disable-next-line no-console
+      console.log(
+        `[boot] container rect after 2s: ${rect?.width ?? '?'}x${rect?.height ?? '?'} ` +
+          `(window ${window.innerWidth}x${window.innerHeight})`
+      )
+    }, 2000)
+    return () => clearTimeout(id)
+  }, [])
 
   const handleLocationChange = useCallback(
     (longitude: number, latitude: number, name: string) =>
@@ -693,7 +758,7 @@ const App: FC = () => {
 
   const handleAtmosphereReady = useCallback((elapsedMs: number) => {
     // eslint-disable-next-line no-console
-    console.log(`[ready] atmosphere LUTs computed in ${elapsedMs.toFixed(0)}ms`)
+    console.log(`[ready] atmosphere LUTs loaded in ${elapsedMs.toFixed(0)}ms`)
     setPhase('ocean')
   }, [])
 
@@ -707,22 +772,95 @@ const App: FC = () => {
     <>
       <Canvas
         camera={{ fov: 45, near: 0.1, far: 1e8 }}
-        style={{ position: 'fixed', inset: 0, background: '#101820' }}
-        // Apply resize immediately (no debounce) so the renderer tracks late
-        // fullscreen transitions without a stale-size window; ResizeSync below
-        // is the belt to this suspenders.
-        resize={{ debounce: 0 }}
+        // No positioning override: R3F's container div defaults to
+        // position:relative + 100%×100%, and #root is styled 100%×100% in
+        // index.html, so the canvas is viewport-sized without it. The previous
+        // `position:fixed; inset:0` style rode on R3F's size-measured div, and
+        // Firefox never reported a nonzero size for it — R3F's internal gate
+        // (containerRect > 0) then never invoked the gl factory, so the app
+        // hung on the splash with an empty console. This default-styled div
+        // is exactly the configuration the storybook WebGPUCanvas uses, which
+        // measures fine in Firefox. (No `resize` override either: R3F's
+        // default resize debounce is already 0 — the old prop only changed
+        // scroll debounce, and ResizeSync below owns the fullscreen repair.)
+        style={{ background: '#101820' }}
+        // Fires once the async gl factory has resolved and the R3F store is up
+        // — but BEFORE (and independent of) the children, which R3F wraps in a
+        // single internal Suspense. Stops the Firefox measurement pump above;
+        // the log doubles as boot-trace (present without the Content render
+        // marker ⇒ a child hook is suspending forever).
+        onCreated={() => {
+          // eslint-disable-next-line no-console
+          console.log('[boot] canvas created (gl resolved, store ready)')
+          setCanvasCreated(true)
+        }}
         gl={async props => {
+          // eslint-disable-next-line no-console
+          console.log('[boot] gl: constructing WebGPURenderer')
           const renderer = new WebGPURenderer({
             ...(props as any),
-            antialias: true,
+            // No canvas MSAA. The final present is a fullscreen post-processing
+            // quad (all scene passes are samples:0), so canvas multisampling
+            // antialiases nothing — but it DOES allocate an MSAA colour buffer
+            // that resolves into the canvas texture. During the mount→fullscreen
+            // resize race those two can momentarily differ in size (e.g. a stale
+            // 300×150 colour buffer resolving into a retina canvas), which is a
+            // fatal WebGPU validation error ("Attachments have differing sizes")
+            // that blacks the scene — hit reliably on Firefox's compat adapter.
+            // Dropping the resolve target makes that mismatch structurally
+            // impossible; worst case is a single wrong-size frame under the splash.
+            antialias: false,
             logarithmicDepthBuffer: true
           })
-          await renderer.init()
+          // Watchdog (diagnostic only, gates nothing): renderer.init() awaits
+          // requestAdapter/requestDevice/context.configure — if one of those
+          // never settles, nothing downstream ever runs and the console stays
+          // silent. Fire a marker so the stall is visible and attributable.
+          const initWatchdog = setTimeout(() => {
+            console.warn(
+              '[boot] renderer.init() still pending after 10s — the WebGPU ' +
+                'adapter/device request or canvas configure has stalled'
+            )
+          }, 10_000)
+          try {
+            await renderer.init()
+          } catch (error) {
+            // Fatal and unambiguous, same class as device.lost below: surface
+            // the static unsupported overlay instead of a silent forever-splash.
+            console.error('[boot] renderer.init() failed:', error)
+            showUnsupported()
+            throw error
+          } finally {
+            clearTimeout(initWatchdog)
+          }
+          // eslint-disable-next-line no-console
+          console.log('[boot] gl: renderer.init() resolved')
           renderer.highPrecision = true
           renderer.outputColorSpace = SRGBColorSpace
           renderer.toneMapping = NoToneMapping
           renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
+          // Graceful degradation: if the GPU device is lost (unsupported/broken
+          // WebGPU on some browsers), reveal the static "unsupported" overlay
+          // instead of hanging forever on a black splash. Device loss is the one
+          // unambiguous fatal signal; transient validation errors are left to log.
+          const device = (
+            renderer as unknown as { backend?: { device?: GPUDevice } }
+          ).backend?.device
+          if (device != null) {
+            void device.lost.then(info => {
+              console.error('[webgpu] device lost:', info.reason, info.message)
+              showUnsupported()
+            })
+            // TEMP diagnostic: log uncaptured WebGPU errors as PLAIN STRINGS so
+            // console exports carry the full text (Firefox's export flattens
+            // error objects — the storybook capture lost the WGSL validation
+            // message this way). Firefox rejects one of our compute shaders
+            // (wave sim) that Chrome accepts; this pins down which and why.
+            device.addEventListener('uncapturederror', event => {
+              const error = (event as GPUUncapturedErrorEvent).error
+              console.error(`[webgpu] uncaptured: ${error?.message ?? error}`)
+            })
+          }
           return renderer as unknown as Renderer
         }}
       >
@@ -955,7 +1093,7 @@ const BrandMark: FC = () => (
 // loader reports ready. No spinning while ready — display:none after the fade
 // so the spinner doesn't burn cycles in the background.
 const PHASE_STATUS: Record<Phase, string> = {
-  atmosphere: 'Precomputing atmosphere…',
+  atmosphere: 'Loading atmosphere…',
   ocean: 'Building ocean…',
   ready: 'Ready'
 }
@@ -1012,8 +1150,12 @@ const Splash: FC<{ visible: boolean; phase: Phase }> = ({ visible, phase }) => {
 }
 
 void detectWebGPU().then(available => {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[boot] webgpu adapter probe: ${available ? 'ok' : 'unavailable'}`
+  )
   if (!available) {
-    unsupportedElement?.classList.add('show')
+    showUnsupported()
     return
   }
   // Surface any worker-side throws routed back via the synthetic-message
