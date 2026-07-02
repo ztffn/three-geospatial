@@ -433,6 +433,17 @@ const App: FC = () => {
     setRefs(r)
   }, [])
 
+  // TEMP diagnostic: mirror readiness into the tab title. Browser chrome
+  // repaints independently of the tab's refresh driver, so on the stalled
+  // Firefox the title flips to ✓ the moment the app is actually ready even
+  // while the tab's own pixels are stale — a user-visible readiness signal
+  // that needs no console.
+  useEffect(() => {
+    if (phase === 'ready') {
+      document.title = '✓ Humatopia World Twin'
+    }
+  }, [phase])
+
   // Single renderer for the app's lifetime. R3F re-runs its configure pass on
   // every measured-size change, and with an async gl FACTORY each re-run
   // constructs ANOTHER WebGPURenderer on the same canvas — observed in Chrome:
@@ -1250,6 +1261,14 @@ const BrandMark: FC = () => (
 // milestones (what the loader is doing this phase). Fades out (500 ms) once the
 // loader reports ready. No spinning while ready — display:none after the fade
 // so the spinner doesn't burn cycles in the background.
+//
+// Deliberately plain DOM + CSS. On the pathological stalled-refresh-driver
+// Firefox (see StalledFrameDriver) NOTHING a page does reaches the screen —
+// DOM paints, CSS transitions, WAAPI starts, and even 2D-canvas presentation
+// were each tried and all ride the dead driver; only animations registered
+// with the compositor at the initial paint keep running, which is exactly
+// this CSS spinner. The load completes regardless (title flips to ✓) and the
+// first tab switch/interaction repaints everything.
 const PHASE_STATUS: Record<Phase, string> = {
   atmosphere: 'Loading atmosphere…',
   ocean: 'Building ocean…',
