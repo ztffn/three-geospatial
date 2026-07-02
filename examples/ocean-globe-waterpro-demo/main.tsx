@@ -173,6 +173,66 @@ function showUnsupported(): void {
   unsupportedElement?.classList.add('show')
 }
 
+// WORKAROUND (Firefox): R3F creates the renderer only after react-use-measure
+// reports a nonzero container size, and react-use-measure gets its sizes from
+// a ResizeObserver. Firefox drops the spec-mandated initial notification when
+// observation starts, and this page has no scroll/resize/layout activity to
+// ever trigger a re-measure — the measured state sits at 0×0 forever and the
+// app hangs on the splash with an empty console, even though
+// getBoundingClientRect() reports the true size the whole time (verified via
+// the boot-trace rect log; synthetic window-resize events did NOT rescue it).
+// This wrapper re-delivers an initial notification on a rAF after every
+// observe(); react-use-measure re-observes right after its mount effects, so
+// the notification lands once its internal mounted flag accepts updates. Its
+// callback ignores the entries and re-reads getBoundingClientRect, so empty
+// entries are valid. Scoped to R3F's one measure hook via the Canvas
+// `resize.polyfill` option — no global patching.
+class MeasureResizeObserver {
+  // TEMP boot-trace counters, printed by the 2s diagnostic in App: prove the
+  // polyfill was constructed / attached / delivered without needing the logs
+  // of each step to survive a console export.
+  static constructed = 0
+  static observed = 0
+  static delivered = 0
+
+  private readonly native: ResizeObserver
+  private readonly callback: ResizeObserverCallback
+  private timer: ReturnType<typeof setTimeout> | undefined
+
+  constructor(callback: ResizeObserverCallback) {
+    MeasureResizeObserver.constructed++
+    this.callback = callback
+    this.native = new ResizeObserver(callback)
+  }
+
+  observe(target: Element, options?: ResizeObserverOptions): void {
+    MeasureResizeObserver.observed++
+    this.native.observe(target, options)
+    clearTimeout(this.timer)
+    // setTimeout, NOT requestAnimationFrame: every mechanism that silently
+    // failed to unstick Firefox here (the earlier resize-event pump, the first
+    // polyfill draft) scheduled its work via rAF, while every observable
+    // diagnostic ran off timers — suggesting FF does not service rAF on this
+    // page before the render loop exists. Timers are unthrottled for a
+    // visible foreground tab.
+    this.timer = setTimeout(() => {
+      MeasureResizeObserver.delivered++
+      // eslint-disable-next-line no-console
+      console.log('[boot] measure polyfill: delivering initial notification')
+      this.callback([], this.native)
+    }, 0)
+  }
+
+  unobserve(target: Element): void {
+    this.native.unobserve(target)
+  }
+
+  disconnect(): void {
+    clearTimeout(this.timer)
+    this.native.disconnect()
+  }
+}
+
 // Two-phase readiness orchestration:
 //
 //   Phase 'atmosphere': Ocean is NOT mounted. The baked atmosphere LUTs
@@ -193,11 +253,16 @@ function showUnsupported(): void {
 type Phase = 'atmosphere' | 'ocean' | 'ready'
 
 // Stability debounce: require the readiness condition to hold for this many
-// consecutive frames before reporting. Then wait one additional rAF tick so
-// the first render-after-ready completes (gives WebGPU shader/material
-// compilation a frame to finish — chunks have geometry once Busy=false but
-// the pipeline compiles on first draw). 5 frames at 60 Hz is ~83 ms.
-const STABLE_FRAMES = 5
+// consecutive polls before reporting, then wait one more poll interval so the
+// first render-after-ready completes (chunks have geometry once Busy=false
+// but the pipeline compiles on first draw). The probe polls on a TIMER, not
+// requestAnimationFrame: Firefox deprioritizes the refresh driver for this
+// tab until first user interaction (observed rAF at 0–4.5 fps while timers
+// run normally), and an rAF-scheduled probe then never advances the load.
+// Timer cadence + real-state checks keeps the no-timer rule intact — timers
+// schedule the POLLING, readiness is still actual subsystem state.
+const PROBE_INTERVAL_MS = 100
+const STABLE_POLLS = 5
 
 const ReadinessProbe: FC<{
   refs: ContentReadinessRefs | null
@@ -210,18 +275,18 @@ const ReadinessProbe: FC<{
   useEffect(() => {
     if (refs == null) return
     let cancelled = false
-    let stableFrames = 0
+    let stablePolls = 0
     const phaseStart = performance.now()
     const fire = (cb: (ms: number) => void): void => {
-      // One extra rAF after the stability window so the first render-after-
-      // ready has completed (shader/material compile during first draw).
-      requestAnimationFrame(() => {
+      // One extra interval after the stability window so the first render-
+      // after-ready has completed (shader/material compile during first draw).
+      setTimeout(() => {
         if (cancelled) return
         cb(performance.now() - phaseStart)
-      })
+      }, PROBE_INTERVAL_MS)
     }
-    let diagFrames = 0
-    const tick = (): void => {
+    let diagPolls = 0
+    const id = setInterval(() => {
       if (cancelled) return
       if (phase === 'atmosphere' && !reportedAtmRef.current) {
         const lut = (refs.atmosphereContext as any)?.lutNode
@@ -229,18 +294,18 @@ const ReadinessProbe: FC<{
         // can be told apart from a slow one. The LUTs are fetched baked
         // textures now — currentVersion stuck at null means the .bin fetch
         // never resolved (network/404), not a GPU stall. Remove once stable.
-        if (diagFrames++ % 60 === 0) {
+        if (diagPolls++ % 10 === 0) {
           console.log(
             `[atmosphere-probe] lut=${lut != null} currentVersion=${lut?.currentVersion ?? 'null'} updating=${lut?.updating}`
           )
         }
         const atmosphereReady =
           lut != null && lut.currentVersion != null && lut.updating === false
-        stableFrames = atmosphereReady ? stableFrames + 1 : 0
-        if (stableFrames >= STABLE_FRAMES) {
+        stablePolls = atmosphereReady ? stablePolls + 1 : 0
+        if (stablePolls >= STABLE_POLLS) {
           reportedAtmRef.current = true
+          clearInterval(id)
           fire(onAtmosphereReady)
-          return
         }
       } else if (phase === 'ocean' && !reportedOceanRef.current) {
         const mgr = refs.getOceanManager()
@@ -256,22 +321,57 @@ const ReadinessProbe: FC<{
           mgr.builder_.Busy === false &&
           chunkCount > 0 &&
           (refs.isPrewarmed?.() ?? true)
-        stableFrames = oceanReady ? stableFrames + 1 : 0
-        if (stableFrames >= STABLE_FRAMES) {
+        stablePolls = oceanReady ? stablePolls + 1 : 0
+        if (stablePolls >= STABLE_POLLS) {
           reportedOceanRef.current = true
+          clearInterval(id)
           fire(onOceanReady)
-          return
         }
       } else {
-        return
+        clearInterval(id)
       }
-      requestAnimationFrame(tick)
-    }
-    requestAnimationFrame(tick)
+    }, PROBE_INTERVAL_MS)
     return () => {
       cancelled = true
+      clearInterval(id)
     }
   }, [refs, phase, onAtmosphereReady, onOceanReady])
+  return null
+}
+
+// Keeps the loading pipeline advancing when the browser withholds animation
+// frames. Firefox deprioritizes a tab's refresh driver until first user
+// interaction (observed: rAF at 0–4.5 fps in a visible, focused tab while
+// timers/fetch/WebGPU run normally), and EVERYTHING in the load rides the
+// frame loop — chunk-builder draining, the wave-sim warm-up, the prewarm's
+// post render. This watchdog samples whether any real rAF fired in the last
+// interval and, only when none did, drives one R3F frame manually via
+// advance(). It does nothing wherever rAF is healthy (Chrome, FF after a
+// click), and is mounted only while the splash is up — after reveal the app
+// accepts the browser's own frame pacing.
+const StalledFrameDriver: FC<{ active: boolean }> = ({ active }) => {
+  const advance = useThree(state => state.advance)
+  useEffect(() => {
+    if (!active) return
+    let rafSeen = false
+    let raf = 0
+    const bump = (): void => {
+      rafSeen = true
+      raf = requestAnimationFrame(bump)
+    }
+    raf = requestAnimationFrame(bump)
+    const id = setInterval(() => {
+      if (!rafSeen) {
+        // Same unit R3F's own loop passes: the DOMHighResTimeStamp in ms.
+        advance(performance.now())
+      }
+      rafSeen = false
+    }, PROBE_INTERVAL_MS)
+    return () => {
+      clearInterval(id)
+      cancelAnimationFrame(raf)
+    }
+  }, [active, advance])
   return null
 }
 
@@ -333,64 +433,56 @@ const App: FC = () => {
     setRefs(r)
   }, [])
 
-  // True once R3F has created the renderer (Canvas onCreated). Gates the
-  // Firefox measurement pump below off.
-  const [canvasCreated, setCanvasCreated] = useState(false)
-
   // Single renderer for the app's lifetime. R3F re-runs its configure pass on
   // every measured-size change, and with an async gl FACTORY each re-run
-  // constructs ANOTHER WebGPURenderer on the same canvas — observed in Chrome
-  // under the measurement pump below: four constructions, one of which kept a
-  // 300×150 depth buffer and spammed "attachment size" validation errors every
-  // frame until a real window resize. Memoizing the construction promise makes
-  // every configure resolve to the same instance.
+  // constructs ANOTHER WebGPURenderer on the same canvas — observed in Chrome:
+  // four constructions, one of which kept a 300×150 depth buffer and spammed
+  // "attachment size" validation errors every frame until a real window
+  // resize. Memoizing the construction promise makes every configure resolve
+  // to the same instance.
   const rendererPromiseRef = useRef<Promise<Renderer> | null>(null)
-  // Set on the factory's first invocation — the earliest proof that R3F's size
-  // measurement landed, and the pump's stop signal.
-  const glStartedRef = useRef(false)
 
-  // WORKAROUND (Firefox): R3F invokes the async gl factory only after
-  // react-use-measure reports a nonzero container size. Firefox drops the
-  // ResizeObserver's initial notification for the container div, and in this
-  // app nothing ever scrolls or resizes to trigger a re-measure — so the
-  // measured state sits at 0×0 forever and the renderer is never constructed
-  // (splash hang with an empty console), even though getBoundingClientRect()
-  // returns the true size (verified via the boot-trace rect log; the
-  // storybook only escapes because its UI chrome generates scroll events).
-  // react-use-measure also re-measures on window 'resize', so pump synthetic
-  // resize events (rAF-paced) until the gl factory is invoked — the loop stops
-  // on that real signal (ref above; canvasCreated is the backstop), not a
-  // timer. Stopping at factory-invocation rather than onCreated matters:
-  // pumping through the async init window re-triggers R3F's configure pass
-  // per event (the multi-renderer bug the memoized factory also guards).
+  // TEMP boot-trace: Firefox sometimes never services requestAnimationFrame
+  // for this tab (rafTicks=0 while timers, fetch, and WebGPU init all run) —
+  // which freezes the app entirely: the render loop, the readiness probes,
+  // and even ResizeObserver notification delivery are all refresh-driver
+  // work. This samples the rAF tick counter at 2s/6s and again on the first
+  // user interaction (Firefox wakes a throttled refresh driver on
+  // interaction), together with visibility/focus so a hidden-tab throttle is
+  // distinguishable from a genuinely stalled driver.
   useEffect(() => {
-    if (canvasCreated) return
+    let rafTicks = 0
     let raf = 0
-    const pump = (): void => {
-      if (glStartedRef.current) return
-      window.dispatchEvent(new Event('resize'))
-      raf = requestAnimationFrame(pump)
+    const tick = (): void => {
+      rafTicks++
+      raf = requestAnimationFrame(tick)
     }
-    raf = requestAnimationFrame(pump)
-    return () => cancelAnimationFrame(raf)
-  }, [canvasCreated])
-
-  // TEMP boot-trace: R3F only invokes the gl factory once its container div
-  // measures a nonzero size. If `[boot] gl: constructing` never appears, this
-  // reports what the container actually measured vs the window (a nonzero
-  // rect here with no gl log means the measurement library, not layout, is
-  // what's stuck).
-  useEffect(() => {
-    const id = setTimeout(() => {
-      const container = rootElement?.querySelector('div')
-      const rect = container?.getBoundingClientRect()
+    raf = requestAnimationFrame(tick)
+    const report = (label: string): void => {
       // eslint-disable-next-line no-console
       console.log(
-        `[boot] container rect after 2s: ${rect?.width ?? '?'}x${rect?.height ?? '?'} ` +
-          `(window ${window.innerWidth}x${window.innerHeight})`
+        `[boot] ${label}: rafTicks=${rafTicks} ` +
+          `visibility=${document.visibilityState} hasFocus=${document.hasFocus()} ` +
+          `polyfill c/o/d=${MeasureResizeObserver.constructed}/${MeasureResizeObserver.observed}/${MeasureResizeObserver.delivered}`
       )
-    }, 2000)
-    return () => clearTimeout(id)
+    }
+    const t1 = setTimeout(() => report('2s'), 2000)
+    const t2 = setTimeout(() => report('6s'), 6000)
+    const onInteract = (): void => {
+      // Sample twice: at the interaction, and 500ms later — if the driver
+      // woke, the delta shows it.
+      report('interaction')
+      setTimeout(() => report('interaction+500ms'), 500)
+    }
+    window.addEventListener('pointerdown', onInteract, { once: true })
+    window.addEventListener('keydown', onInteract, { once: true })
+    return () => {
+      clearTimeout(t1)
+      clearTimeout(t2)
+      cancelAnimationFrame(raf)
+      window.removeEventListener('pointerdown', onInteract)
+      window.removeEventListener('keydown', onInteract)
+    }
   }, [])
 
   const handleLocationChange = useCallback(
@@ -799,22 +891,22 @@ const App: FC = () => {
         // default resize debounce is already 0 — the old prop only changed
         // scroll debounce, and ResizeSync below owns the fullscreen repair.)
         style={{ background: '#101820' }}
-        // Fires once the async gl factory has resolved and the R3F store is up
-        // — but BEFORE (and independent of) the children, which R3F wraps in a
-        // single internal Suspense. Stops the Firefox measurement pump above;
-        // the log doubles as boot-trace (present without the Content render
-        // marker ⇒ a child hook is suspending forever).
+        // Firefox: guarantee the initial size notification R3F's renderer
+        // creation gates on — see MeasureResizeObserver above.
+        resize={{ polyfill: MeasureResizeObserver }}
+        // TEMP boot-trace: fires once the async gl factory has resolved and
+        // the R3F store is up — but BEFORE (and independent of) the children,
+        // which R3F wraps in a single internal Suspense (present without the
+        // Content render marker ⇒ a child hook is suspending forever).
         onCreated={() => {
           // eslint-disable-next-line no-console
           console.log('[boot] canvas created (gl resolved, store ready)')
-          setCanvasCreated(true)
         }}
         // NOT an async closure itself: R3F re-invokes this factory whenever a
         // measured-size change re-runs its configure pass — the memoized
         // promise below makes every invocation resolve to the ONE renderer
         // (see rendererPromiseRef). The construction body runs exactly once.
         gl={props => {
-          glStartedRef.current = true
           rendererPromiseRef.current ??= (async () => {
             // eslint-disable-next-line no-console
             console.log('[boot] gl: constructing WebGPURenderer')
@@ -971,6 +1063,7 @@ const App: FC = () => {
           onAtmosphereReady={handleAtmosphereReady}
           onOceanReady={handleOceanReady}
         />
+        <StalledFrameDriver active={phase !== 'ready'} />
         <ResizeSync />
       </Canvas>
       <BrandMark />

@@ -4164,14 +4164,23 @@ export const Content: FC<{
     }
 
     const run = async (): Promise<void> => {
-      // Poll real state (no timer) for the first chunk to carry geometry, so the
-      // compile warms the exact vertex-layout pipeline the live draw will use.
+      // Poll real state for the first chunk to carry geometry, so the compile
+      // warms the exact vertex-layout pipeline the live draw will use. Timer
+      // cadence, NOT requestAnimationFrame: Firefox withholds animation frames
+      // from this tab until first user interaction, and an rAF-scheduled poll
+      // then never advances the load (the readiness itself is still real
+      // subsystem state, per the no-timer rule).
       await new Promise<void>(resolve => {
-        const tick = (): void => {
-          if (cancelled || hasChunkGeometry()) resolve()
-          else requestAnimationFrame(tick)
+        if (cancelled || hasChunkGeometry()) {
+          resolve()
+          return
         }
-        tick()
+        const id = setInterval(() => {
+          if (cancelled || hasChunkGeometry()) {
+            clearInterval(id)
+            resolve()
+          }
+        }, 100)
       })
       if (cancelled) return
 

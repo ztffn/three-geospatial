@@ -150,6 +150,32 @@ the reveal frame) and then pauses until the chunk builder drains — polling
 `[ocean-builder]` worker-pool log: FF clamps `hardwareConcurrency` to 2 under
 privacy.resistFingerprinting, which would silently shrink the pool to 1.
 
+### A5. Firefox boot — the refresh driver is the real root cause (2026-07-02)
+Firefox deprioritizes this tab's refresh driver until first user interaction:
+measured rAF at **0–4.5 fps in a visible, focused tab** while timers, fetch,
+and WebGPU init all ran normally (`[boot] 2s: rafTicks=9 …`, jumping to
+~36 fps immediately after a click). Since the whole load pipeline rode
+`requestAnimationFrame` — the render loop, worker-result draining, the
+readiness probes, and even ResizeObserver notification delivery — a withheld
+driver froze the app at any of several stages, which is why earlier runs
+"randomly" worked (the driver happened to be awake) or hung. Fixes in the
+twin's `main.tsx` + the story, all inert when rAF is healthy:
+
+- `MeasureResizeObserver` (Canvas `resize.polyfill`): re-delivers the initial
+  size notification via **setTimeout** after every `observe()` — R3F's
+  renderer creation gates on that measurement, and FF never delivered it
+  (rAF-scheduled delivery also failed; timers are not throttled).
+- `ReadinessProbe` + the prewarm's chunk-geometry poll now poll on a 100 ms
+  timer cadence instead of rAF loops (readiness is still real subsystem
+  state — timers only schedule the polling).
+- `StalledFrameDriver` (mounted while the splash is up): samples whether any
+  real rAF fired in the last 100 ms and, only when none did, drives one R3F
+  frame via `advance()` — so chunk building/prewarm progress without frames.
+  After reveal the app accepts the browser's own pacing (first interaction
+  wakes FF's driver permanently).
+- The async gl factory stays memoized (single renderer across R3F configure
+  re-runs — the Chrome 4×-renderer/stale-depth-buffer bug).
+
 ### A2. Steady-state frame rate (the recurring `requestAnimationFrame` violations)
 Two distinct things show up as DevTools rAF violations:
 - **1.5–2.4 s spikes** — the one-time WGSL compiles from A (under the splash).
