@@ -27,6 +27,7 @@ REF="${1:-HEAD}"
 # (the .env beside docker-compose.twin.yml on the VPS), not baked into the bundle.
 BARENTSWATCH_CLIENT_ID="${BARENTSWATCH_CLIENT_ID:-}"
 BARENTSWATCH_CLIENT_SECRET="${BARENTSWATCH_CLIENT_SECRET:-}"
+TWIN_ADMIN_TOKEN="${TWIN_ADMIN_TOKEN:-}"
 
 SHORT_SHA="$(git rev-parse --short "$REF")"
 DATE_STR="$(date -u +%Y%m%d)"
@@ -69,11 +70,14 @@ set -euo pipefail
 # the repo. A stale copy (missing the BARENTSWATCH env entries) silently dropped
 # the live AIS layer regardless of .env — the deploy never re-synced it before.
 cp ${BUILD_DIR}/ops/docker-compose.twin.yml ${COMPOSE_DIR}/docker-compose.twin.yml
+mkdir -p ${COMPOSE_DIR}/authoring
+chown 10001:10001 ${COMPOSE_DIR}/authoring
 cd ${COMPOSE_DIR}
 cat > .env <<'ENVEOF'
 TWIN_IMAGE=${IMAGE_BASE}:sha-${SHORT_SHA}
 BARENTSWATCH_CLIENT_ID=${BARENTSWATCH_CLIENT_ID}
 BARENTSWATCH_CLIENT_SECRET=${BARENTSWATCH_CLIENT_SECRET}
+TWIN_ADMIN_TOKEN=${TWIN_ADMIN_TOKEN}
 ENVEOF
 chmod 600 .env
 docker compose -f docker-compose.twin.yml up -d --force-recreate

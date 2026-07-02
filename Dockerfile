@@ -47,7 +47,10 @@ RUN pnpm build:globe-waterpro \
 # inlined into server.cjs by esbuild).
 FROM --platform=linux/amd64 node:22-slim AS runtime
 WORKDIR /app
-RUN groupadd -r app && useradd -r -g app app
+RUN groupadd -r -g 10001 app \
+ && useradd -r -u 10001 -g app app \
+ && mkdir -p /data/authoring \
+ && chown app:app /data/authoring
 
 COPY --from=build --chown=app:app /app/examples/ocean-globe-waterpro-demo/dist ./dist
 COPY --from=build --chown=app:app /app/examples/ocean-globe-waterpro-demo/server/dist/server.cjs ./server.cjs
@@ -57,5 +60,6 @@ EXPOSE 3000
 ENV NODE_ENV=production \
     PORT=3000 \
     HOST=0.0.0.0 \
-    STATIC_DIR=/app/dist
+    STATIC_DIR=/app/dist \
+    TWIN_STORAGE_ROOT=/data/authoring
 CMD ["node", "server.cjs"]

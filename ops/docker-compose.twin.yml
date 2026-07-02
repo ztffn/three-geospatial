@@ -24,6 +24,10 @@ services:
       # container healthy without them (markers simply stay empty).
       BARENTSWATCH_CLIENT_ID: ${BARENTSWATCH_CLIENT_ID:-}
       BARENTSWATCH_CLIENT_SECRET: ${BARENTSWATCH_CLIENT_SECRET:-}
+      TWIN_ADMIN_TOKEN: ${TWIN_ADMIN_TOKEN:-}
+      TWIN_STORAGE_ROOT: /data/authoring
+    volumes:
+      - /opt/huma-twin/authoring:/data/authoring
     healthcheck:
       # Node-based (no wget/curl in the slim runtime image); global fetch on Node 22.
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

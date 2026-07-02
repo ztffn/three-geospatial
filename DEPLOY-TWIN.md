@@ -26,6 +26,9 @@ export TWIN_GMAPS_KEY=$(grep '^STORYBOOK_GOOGLE_MAP_API_KEY=' .env | cut -d= -f2
 # (not build-args): the script writes them into the container's .env on the VPS.
 export BARENTSWATCH_CLIENT_ID=$(grep '^BARENTSWATCH_CLIENT_ID=' .env | cut -d= -f2-)
 export BARENTSWATCH_CLIENT_SECRET=$(grep '^BARENTSWATCH_CLIENT_SECRET=' .env | cut -d= -f2-)
+# Optional — temporary slideshow authoring admin. Runtime-only; the deploy writes
+# it into /opt/huma-twin/.env, and content persists under /opt/huma-twin/authoring.
+export TWIN_ADMIN_TOKEN=$(grep '^TWIN_ADMIN_TOKEN=' .env | cut -d= -f2-)
 # 3.
 ssh-add ~/.ssh/huma-ovh-vps && pnpm deploy:twin
 ```
@@ -34,9 +37,10 @@ The script (`ops/deploy-twin.sh`) does: archive HEAD → ssh to the VPS → buil
 `--load` (LOCAL image — the VPS has GHCR **pull-only**; `--push` fails) →
 compose recreate → `/health` poll. It **syncs `docker-compose.twin.yml` from the
 shipped archive** and **writes `/opt/huma-twin/.env` whole each deploy** — the sha
-pin **plus** the BarentsWatch creds (chmod 600) — so the VPS compose can't drift,
-reboots keep the image, AND the live AIS layer survives every deploy. Build takes
-5–10 min (8 GB RAM + swap; pnpm install dominates).
+pin **plus** the BarentsWatch creds and authoring admin token (chmod 600) — so
+the VPS compose can't drift, reboots keep the image, AND the live AIS layer and
+authoring login survive every deploy. Build takes 5–10 min (8 GB RAM + swap;
+pnpm install dominates).
 
 ## Host facts
 
@@ -88,6 +92,11 @@ bundle — terrain comes via Ion asset 2275207 — but the script guard requires
    read them, no matter what `.env` held. Tell-tale: `TWIN_IMAGE` interpolates
    but `docker compose config` shows the creds empty. The deploy now re-syncs the
    compose file from the archive every run.
+7. **Authoring admin is runtime-only and file-backed.** `TWIN_ADMIN_TOKEN` unlocks
+   the temporary slideshow admin panel. Uploaded image/video content and metadata
+   live in `/opt/huma-twin/authoring` on the VPS, mounted into the container at
+   `/data/authoring`; it survives browser changes, cookies, and container
+   recreates, but not a VPS disk loss without backups.
 
 ## Large / public runtime assets (R2 — too big for git/staticAssets)
 
