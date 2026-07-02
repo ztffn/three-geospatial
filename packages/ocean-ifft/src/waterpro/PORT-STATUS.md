@@ -74,7 +74,13 @@ waterpro/
 
 - **3 cascades** at length scales `[250 m, 17 m, 5 m]` (matches `wave-constants.LENGTH_SCALES`).
 - **256² resolution per cascade** (configurable).
-- Reuses the existing IFFT WGSL kernels at `resources/shader/IFFT/*.js` — the math is identical to WaterPro's WASM IFFT (standard Tessendorf inverse FFT), so no need to re-implement.
+- IFFT WGSL kernels live in `waves/wave-kernels.ts` as by-value functions
+  (verbatim math from `resources/shader/IFFT/*.js`, which the legacy path still
+  uses) — the originals passed storage buffers as `ptr<storage>` function
+  parameters, which Firefox's Naga validator rejects (core WGSL forbids it;
+  Chrome's Tint tolerated it). The TSL wrappers in `waves/wave-cascade.ts` do
+  the buffer element loads/stores. Math is identical to WaterPro's WASM IFFT
+  (standard Tessendorf inverse FFT), so nothing was re-implemented.
 - **Two superposed Phillips spectra per cascade** (primary swell + secondary cross-swell) — exact transcription of `FIRST_WAVE_DATASET` / `SECOND_WAVE_DATASET` from `wave-constants.js`.
 - Each cascade exposes three storage textures: `displacement` (RGBA HalfFloat), `derivative` (RGBA HalfFloat), `jacobian` (R32Float; stores **turbulence**, *low at crests*).
 - `WaveSimulation.update(dt, t)` runs the full per-frame pipeline (time-evolved spectrum → IFFT ×4 channels → permute → texture merge).

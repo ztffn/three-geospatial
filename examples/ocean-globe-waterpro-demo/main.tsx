@@ -337,6 +337,18 @@ const App: FC = () => {
   // Firefox measurement pump below off.
   const [canvasCreated, setCanvasCreated] = useState(false)
 
+  // Single renderer for the app's lifetime. R3F re-runs its configure pass on
+  // every measured-size change, and with an async gl FACTORY each re-run
+  // constructs ANOTHER WebGPURenderer on the same canvas — observed in Chrome
+  // under the measurement pump below: four constructions, one of which kept a
+  // 300×150 depth buffer and spammed "attachment size" validation errors every
+  // frame until a real window resize. Memoizing the construction promise makes
+  // every configure resolve to the same instance.
+  const rendererPromiseRef = useRef<Promise<Renderer> | null>(null)
+  // Set on the factory's first invocation — the earliest proof that R3F's size
+  // measurement landed, and the pump's stop signal.
+  const glStartedRef = useRef(false)
+
   // WORKAROUND (Firefox): R3F invokes the async gl factory only after
   // react-use-measure reports a nonzero container size. Firefox drops the
   // ResizeObserver's initial notification for the container div, and in this
@@ -346,13 +358,16 @@ const App: FC = () => {
   // returns the true size (verified via the boot-trace rect log; the
   // storybook only escapes because its UI chrome generates scroll events).
   // react-use-measure also re-measures on window 'resize', so pump synthetic
-  // resize events (rAF-paced) until R3F reports the canvas created — the loop
-  // stops on that real signal, not a timer. Harmless where measurement works:
-  // re-measuring an unchanged layout compares equal and triggers nothing.
+  // resize events (rAF-paced) until the gl factory is invoked — the loop stops
+  // on that real signal (ref above; canvasCreated is the backstop), not a
+  // timer. Stopping at factory-invocation rather than onCreated matters:
+  // pumping through the async init window re-triggers R3F's configure pass
+  // per event (the multi-renderer bug the memoized factory also guards).
   useEffect(() => {
     if (canvasCreated) return
     let raf = 0
     const pump = (): void => {
+      if (glStartedRef.current) return
       window.dispatchEvent(new Event('resize'))
       raf = requestAnimationFrame(pump)
     }
@@ -794,74 +809,124 @@ const App: FC = () => {
           console.log('[boot] canvas created (gl resolved, store ready)')
           setCanvasCreated(true)
         }}
-        gl={async props => {
-          // eslint-disable-next-line no-console
-          console.log('[boot] gl: constructing WebGPURenderer')
-          const renderer = new WebGPURenderer({
-            ...(props as any),
-            // No canvas MSAA. The final present is a fullscreen post-processing
-            // quad (all scene passes are samples:0), so canvas multisampling
-            // antialiases nothing — but it DOES allocate an MSAA colour buffer
-            // that resolves into the canvas texture. During the mount→fullscreen
-            // resize race those two can momentarily differ in size (e.g. a stale
-            // 300×150 colour buffer resolving into a retina canvas), which is a
-            // fatal WebGPU validation error ("Attachments have differing sizes")
-            // that blacks the scene — hit reliably on Firefox's compat adapter.
-            // Dropping the resolve target makes that mismatch structurally
-            // impossible; worst case is a single wrong-size frame under the splash.
-            antialias: false,
-            logarithmicDepthBuffer: true
-          })
-          // Watchdog (diagnostic only, gates nothing): renderer.init() awaits
-          // requestAdapter/requestDevice/context.configure — if one of those
-          // never settles, nothing downstream ever runs and the console stays
-          // silent. Fire a marker so the stall is visible and attributable.
-          const initWatchdog = setTimeout(() => {
-            console.warn(
-              '[boot] renderer.init() still pending after 10s — the WebGPU ' +
-                'adapter/device request or canvas configure has stalled'
-            )
-          }, 10_000)
-          try {
-            await renderer.init()
-          } catch (error) {
-            // Fatal and unambiguous, same class as device.lost below: surface
-            // the static unsupported overlay instead of a silent forever-splash.
-            console.error('[boot] renderer.init() failed:', error)
-            showUnsupported()
-            throw error
-          } finally {
-            clearTimeout(initWatchdog)
-          }
-          // eslint-disable-next-line no-console
-          console.log('[boot] gl: renderer.init() resolved')
-          renderer.highPrecision = true
-          renderer.outputColorSpace = SRGBColorSpace
-          renderer.toneMapping = NoToneMapping
-          renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
-          // Graceful degradation: if the GPU device is lost (unsupported/broken
-          // WebGPU on some browsers), reveal the static "unsupported" overlay
-          // instead of hanging forever on a black splash. Device loss is the one
-          // unambiguous fatal signal; transient validation errors are left to log.
-          const device = (
-            renderer as unknown as { backend?: { device?: GPUDevice } }
-          ).backend?.device
-          if (device != null) {
-            void device.lost.then(info => {
-              console.error('[webgpu] device lost:', info.reason, info.message)
+        // NOT an async closure itself: R3F re-invokes this factory whenever a
+        // measured-size change re-runs its configure pass — the memoized
+        // promise below makes every invocation resolve to the ONE renderer
+        // (see rendererPromiseRef). The construction body runs exactly once.
+        gl={props => {
+          glStartedRef.current = true
+          rendererPromiseRef.current ??= (async () => {
+            // eslint-disable-next-line no-console
+            console.log('[boot] gl: constructing WebGPURenderer')
+            const renderer = new WebGPURenderer({
+              ...(props as any),
+              // No canvas MSAA. The final present is a fullscreen post-processing
+              // quad (all scene passes are samples:0), so canvas multisampling
+              // antialiases nothing — but it DOES allocate an MSAA colour buffer
+              // that resolves into the canvas texture. During the mount→fullscreen
+              // resize race those two can momentarily differ in size (e.g. a stale
+              // 300×150 colour buffer resolving into a retina canvas), which is a
+              // fatal WebGPU validation error ("Attachments have differing sizes")
+              // that blacks the scene — hit reliably on Firefox's compat adapter.
+              // Dropping the resolve target makes that mismatch structurally
+              // impossible; worst case is a single wrong-size frame under the splash.
+              antialias: false,
+              logarithmicDepthBuffer: true
+            })
+            // Watchdog (diagnostic only, gates nothing): renderer.init() awaits
+            // requestAdapter/requestDevice/context.configure — if one of those
+            // never settles, nothing downstream ever runs and the console stays
+            // silent. Fire a marker so the stall is visible and attributable.
+            const initWatchdog = setTimeout(() => {
+              console.warn(
+                '[boot] renderer.init() still pending after 10s — the WebGPU ' +
+                  'adapter/device request or canvas configure has stalled'
+              )
+            }, 10_000)
+            try {
+              await renderer.init()
+            } catch (error) {
+              // Fatal and unambiguous, same class as device.lost below: surface
+              // the static unsupported overlay instead of a silent forever-splash.
+              console.error('[boot] renderer.init() failed:', error)
               showUnsupported()
-            })
-            // TEMP diagnostic: log uncaptured WebGPU errors as PLAIN STRINGS so
-            // console exports carry the full text (Firefox's export flattens
-            // error objects — the storybook capture lost the WGSL validation
-            // message this way). Firefox rejects one of our compute shaders
-            // (wave sim) that Chrome accepts; this pins down which and why.
-            device.addEventListener('uncapturederror', event => {
-              const error = (event as GPUUncapturedErrorEvent).error
-              console.error(`[webgpu] uncaptured: ${error?.message ?? error}`)
-            })
-          }
-          return renderer as unknown as Renderer
+              throw error
+            } finally {
+              clearTimeout(initWatchdog)
+            }
+            // eslint-disable-next-line no-console
+            console.log('[boot] gl: renderer.init() resolved')
+            renderer.highPrecision = true
+            renderer.outputColorSpace = SRGBColorSpace
+            renderer.toneMapping = NoToneMapping
+            renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
+            // Graceful degradation: if the GPU device is lost (unsupported/broken
+            // WebGPU on some browsers), reveal the static "unsupported" overlay
+            // instead of hanging forever on a black splash. Device loss is the one
+            // unambiguous fatal signal; transient validation errors are left to log.
+            const device = (
+              renderer as unknown as { backend?: { device?: GPUDevice } }
+            ).backend?.device
+            if (device != null) {
+              void device.lost.then(info => {
+                console.error(
+                  '[webgpu] device lost:',
+                  info.reason,
+                  info.message
+                )
+                showUnsupported()
+              })
+              // TEMP diagnostic: log uncaptured WebGPU errors as PLAIN STRINGS so
+              // console exports carry the full text (Firefox's export flattens
+              // error objects — the storybook capture lost the WGSL validation
+              // message this way). Firefox rejects one of our compute shaders
+              // (wave sim) that Chrome accepts; this pins down which and why.
+              device.addEventListener('uncapturederror', event => {
+                const error = (event as GPUUncapturedErrorEvent).error
+                console.error(`[webgpu] uncaptured: ${error?.message ?? error}`)
+              })
+              // TEMP diagnostic: which optional WGSL language extensions this
+              // browser implements. Prime suspect for the Firefox wave-sim
+              // failure: unrestricted_pointer_parameters — every IFFT compute
+              // shader passes ptr<storage,...> function parameters, which core
+              // WGSL forbids without that extension.
+              // eslint-disable-next-line no-console
+              console.log(
+                `[boot] wgsl language features: ${
+                  [...(navigator.gpu?.wgslLanguageFeatures ?? [])].join(', ') ||
+                  '(none reported)'
+                }`
+              )
+              // TEMP diagnostic: Firefox prints WGSL compilation errors as
+              // console objects that its "export console" flattens to useless
+              // summaries. Wrap createShaderModule to await compilation info and
+              // re-log every error as a PLAIN STRING with the offending source
+              // lines, so one export carries the exact construct Naga rejects.
+              const createShaderModule = device.createShaderModule.bind(device)
+              ;(device as any).createShaderModule = (
+                descriptor: GPUShaderModuleDescriptor
+              ) => {
+                const module = createShaderModule(descriptor)
+                void module.getCompilationInfo().then(info => {
+                  for (const message of info.messages) {
+                    if (message.type !== 'error') continue
+                    const lines = (descriptor.code ?? '').split('\n')
+                    const first = Math.max(0, message.lineNum - 3)
+                    const context = lines
+                      .slice(first, message.lineNum + 2)
+                      .map((line, i) => `${first + i + 1}: ${line}`)
+                      .join('\n')
+                    console.error(
+                      `[wgsl] ${message.message} (line ${message.lineNum}:${message.linePos})\n${context}`
+                    )
+                  }
+                })
+                return module
+              }
+            }
+            return renderer as unknown as Renderer
+          })()
+          return rendererPromiseRef.current
         }}
       >
         <Content

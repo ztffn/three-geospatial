@@ -119,6 +119,37 @@ Also 2026-07-02: `_NUM_WORKERS` in `ocean-builder-threaded.js` now derives from
 `hardwareConcurrency - 1` (was a fixed 7 tuned for an 8-core tablet), so the
 chunk build can actually use a 10-16-core desktop (lever from A).
 
+### A4. Firefox — wave-sim WGSL portability + build-phase sim pause (2026-07-02)
+Firefox's WGSL validator (Naga) rejects storage-space pointers as function
+parameters — the pattern every `resources/shader/IFFT/*.js` kernel used
+(`ptr<storage,...>` args; Chrome's Tint tolerates it as the
+`unrestricted_pointer_parameters` extension, which FF does not ship — its
+`wgslLanguageFeatures` lists only readonly_and_readwrite_storage_textures,
+packed_4x8_integer_dot_product, pointer_composite_access). That killed all 24
+wave-sim compute pipelines on FF (ocean chunks built, surface never simulated).
+Fix (waterpro path only; legacy `src/waves` untouched):
+
+- `packages/ocean-ifft/src/waterpro/waves/wave-kernels.ts` — the nine kernels
+  as pure by-value WGSL functions (math verbatim); TSL `Fn` wrappers in
+  `wave-cascade.ts`/`wave-simulation.ts` do the storage element loads/stores at
+  module scope (core WGSL). Naga also rejects `textureStore` through function
+  parameters and the identifier `target` (reserved) — all validated locally
+  with `naga-cli` against reconstructions of the generated modules before any
+  browser test.
+- Per-frame uniforms moved off `computeNode.parameters` pokes onto cascade-held
+  `uniform()` refs (`time`).
+
+FF load observations after the fix (dev, 2026-07-02): atmosphere ~300 ms
+(baked LUTs), but `[prewarm] 33.7 s` and `[ready] ocean chunks built 85 s` —
+FF's Naga→Metal pipeline compiles are far slower than Chrome's and are NOT
+persistently cached (every reload pays full compile). App-side mitigation
+shipped: the wave sim (≈210 compute dispatches/frame across 3 cascades) now
+runs ONCE at ocean mount (compiles its pipelines + fills the wave textures for
+the reveal frame) and then pauses until the chunk builder drains — polling
+`builder_.Busy`, no timers (`OceanChunksWaterpro.tsx`). Also added a
+`[ocean-builder]` worker-pool log: FF clamps `hardwareConcurrency` to 2 under
+privacy.resistFingerprinting, which would silently shrink the pool to 1.
+
 ### A2. Steady-state frame rate (the recurring `requestAnimationFrame` violations)
 Two distinct things show up as DevTools rAF violations:
 - **1.5–2.4 s spikes** — the one-time WGSL compiles from A (under the splash).

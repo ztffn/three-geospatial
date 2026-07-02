@@ -81,6 +81,9 @@ export const ocean_builder_threaded = (() => {
 			this.pool_ = {};
 			this.old_ = [];
 			
+			// Diagnostic: Firefox clamps hardwareConcurrency to 2 under
+			// privacy.resistFingerprinting, which would quietly gut this pool.
+			console.log(`[ocean-builder] worker pool: ${_NUM_WORKERS} (hardwareConcurrency=${globalThis.navigator?.hardwareConcurrency})`);
 			this.workerPool_ = new WorkerThreadPool(
 				_NUM_WORKERS,
 				new URL('./ocean-builder-threaded-worker.js', import.meta.url)
