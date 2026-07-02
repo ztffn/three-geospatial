@@ -145,7 +145,7 @@ curl -s -o /dev/null -D - -H "Origin: https://twin.humatopia.ai" -H "Range: byte
 curl -s -o /dev/null -w '%{http_code}\n' https://twin.humatopia.ai/health     # 200
 curl -s 'https://twin.humatopia.ai/.netlify/functions/met?lat=59.43&lon=5.21' | head -c 80
 curl -s https://twin.humatopia.ai/ | grep -o '/assets/index-[^"]*\.js'        # hash CHANGED (if app code changed)
-curl -s -o /dev/null -w '%{http_code}\n' https://twin.humatopia.ai/public/ship-demo-compressed.glb  # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://twin.humatopia.ai/public/ship_large_compressed.glb  # 200
 ```
 
 In the browser console expect: `[ready] atmosphere LUTs`, ocean chunks built,

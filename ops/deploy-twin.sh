@@ -55,7 +55,7 @@ docker buildx build --builder huma-builder --platform linux/amd64 --load \
   -f Dockerfile ${TAG_FLAGS} .
 EOF
 
-echo "→ writing runtime env (image pin + AIS creds) and recreating huma-twin"
+echo "→ writing runtime env (image pin + AIS creds + authoring token) and recreating huma-twin"
 # The container reads its runtime config from ${COMPOSE_DIR}/.env (docker compose
 # variable substitution). Write it WHOLE each deploy — the image pin plus the
 # optional BarentsWatch creds — so the recreate AND any future bare compose-up /
