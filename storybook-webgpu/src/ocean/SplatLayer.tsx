@@ -1,21 +1,19 @@
-// Georeferenced Gaussian-splat capture layer for the Globe WaterPro twin. Loads
-// an SPZ capture (spz-js → GaussianSplatData) and renders it premultiplied via
-// GaussianSplatNodeMaterial into a dedicated `splatScene`, which the twin
-// composites AFTER the atmosphere pass (approach A: over the lit sky → no black
-// halo, depth-masked so terrain/models occlude it). Placed at the scenario
-// target with ShipModel-style fine-tune controls (east/north/height/scale/yaw).
-// Renders nothing unless an `spzUrl` is given (i.e. the Realtime Geospatial site).
+// Georeferenced Gaussian-splat capture layer for the Globe WaterPro twin. Fetches an
+// SPZ capture (spz-js → GaussianSplatData), places it at the scenario target via the
+// local ENU frame (ShipModel-style fine-tune knobs), and renders it through the splats
+// package's <GaussianSplatsGPU> (GPU sort + octree-LOD budget) — the twin does NOT
+// re-implement a viewer, it configures the shared component. Portalled into a dedicated
+// `splatScene` the twin composites AFTER the atmosphere pass (approach A: over the lit
+// sky, depth-masked). Renders nothing unless an `spzUrl` is given (the Realtime site).
 
-import { createPortal, useFrame, useThree } from '@react-three/fiber'
+import { createPortal } from '@react-three/fiber'
 import { useControls } from 'leva'
 import { useEffect, useMemo, useState, type FC } from 'react'
 import { MathUtils, Quaternion, Vector3, type Scene } from 'three'
-import type { Renderer } from 'three/webgpu'
 
 import { Ellipsoid } from '@takram/three-geospatial'
 import {
-  GaussianSplatMesh,
-  GaussianSplatNodeMaterial,
+  GaussianSplatsGPU,
   loadSpzSplatData,
   type GaussianSplatData
 } from '@takram/three-geospatial-splats/webgpu'
@@ -34,6 +32,8 @@ export const SplatLayer: FC<{
     heightOffset,
     yawDeg,
     intensity,
+    budget,
+    lodFade,
     maxSplats,
     debug
   } = useControls(
@@ -55,9 +55,25 @@ export const SplatLayer: FC<{
       // 10, so raw 0..1 capture colours (intensity 1) clip to white — ~0.1 lands
       // them in range. Tune to taste.
       intensity: { value: 0.1, min: 0, max: 4, step: 0.01 },
-      // Decimation hedge for the single-mesh path (CPU sort + data-texture cost
-      // scale with count). 0 = full. Reloads on change. (The full decode still runs
-      // regardless; spz-js can't partial-decode the compressed stream.)
+      // Octree-LOD render budget: max splats DRAWN per frame (GPU sort + budget +
+      // frustum cull, from the splats package). Live. `maxSplats` caps what's LOADED.
+      budget: {
+        value: 1_000_000,
+        options: {
+          '4M': 4_000_000,
+          '2M': 2_000_000,
+          '1M': 1_000_000,
+          '500k': 500_000,
+          '250k': 250_000
+        }
+      },
+      // LOD cross-fade. Default OFF here because the twin writes splat depth for the
+      // approach-A occlusion mask, and a fading splat's low-alpha depth writes can
+      // flicker that mask; turn on if the LOD pop is more objectionable than that.
+      lodFade: false,
+      // Decimation cap on LOAD (decode + octree-build cost scale with count). 0 =
+      // full. Reloads on change. (spz-js can't partial-decode, so the full decode
+      // still runs; this caps what's kept.) The LOD budget bounds what's DRAWN.
       maxSplats: {
         value: 500_000,
         options: {
@@ -76,9 +92,6 @@ export const SplatLayer: FC<{
     { collapsed: true }
   )
 
-  const renderer = useThree<Renderer>(({ gl }) => gl as unknown as Renderer)
-  const camera = useThree(({ camera }) => camera)
-
   // SPZ capture data, loaded async. `null` until a load resolves (or off-site).
   const [data, setData] = useState<GaussianSplatData | null>(null)
 
@@ -91,69 +104,35 @@ export const SplatLayer: FC<{
     setData(null)
     const started = performance.now()
     void fetch(spzUrl)
-      .then(response => {
+      .then(async response => {
         if (!response.ok) {
           throw new Error(`SPZ fetch ${response.status} for ${spzUrl}`)
         }
-        return response.arrayBuffer()
+        return await response.arrayBuffer()
       })
-      .then(buffer =>
-        loadSpzSplatData(buffer, {
-          ...(maxSplats > 0 ? { maxSplats } : {}),
-          debug: debug as 'flipYZ' | 'raw' | 'isotropic'
-        })
+      .then(
+        async buffer =>
+          await loadSpzSplatData(buffer, {
+            ...(maxSplats > 0 ? { maxSplats } : {}),
+            debug: debug as 'flipYZ' | 'raw' | 'isotropic'
+          })
       )
       .then(loaded => {
         if (cancelled) {
           return
         }
-        // eslint-disable-next-line no-console
         console.log(
           `[SplatLayer] SPZ loaded: ${loaded.count.toLocaleString()} splats in ${Math.round(performance.now() - started)} ms`
         )
         setData(loaded)
       })
       .catch((error: unknown) => {
-        // eslint-disable-next-line no-console
         console.error('[SplatLayer] SPZ load failed:', error)
       })
     return () => {
       cancelled = true
     }
   }, [spzUrl, maxSplats, debug])
-
-  const meshState = useMemo(() => {
-    if (data == null) {
-      return null
-    }
-    let nodeMaterial!: GaussianSplatNodeMaterial
-    const splatMesh = new GaussianSplatMesh(data, {
-      createMaterial: geometry => {
-        // Twin renderer uses logarithmicDepthBuffer; match it so the splat pass
-        // writes log-depth comparable to the main scene depth. depthWrite so the
-        // splat pass produces a depth buffer for approach A's occlusion mask.
-        nodeMaterial = new GaussianSplatNodeMaterial(geometry, {
-          logarithmicDepthBuffer: true,
-          depthWrite: true
-        })
-        return nodeMaterial
-      }
-    })
-    return { mesh: splatMesh, material: nodeMaterial }
-  }, [data])
-
-  useEffect(() => {
-    const mesh = meshState?.mesh
-    return () => {
-      mesh?.dispose()
-    }
-  }, [meshState])
-
-  useEffect(() => {
-    if (meshState != null) {
-      meshState.material.intensity.value = intensity
-    }
-  }, [meshState, intensity])
 
   // Place + orient the cloud at the target via the local ENU frame: offset by
   // east/north/up metres, align local +Y to up, then yaw about up. Mirrors the
@@ -180,21 +159,24 @@ export const SplatLayer: FC<{
     }
   }, [target, eastOffset, northOffset, heightOffset, yawDeg])
 
-  useFrame(() => {
-    if (enabled && meshState != null) {
-      meshState.mesh.update(renderer, camera)
-    }
-  })
-
-  if (!enabled || meshState == null) {
+  if (!enabled || data == null) {
     return null
   }
-  // Portal into the dedicated splat scene so it renders in its own pass and the
-  // twin composites it after the atmosphere (see GlobeWaterproOcean-Story).
+  // Portal the shared component into the dedicated splat scene so it renders in its
+  // own pass and the twin composites it after the atmosphere. logarithmicDepthBuffer
+  // + depthWrite match the twin renderer and feed approach-A's occlusion mask.
   return createPortal(
-    <group position={position} quaternion={quaternion} scale={scale}>
-      <primitive object={meshState.mesh} />
-    </group>,
+    <GaussianSplatsGPU
+      data={data}
+      position={position}
+      quaternion={quaternion}
+      scale={scale}
+      intensity={intensity}
+      lod={{ budget }}
+      lodFade={lodFade}
+      logarithmicDepthBuffer
+      depthWrite
+    />,
     splatScene
   )
 }
