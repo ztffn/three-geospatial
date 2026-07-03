@@ -116,6 +116,7 @@ export class WorkerSplatSorter implements GaussianSplatSorter {
   private lastPositions: Float32Array | null = null
   private orderBuffer: ArrayBuffer | null = null
   private resolvePending: ((indices: Uint32Array) => void) | null = null
+  private rejectPending: ((reason: Error) => void) | null = null
 
   constructor() {
     const source = `(${sortWorkerBody.toString()})()`
@@ -128,8 +129,26 @@ export class WorkerSplatSorter implements GaussianSplatSorter {
       this.orderBuffer = buffer
       const resolve = this.resolvePending
       this.resolvePending = null
+      this.rejectPending = null
       resolve?.(new Uint32Array(buffer))
     }
+    // Surface worker load/runtime failures instead of leaving sort() pending forever
+    // — a hung promise would wedge the mesh's pendingSort gate and stop all re-sorts,
+    // freezing the back-to-front order (wrong alpha compositing as the camera orbits).
+    this.worker.onerror = (event: ErrorEvent) => {
+      this.failPending(new Error(`splat sort worker error: ${event.message}`))
+    }
+    this.worker.onmessageerror = () => {
+      this.failPending(new Error('splat sort worker message deserialization failed'))
+    }
+  }
+
+  // Rejects the in-flight sort (if any) and clears the pending handlers.
+  private failPending(error: Error): void {
+    const reject = this.rejectPending
+    this.resolvePending = null
+    this.rejectPending = null
+    reject?.(error)
   }
 
   async sort(
@@ -137,7 +156,11 @@ export class WorkerSplatSorter implements GaussianSplatSorter {
     cameraPosition: Vector3,
     count: number
   ): Promise<Uint32Array> {
-    return await new Promise(resolve => {
+    return await new Promise<Uint32Array>((resolve, reject) => {
+      // Only one sort is in flight at a time (GaussianSplatMesh gates on pendingSort).
+      // If another consumer calls concurrently, fail the superseded sort rather than
+      // silently drop its resolver — a dropped resolver hangs forever.
+      this.failPending(new Error('splat sort superseded by a newer sort'))
       const transfer: Transferable[] = []
       const message: Record<string, unknown> = {
         count,
@@ -161,14 +184,15 @@ export class WorkerSplatSorter implements GaussianSplatSorter {
       transfer.push(this.orderBuffer)
       this.orderBuffer = null
       this.resolvePending = resolve
+      this.rejectPending = reject
       this.worker.postMessage(message, transfer)
     })
   }
 
   dispose(): void {
     this.worker.terminate()
+    this.failPending(new Error('splat sorter disposed'))
     this.lastPositions = null
     this.orderBuffer = null
-    this.resolvePending = null
   }
 }
