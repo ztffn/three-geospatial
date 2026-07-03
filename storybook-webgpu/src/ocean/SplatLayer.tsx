@@ -36,41 +36,45 @@ export const SplatLayer: FC<{
     intensity,
     maxSplats,
     debug
-  } = useControls('Splats', {
-    enabled: true,
-    // Capture is ~8 units across; scale converts to metres (50 ≈ a ~400 m scene).
-    scale: { value: 50, min: 1, max: 2000, step: 1 },
-    // ENU placement from the sea-level scenario anchor — same knobs the site 3D
-    // models use (the 'Waste site' leva folder). Defaults are the in-scene tuned
-    // placement of the capture on its land patch (the anchor itself is at sea).
-    eastOffset: { value: 315, min: -2000, max: 2000, step: 1 },
-    northOffset: { value: 163, min: -2000, max: 2000, step: 1 },
-    // Lifts the cloud CENTER along ECEF up from the sea-level anchor.
-    heightOffset: { value: 84.4, min: -500, max: 4000, step: 1 },
-    // Rotation about the local up axis (capture heading alignment).
-    yawDeg: { value: -120, min: -180, max: 180, step: 1 },
-    // Radiance scale into the AgX HDR range. The twin tonemaps at AgX exposure
-    // 10, so raw 0..1 capture colours (intensity 1) clip to white — ~0.1 lands
-    // them in range. Tune to taste.
-    intensity: { value: 0.1, min: 0, max: 4, step: 0.01 },
-    // Decimation hedge for the single-mesh path (CPU sort + data-texture cost
-    // scale with count). 0 = full. Reloads on change. (The full decode still runs
-    // regardless; spz-js can't partial-decode the compressed stream.)
-    maxSplats: {
-      value: 500_000,
-      options: {
-        Full: 0,
-        '4M': 4_000_000,
-        '2M': 2_000_000,
-        '1M': 1_000_000,
-        '500k': 500_000
-      }
+  } = useControls(
+    'Assets.Splats',
+    {
+      enabled: true,
+      // Capture is ~8 units across; scale converts to metres (50 ≈ a ~400 m scene).
+      scale: { value: 50, min: 1, max: 2000, step: 1 },
+      // ENU placement from the sea-level scenario anchor — same knobs the site 3D
+      // models use (the 'Waste site' leva folder). Defaults are the in-scene tuned
+      // placement of the capture on its land patch (the anchor itself is at sea).
+      eastOffset: { value: 315, min: -2000, max: 2000, step: 1 },
+      northOffset: { value: 163, min: -2000, max: 2000, step: 1 },
+      // Lifts the cloud CENTER along ECEF up from the sea-level anchor.
+      heightOffset: { value: 84.4, min: -500, max: 4000, step: 1 },
+      // Rotation about the local up axis (capture heading alignment).
+      yawDeg: { value: -120, min: -180, max: 180, step: 1 },
+      // Radiance scale into the AgX HDR range. The twin tonemaps at AgX exposure
+      // 10, so raw 0..1 capture colours (intensity 1) clip to white — ~0.1 lands
+      // them in range. Tune to taste.
+      intensity: { value: 0.1, min: 0, max: 4, step: 0.01 },
+      // Decimation hedge for the single-mesh path (CPU sort + data-texture cost
+      // scale with count). 0 = full. Reloads on change. (The full decode still runs
+      // regardless; spz-js can't partial-decode the compressed stream.)
+      maxSplats: {
+        value: 500_000,
+        options: {
+          Full: 0,
+          '4M': 4_000_000,
+          '2M': 2_000_000,
+          '1M': 1_000_000,
+          '500k': 500_000
+        }
+      },
+      // Coordinate/debug. 'flipYZ' = RDF→RUB conversion spz-js omits (default fix
+      // for PLY-derived SPZ); 'raw' = no conversion; 'isotropic' = round blobs
+      // (diagnostic). Reloads on change.
+      debug: { value: 'flipYZ', options: ['flipYZ', 'raw', 'isotropic'] }
     },
-    // Coordinate/debug. 'flipYZ' = RDF→RUB conversion spz-js omits (default fix
-    // for PLY-derived SPZ); 'raw' = no conversion; 'isotropic' = round blobs
-    // (diagnostic). Reloads on change.
-    debug: { value: 'flipYZ', options: ['flipYZ', 'raw', 'isotropic'] }
-  })
+    { collapsed: true }
+  )
 
   const renderer = useThree<Renderer>(({ gl }) => gl as unknown as Renderer)
   const camera = useThree(({ camera }) => camera)

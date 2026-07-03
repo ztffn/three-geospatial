@@ -8,8 +8,8 @@ import { Vector3 } from 'three'
 
 import {
   applyWaterproPreset,
-  WATERPRO_PRESETS,
   WATERPRO_PRESET_NAMES,
+  WATERPRO_PRESETS,
   type WaterproPresetUniformBag
 } from './presets'
 
@@ -24,8 +24,6 @@ function makeBag(): WaterproPresetUniformBag {
     depthFalloff: num(),
     transmissionColor: vec(),
     surfaceFoamColor: vec(),
-    surfaceFoamCoverage: num(),
-    surfaceFoamOpacity: num(),
     surfaceFoamSize: num(),
     shorelineFoamColor: vec(),
     shorelineFoamCoverage: num(),
@@ -33,14 +31,9 @@ function makeBag(): WaterproPresetUniformBag {
     shorelineFoamRange: num(),
     shorelineFoamSize: num(),
     waveFoamColor: vec(),
-    waveFoamCoverage: num(),
-    waveFoamCrestCoverage: num(),
-    waveFoamOpacity: num(),
     waveFoamPeakIntensity: num(),
     waveFoamRippleWeight: num(),
     waveFoamWaveWeight: num(),
-    waveFoamWindBias: num(),
-    waveFoamWindStretch: num(),
     waveFoamSize: num(),
     fresnelNormalStrength: num(),
     fresnelPower: num(),
@@ -49,9 +42,7 @@ function makeBag(): WaterproPresetUniformBag {
     sparkleIntensity: num(),
     sparkleFocusPower: num(),
     sssIntensity: num(),
-    sssPower: num(),
-    fftAmplitude: num(),
-    gerstnerAmplitude: num()
+    sssPower: num()
   }
 }
 
@@ -65,9 +56,8 @@ describe('applyWaterproPreset', () => {
     expect(u.fadeStart.value).toBe(p.fog.fadeStart)
     expect(u.sparkleFocusPower.value).toBe(p.sparkle.power)
     expect(u.sssIntensity.value).toBe(p.sss.intensity)
-    expect(u.fftAmplitude.value).toBe(p.waves.fftAmplitude)
-    expect(u.gerstnerAmplitude.value).toBe(p.waves.gerstnerAmplitude)
-    expect(u.waveFoamWindStretch.value).toBe(p.foam.waves.windStretch)
+    expect(u.waveFoamPeakIntensity.value).toBe(p.foam.waves.peakIntensity)
+    expect(u.surfaceFoamSize.value).toBe(p.foam.surface.size)
   })
 
   test('converts white hex to linear (1,1,1) without crushing', () => {
@@ -140,7 +130,7 @@ describe('WATERPRO_PRESETS table', () => {
       expect(typeof p.fog.fadeStart).toBe('number')
       expect(typeof p.sparkle.power).toBe('number')
       expect(typeof p.sss.intensity).toBe('number')
-      expect(typeof p.waves.fftAmplitude).toBe('number')
+      expect(typeof p.defaultSeaState).toBe('string')
       expect(p.foam.surface).toBeDefined()
       expect(p.foam.shoreline).toBeDefined()
       expect(p.foam.waves).toBeDefined()

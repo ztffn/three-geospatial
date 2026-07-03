@@ -86,6 +86,96 @@ Reveal waits for the entire initial quadtree (160 chunks, 7 workers,
   once when the pass resumes at `prewarmDone`); revisit only if measured as a
   meaningful residual.
 
+### A3. Baked atmosphere LUTs — implemented 2026-07-02 (pending measurement)
+The atmosphere phase no longer runs the `AtmosphereLUTNode` GPU compute at all.
+`BakedAtmosphereLUT.ts` (this directory) fetches the precomputed Bruneton LUTs
+shipped in `packages/atmosphere/assets/*.bin` — the same files the WebGL demos
+load — and exposes them through a node that duck-types `AtmosphereLUTNode`
+(`getTextureNode`, `currentVersion`/`updating`, the `'update'` event), injected
+into `AtmosphereContext` by the story. No atmosphere-package edits. Details:
+
+- Only 4 of the 5 LUTs are fetched (~16.9 MB raw, ~11 MB gzipped):
+  `single_mie_scattering.bin` is skipped because the default
+  `combinedScatteringTextures = true` path derives Mie from the combined
+  scattering texture's alpha and never samples that node (a 1×1×1 placeholder
+  keeps the shader binding valid). Baked linear transmittance matches the
+  default `transmittancePrecisionLog = false` decode.
+- The fetch starts at module-import time (before renderer init) and overlaps
+  it; full-size zeroed half-float placeholders keep every binding valid if a
+  frame renders first, and the loaded bytes are filled into the SAME texture
+  instances (`needsUpdate` re-upload — no TextureNode value swap).
+- Assets ride the same `new URL(..., import.meta.url)` bundling as stars.bin —
+  hashed, immutable, no `staticAssets` entry; verified emitted in a build and
+  served in dev (`/@fs`, exact byte counts).
+- **This deleted `installIdleCallbackShim.ts`** — nothing in the twin calls
+  `requestIdleCallback` anymore (the "Fixed this session" item 1 above is
+  historical). One of the two Firefox-hang suspects is gone structurally; the
+  remaining one is the render-loop size gate, still diagnosable via the
+  `[render] first frame` / `[atmosphere-probe]` logs.
+- The two-phase preload STAYS: the atmosphere phase still isolates the sky/post
+  first compiles from the ocean spin-up and keeps the reveal order.
+
+Also 2026-07-02: `_NUM_WORKERS` in `ocean-builder-threaded.js` now derives from
+`hardwareConcurrency - 1` (was a fixed 7 tuned for an 8-core tablet), so the
+chunk build can actually use a 10-16-core desktop (lever from A).
+
+### A4. Firefox — wave-sim WGSL portability + build-phase sim pause (2026-07-02)
+Firefox's WGSL validator (Naga) rejects storage-space pointers as function
+parameters — the pattern every `resources/shader/IFFT/*.js` kernel used
+(`ptr<storage,...>` args; Chrome's Tint tolerates it as the
+`unrestricted_pointer_parameters` extension, which FF does not ship — its
+`wgslLanguageFeatures` lists only readonly_and_readwrite_storage_textures,
+packed_4x8_integer_dot_product, pointer_composite_access). That killed all 24
+wave-sim compute pipelines on FF (ocean chunks built, surface never simulated).
+Fix (waterpro path only; legacy `src/waves` untouched):
+
+- `packages/ocean-ifft/src/waterpro/waves/wave-kernels.ts` — the nine kernels
+  as pure by-value WGSL functions (math verbatim); TSL `Fn` wrappers in
+  `wave-cascade.ts`/`wave-simulation.ts` do the storage element loads/stores at
+  module scope (core WGSL). Naga also rejects `textureStore` through function
+  parameters and the identifier `target` (reserved) — all validated locally
+  with `naga-cli` against reconstructions of the generated modules before any
+  browser test.
+- Per-frame uniforms moved off `computeNode.parameters` pokes onto cascade-held
+  `uniform()` refs (`time`).
+
+FF load observations after the fix (dev, 2026-07-02): atmosphere ~300 ms
+(baked LUTs), but `[prewarm] 33.7 s` and `[ready] ocean chunks built 85 s` —
+FF's Naga→Metal pipeline compiles are far slower than Chrome's and are NOT
+persistently cached (every reload pays full compile). App-side mitigation
+shipped: the wave sim (≈210 compute dispatches/frame across 3 cascades) now
+runs ONCE at ocean mount (compiles its pipelines + fills the wave textures for
+the reveal frame) and then pauses until the chunk builder drains — polling
+`builder_.Busy`, no timers (`OceanChunksWaterpro.tsx`). Also added a
+`[ocean-builder]` worker-pool log: FF clamps `hardwareConcurrency` to 2 under
+privacy.resistFingerprinting, which would silently shrink the pool to 1.
+
+### A5. Firefox boot — the refresh driver is the real root cause (2026-07-02)
+Firefox deprioritizes this tab's refresh driver until first user interaction:
+measured rAF at **0–4.5 fps in a visible, focused tab** while timers, fetch,
+and WebGPU init all ran normally (`[boot] 2s: rafTicks=9 …`, jumping to
+~36 fps immediately after a click). Since the whole load pipeline rode
+`requestAnimationFrame` — the render loop, worker-result draining, the
+readiness probes, and even ResizeObserver notification delivery — a withheld
+driver froze the app at any of several stages, which is why earlier runs
+"randomly" worked (the driver happened to be awake) or hung. Fixes in the
+twin's `main.tsx` + the story, all inert when rAF is healthy:
+
+- `MeasureResizeObserver` (Canvas `resize.polyfill`): re-delivers the initial
+  size notification via **setTimeout** after every `observe()` — R3F's
+  renderer creation gates on that measurement, and FF never delivered it
+  (rAF-scheduled delivery also failed; timers are not throttled).
+- `ReadinessProbe` + the prewarm's chunk-geometry poll now poll on a 100 ms
+  timer cadence instead of rAF loops (readiness is still real subsystem
+  state — timers only schedule the polling).
+- `StalledFrameDriver` (mounted while the splash is up): samples whether any
+  real rAF fired in the last 100 ms and, only when none did, drives one R3F
+  frame via `advance()` — so chunk building/prewarm progress without frames.
+  After reveal the app accepts the browser's own pacing (first interaction
+  wakes FF's driver permanently).
+- The async gl factory stays memoized (single renderer across R3F configure
+  re-runs — the Chrome 4×-renderer/stale-depth-buffer bug).
+
 ### A2. Steady-state frame rate (the recurring `requestAnimationFrame` violations)
 Two distinct things show up as DevTools rAF violations:
 - **1.5–2.4 s spikes** — the one-time WGSL compiles from A (under the splash).

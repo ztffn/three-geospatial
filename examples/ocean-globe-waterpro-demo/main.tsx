@@ -2,25 +2,17 @@
 // Mounts the storybook story's Content component inside a fullscreen
 // react-three-fiber Canvas backed by WebGPURenderer — no Storybook chrome,
 // no 85vw side panel. Holds a loading splash over the canvas until the
-// atmosphere LUT compute and ocean chunk-builder pool both report ready;
+// baked atmosphere LUTs and the ocean chunk-builder pool both report ready;
 // no fixed timer, no hope-based reveal. Also renders the digital-twin DOM
 // overlay siblings: the top-left Huma brand mark (BrandMark, ported from the
 // humatopia-frontend sidebar), the live MET conditions HUD + forecast scrubber
 // + camera/scenario panels (DigitalTwinUI, fed by the active scene location),
 // and a collapsed Leva debug panel.
 
-// requestIdleCallback shim — MUST be the first import. The atmosphere package
-// (AtmosphereLUTNode -> helpers/requestIdleCallback) drives its multi-stage LUT
-// compute via requestIdleCallback, and that helper captures
-// window.requestIdleCallback into a module-level const the first time it
-// evaluates. Under the twin's heavy WebGPU render loop Chrome starves the
-// native idle callback, so the LUT precompute hangs ("Precomputing atmosphere").
-// The shim must therefore be installed BEFORE any atmosphere code evaluates —
-// an inline shim here would be too late, because ES module imports are hoisted
-// and evaluated before this module's own body runs. Keeping it as the first
-// import guarantees its module body wins the capture. See installIdleCallbackShim.ts.
-import './installIdleCallbackShim'
-
+// NOTE: the atmosphere LUTs are baked textures fetched at module import (see
+// storybook-webgpu/src/ocean/BakedAtmosphereLUT.ts, injected into the
+// AtmosphereContext by the story) — the runtime AtmosphereLUTNode GPU compute
+// and the requestIdleCallback shim it required no longer exist in this app.
 import { Canvas, useThree } from '@react-three/fiber'
 import { Leva } from 'leva'
 import {
@@ -36,6 +28,18 @@ import { NoToneMapping, SRGBColorSpace } from 'three'
 import { WebGPURenderer, type Renderer } from 'three/webgpu'
 
 import {
+  AtmosphereLight,
+  AtmosphereLightNode
+} from '@takram/three-atmosphere/webgpu'
+
+import {
+  Content,
+  locationPresets,
+  type ContentReadinessRefs,
+  type SelectedVesselNav,
+  type VesselMarker
+} from '../../storybook-webgpu/src/ocean/GlobeWaterproOcean-Story'
+import {
   DigitalTwinUI,
   type CameraControlsState,
   type CameraMode,
@@ -43,14 +47,12 @@ import {
   type ScenarioControlsState,
   type SelectedVessel
 } from './ui/DigitalTwinUI'
+import { IDLE_CLIP, INSTALL_CLIPS } from './ui/rigPhases'
 import { SCENARIOS, type Scenario, type Viewpoint } from './ui/scenarios'
-import { INSTALL_CLIPS, IDLE_CLIP } from './ui/rigPhases'
-import {
-  SHADOW_FLEET,
-  SHADOW_FLEET_GROUND_LABEL
-} from './ui/shadowFleet'
+import { SHADOW_FLEET, SHADOW_FLEET_GROUND_LABEL } from './ui/shadowFleet'
 import { modelTurbine } from './ui/turbineModel'
 import { useMetForecast } from './ui/useMetForecast'
+import { useScenarioSlideshows } from './ui/useScenarioSlideshows'
 import {
   useShadowFleetAis,
   type ShadowFleetPosition
@@ -74,19 +76,6 @@ const toMarker = (p: ShadowFleetPosition): VesselMarker => ({
   courseOverGround: p.courseOverGround,
   speedOverGround: p.speedOverGround
 })
-
-import {
-  AtmosphereLight,
-  AtmosphereLightNode
-} from '@takram/three-atmosphere/webgpu'
-
-import {
-  Content,
-  locationPresets,
-  type ContentReadinessRefs,
-  type SelectedVesselNav,
-  type VesselMarker
-} from '../../storybook-webgpu/src/ocean/GlobeWaterproOcean-Story'
 
 const rootElement = document.getElementById('root')
 const unsupportedElement = document.getElementById('unsupported')
@@ -129,8 +118,7 @@ function spawnFor(
       ? locationPresets[scenario.preset as keyof typeof locationPresets]
       : null
   const spawn = viewpoint.spawn
-  const longitude =
-    spawn?.longitude ?? viewpoint.longitude ?? anchor?.longitude
+  const longitude = spawn?.longitude ?? viewpoint.longitude ?? anchor?.longitude
   const latitude = spawn?.latitude ?? viewpoint.latitude ?? anchor?.latitude
   if (longitude == null || latitude == null) return null
   // FPS spawn is a STANDING position, not camera framing. Never inherit the
@@ -170,12 +158,68 @@ async function detectWebGPU(): Promise<boolean> {
   }
 }
 
+// Reveal the static "WebGPU unsupported" overlay from index.html. Idempotent —
+// called both from the up-front adapter probe (no adapter at all) and from the
+// runtime device-lost handler (adapter existed but the device died mid-run).
+function showUnsupported(): void {
+  unsupportedElement?.classList.add('show')
+}
+
+// WORKAROUND (Firefox): R3F creates the renderer only after react-use-measure
+// reports a nonzero container size, and react-use-measure gets its sizes from
+// a ResizeObserver. Firefox drops the spec-mandated initial notification when
+// observation starts, and this page has no scroll/resize/layout activity to
+// ever trigger a re-measure — the measured state sits at 0×0 forever and the
+// app hangs on the splash with an empty console, even though
+// getBoundingClientRect() reports the true size the whole time (verified via
+// the boot-trace rect log; synthetic window-resize events did NOT rescue it).
+// This wrapper re-delivers an initial notification on a rAF after every
+// observe(); react-use-measure re-observes right after its mount effects, so
+// the notification lands once its internal mounted flag accepts updates. Its
+// callback ignores the entries and re-reads getBoundingClientRect, so empty
+// entries are valid. Scoped to R3F's one measure hook via the Canvas
+// `resize.polyfill` option — no global patching.
+class MeasureResizeObserver {
+  private readonly native: ResizeObserver
+  private readonly callback: ResizeObserverCallback
+  private timer: ReturnType<typeof setTimeout> | undefined
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback
+    this.native = new ResizeObserver(callback)
+  }
+
+  observe(target: Element, options?: ResizeObserverOptions): void {
+    this.native.observe(target, options)
+    clearTimeout(this.timer)
+    // setTimeout, NOT requestAnimationFrame: every mechanism that silently
+    // failed to unstick Firefox here (the earlier resize-event pump, the first
+    // polyfill draft) scheduled its work via rAF, while every observable
+    // diagnostic ran off timers — suggesting FF does not service rAF on this
+    // page before the render loop exists. Timers are unthrottled for a
+    // visible foreground tab.
+    this.timer = setTimeout(() => {
+      this.callback([], this.native)
+    }, 0)
+  }
+
+  unobserve(target: Element): void {
+    this.native.unobserve(target)
+  }
+
+  disconnect(): void {
+    clearTimeout(this.timer)
+    this.native.disconnect()
+  }
+}
+
 // Two-phase readiness orchestration:
 //
-//   Phase 'atmosphere': Ocean is NOT mounted. The atmosphere LUT compute
-//     pipeline runs without GPU contention from ocean chunk-builder workers
-//     or the IFFT wave simulation. We poll lutNode.currentVersion +
-//     lutNode.updating to detect completion.
+//   Phase 'atmosphere': Ocean is NOT mounted. The baked atmosphere LUTs
+//     download and upload, and the sky/post pipelines take their first compile,
+//     without contention from ocean chunk-builder workers or the IFFT wave
+//     simulation. We poll lutNode.currentVersion + lutNode.updating (fetch
+//     completion on the baked node) to detect readiness.
 //
 //   Phase 'ocean': LUTs are done. Mount the ocean. Poll the OceanChunkManager
 //     until the worker pool has actually delivered chunks (chunks_ dict has
@@ -189,11 +233,16 @@ async function detectWebGPU(): Promise<boolean> {
 type Phase = 'atmosphere' | 'ocean' | 'ready'
 
 // Stability debounce: require the readiness condition to hold for this many
-// consecutive frames before reporting. Then wait one additional rAF tick so
-// the first render-after-ready completes (gives WebGPU shader/material
-// compilation a frame to finish — chunks have geometry once Busy=false but
-// the pipeline compiles on first draw). 5 frames at 60 Hz is ~83 ms.
-const STABLE_FRAMES = 5
+// consecutive polls before reporting, then wait one more poll interval so the
+// first render-after-ready completes (chunks have geometry once Busy=false
+// but the pipeline compiles on first draw). The probe polls on a TIMER, not
+// requestAnimationFrame: Firefox deprioritizes the refresh driver for this
+// tab until first user interaction (observed rAF at 0–4.5 fps while timers
+// run normally), and an rAF-scheduled probe then never advances the load.
+// Timer cadence + real-state checks keeps the no-timer rule intact — timers
+// schedule the POLLING, readiness is still actual subsystem state.
+const PROBE_INTERVAL_MS = 100
+const STABLE_POLLS = 5
 
 const ReadinessProbe: FC<{
   refs: ContentReadinessRefs | null
@@ -206,27 +255,27 @@ const ReadinessProbe: FC<{
   useEffect(() => {
     if (refs == null) return
     let cancelled = false
-    let stableFrames = 0
+    let stablePolls = 0
     const phaseStart = performance.now()
     const fire = (cb: (ms: number) => void): void => {
-      // One extra rAF after the stability window so the first render-after-
-      // ready has completed (shader/material compile during first draw).
-      requestAnimationFrame(() => {
+      // One extra interval after the stability window so the first render-
+      // after-ready has completed (shader/material compile during first draw).
+      setTimeout(() => {
         if (cancelled) return
         cb(performance.now() - phaseStart)
-      })
+      }, PROBE_INTERVAL_MS)
     }
-    const tick = (): void => {
+    const id = setInterval(() => {
       if (cancelled) return
       if (phase === 'atmosphere' && !reportedAtmRef.current) {
         const lut = (refs.atmosphereContext as any)?.lutNode
         const atmosphereReady =
           lut != null && lut.currentVersion != null && lut.updating === false
-        stableFrames = atmosphereReady ? stableFrames + 1 : 0
-        if (stableFrames >= STABLE_FRAMES) {
+        stablePolls = atmosphereReady ? stablePolls + 1 : 0
+        if (stablePolls >= STABLE_POLLS) {
           reportedAtmRef.current = true
+          clearInterval(id)
           fire(onAtmosphereReady)
-          return
         }
       } else if (phase === 'ocean' && !reportedOceanRef.current) {
         const mgr = refs.getOceanManager()
@@ -242,22 +291,57 @@ const ReadinessProbe: FC<{
           mgr.builder_.Busy === false &&
           chunkCount > 0 &&
           (refs.isPrewarmed?.() ?? true)
-        stableFrames = oceanReady ? stableFrames + 1 : 0
-        if (stableFrames >= STABLE_FRAMES) {
+        stablePolls = oceanReady ? stablePolls + 1 : 0
+        if (stablePolls >= STABLE_POLLS) {
           reportedOceanRef.current = true
+          clearInterval(id)
           fire(onOceanReady)
-          return
         }
       } else {
-        return
+        clearInterval(id)
       }
-      requestAnimationFrame(tick)
-    }
-    requestAnimationFrame(tick)
+    }, PROBE_INTERVAL_MS)
     return () => {
       cancelled = true
+      clearInterval(id)
     }
   }, [refs, phase, onAtmosphereReady, onOceanReady])
+  return null
+}
+
+// Keeps the loading pipeline advancing when the browser withholds animation
+// frames. Firefox deprioritizes a tab's refresh driver until first user
+// interaction (observed: rAF at 0–4.5 fps in a visible, focused tab while
+// timers/fetch/WebGPU run normally), and EVERYTHING in the load rides the
+// frame loop — chunk-builder draining, the wave-sim warm-up, the prewarm's
+// post render. This watchdog samples whether any real rAF fired in the last
+// interval and, only when none did, drives one R3F frame manually via
+// advance(). It does nothing wherever rAF is healthy (Chrome, FF after a
+// click), and is mounted only while the splash is up — after reveal the app
+// accepts the browser's own frame pacing.
+const StalledFrameDriver: FC<{ active: boolean }> = ({ active }) => {
+  const advance = useThree(state => state.advance)
+  useEffect(() => {
+    if (!active) return
+    let rafSeen = false
+    let raf = 0
+    const bump = (): void => {
+      rafSeen = true
+      raf = requestAnimationFrame(bump)
+    }
+    raf = requestAnimationFrame(bump)
+    const id = setInterval(() => {
+      if (!rafSeen) {
+        // Same unit R3F's own loop passes: the DOMHighResTimeStamp in ms.
+        advance(performance.now())
+      }
+      rafSeen = false
+    }, PROBE_INTERVAL_MS)
+    return () => {
+      clearInterval(id)
+      cancelAnimationFrame(raf)
+    }
+  }, [active, advance])
   return null
 }
 
@@ -267,8 +351,9 @@ const ReadinessProbe: FC<{
 // Electron wrapper) — leaving the backbuffer + depth attachment at the 300x150
 // canvas default while the color attachment is retina-fullscreen, which trips
 // the WebGPU "depthBuffer size does not match color attachment" validation and
-// blacks out the scene. The canvas is position:fixed inset:0, so window.inner*
-// IS the canvas size; re-applying setSize/setDpr on the events that matter
+// blacks out the scene. The canvas container fills #root, which is styled
+// 100%×100% of the viewport (index.html), so window.inner* IS the canvas
+// size; re-applying setSize/setDpr on the events that matter
 // (rAF after mount, window 'resize' — Electron OS-fullscreen fires this, not
 // document 'fullscreenchange' — and 'fullscreenchange' for the browser path)
 // repairs the whole size pipeline: backbuffer (gl.setSize), the pass node
@@ -282,11 +367,6 @@ const ResizeSync: FC = () => {
       // displays would render at 2.25x the pixels (perf regression).
       setDpr([1, 2])
       setSize(window.innerWidth, window.innerHeight)
-      // TEMP diagnostic — remove once the Electron fullscreen resize is verified.
-      // eslint-disable-next-line no-console
-      console.log(
-        `[resize-sync] ${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio}`
-      )
     }
     const raf = requestAnimationFrame(apply)
     window.addEventListener('resize', apply)
@@ -316,6 +396,25 @@ const App: FC = () => {
     (r: ContentReadinessRefs) => setRefs(r),
     []
   )
+
+  // Mirror readiness into the tab title. Browser chrome repaints
+  // independently of the tab's refresh driver, so on a Firefox whose driver
+  // stalls (see StalledFrameDriver) the title flips to ✓ the moment the app
+  // is actually ready even while the tab's own pixels are stale.
+  useEffect(() => {
+    if (phase === 'ready') {
+      document.title = '✓ Humatopia World Twin'
+    }
+  }, [phase])
+
+  // Single renderer for the app's lifetime. R3F re-runs its configure pass on
+  // every measured-size change, and with an async gl FACTORY each re-run
+  // constructs ANOTHER WebGPURenderer on the same canvas — observed in Chrome:
+  // four constructions, one of which kept a 300×150 depth buffer and spammed
+  // "attachment size" validation errors every frame until a real window
+  // resize. Memoizing the construction promise makes every configure resolve
+  // to the same instance.
+  const rendererPromiseRef = useRef<Promise<Renderer> | null>(null)
 
   const handleLocationChange = useCallback(
     (longitude: number, latitude: number, name: string) =>
@@ -376,13 +475,39 @@ const App: FC = () => {
   const [activeViewpoint, setActiveViewpoint] = useState<string | null>(
     'overview'
   )
+  const [activeSlideshowId, setActiveSlideshowId] = useState<string | null>(
+    null
+  )
+  const [slideshowOpen, setSlideshowOpen] = useState(false)
+  const slideshows = useScenarioSlideshows(activeScenario)
+
+  // The active scenario definition, resolved once per change instead of a fresh
+  // linear SCENARIOS.find in each consuming prop on every render.
+  const activeScenarioDef = useMemo(
+    () => SCENARIOS.find(s => s.id === activeScenario) ?? null,
+    [activeScenario]
+  )
+
+  useEffect(() => {
+    setActiveSlideshowId(null)
+    setSlideshowOpen(false)
+  }, [activeScenario])
+
+  useEffect(() => {
+    if (
+      activeSlideshowId != null &&
+      !slideshows.decks.some(deck => deck.id === activeSlideshowId)
+    ) {
+      setActiveSlideshowId(null)
+      setSlideshowOpen(false)
+    }
+  }, [activeSlideshowId, slideshows.decks])
 
   // Camera mode (orbit / first-person) + the FPS spawn pose. The nonce forces
   // a respawn even when re-entering FPS at the same scenario.
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit')
   const [fpsSpawn, setFpsSpawn] = useState<
-    | (NonNullable<ReturnType<typeof spawnFor>> & { nonce: number })
-    | null
+    (NonNullable<ReturnType<typeof spawnFor>> & { nonce: number }) | null
   >(null)
   const spawnNonceRef = useRef(0)
   // Monotonic fly id. A viewpoint CLICK is the fly trigger, not an incidental
@@ -451,6 +576,8 @@ const App: FC = () => {
       setTurbineCount(scenario.turbines ?? 0)
       setActiveScenario(scenario.id)
       setActiveViewpoint(viewpoint.id)
+      setActiveSlideshowId(null)
+      setSlideshowOpen(false)
       if (cameraMode === 'fps') {
         respawnAt(scenario, viewpoint)
       }
@@ -676,7 +803,7 @@ const App: FC = () => {
 
   const handleAtmosphereReady = useCallback((elapsedMs: number) => {
     // eslint-disable-next-line no-console
-    console.log(`[ready] atmosphere LUTs computed in ${elapsedMs.toFixed(0)}ms`)
+    console.log(`[ready] atmosphere LUTs loaded in ${elapsedMs.toFixed(0)}ms`)
     setPhase('ocean')
   }, [])
 
@@ -690,23 +817,75 @@ const App: FC = () => {
     <>
       <Canvas
         camera={{ fov: 45, near: 0.1, far: 1e8 }}
-        style={{ position: 'fixed', inset: 0, background: '#101820' }}
-        // Apply resize immediately (no debounce) so the renderer tracks late
-        // fullscreen transitions without a stale-size window; ResizeSync below
-        // is the belt to this suspenders.
-        resize={{ debounce: 0 }}
-        gl={async props => {
-          const renderer = new WebGPURenderer({
-            ...(props as any),
-            antialias: true,
-            logarithmicDepthBuffer: true
-          })
-          await renderer.init()
-          renderer.highPrecision = true
-          renderer.outputColorSpace = SRGBColorSpace
-          renderer.toneMapping = NoToneMapping
-          renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
-          return renderer as unknown as Renderer
+        // No positioning override: R3F's container div defaults to
+        // position:relative + 100%×100%, and #root is styled 100%×100% in
+        // index.html, so the canvas is viewport-sized without it. The previous
+        // `position:fixed; inset:0` style rode on R3F's size-measured div, and
+        // Firefox never reported a nonzero size for it — R3F's internal gate
+        // (containerRect > 0) then never invoked the gl factory, so the app
+        // hung on the splash with an empty console. This default-styled div
+        // is exactly the configuration the storybook WebGPUCanvas uses, which
+        // measures fine in Firefox. (No `resize` override either: R3F's
+        // default resize debounce is already 0 — the old prop only changed
+        // scroll debounce, and ResizeSync below owns the fullscreen repair.)
+        style={{ background: '#101820' }}
+        // Firefox: guarantee the initial size notification R3F's renderer
+        // creation gates on — see MeasureResizeObserver above.
+        resize={{ polyfill: MeasureResizeObserver }}
+        // NOT an async closure itself: R3F re-invokes this factory whenever a
+        // measured-size change re-runs its configure pass — the memoized
+        // promise below makes every invocation resolve to the ONE renderer
+        // (see rendererPromiseRef). The construction body runs exactly once.
+        gl={props => {
+          rendererPromiseRef.current ??= (async () => {
+            const renderer = new WebGPURenderer({
+              ...(props as any),
+              // No canvas MSAA. The final present is a fullscreen post-processing
+              // quad (all scene passes are samples:0), so canvas multisampling
+              // antialiases nothing — but it DOES allocate an MSAA colour buffer
+              // that resolves into the canvas texture. During the mount→fullscreen
+              // resize race those two can momentarily differ in size (e.g. a stale
+              // 300×150 colour buffer resolving into a retina canvas), which is a
+              // fatal WebGPU validation error ("Attachments have differing sizes")
+              // that blacks the scene — hit reliably on Firefox's compat adapter.
+              // Dropping the resolve target makes that mismatch structurally
+              // impossible; worst case is a single wrong-size frame under the splash.
+              antialias: false,
+              logarithmicDepthBuffer: true
+            })
+            try {
+              await renderer.init()
+            } catch (error) {
+              // Fatal and unambiguous, same class as device.lost below: surface
+              // the static unsupported overlay instead of a silent forever-splash.
+              console.error('[webgpu] renderer.init() failed:', error)
+              showUnsupported()
+              throw error
+            }
+            renderer.highPrecision = true
+            renderer.outputColorSpace = SRGBColorSpace
+            renderer.toneMapping = NoToneMapping
+            renderer.library.addLight(AtmosphereLightNode, AtmosphereLight)
+            // Graceful degradation: if the GPU device is lost (unsupported/broken
+            // WebGPU on some browsers), reveal the static "unsupported" overlay
+            // instead of hanging forever on a black splash. Device loss is the one
+            // unambiguous fatal signal; transient validation errors are left to log.
+            const device = (
+              renderer as unknown as { backend?: { device?: GPUDevice } }
+            ).backend?.device
+            if (device != null) {
+              void device.lost.then(info => {
+                console.error(
+                  '[webgpu] device lost:',
+                  info.reason,
+                  info.message
+                )
+                showUnsupported()
+              })
+            }
+            return renderer as unknown as Renderer
+          })()
+          return rendererPromiseRef.current
         }}
       >
         <Content
@@ -716,13 +895,16 @@ const App: FC = () => {
           turbineRpm={telemetry.rpm}
           windHeading={telemetry.yawHeading}
           windSpeed={sample?.windSpeed ?? null}
+          waveHeight={sample?.waveHeight ?? null}
           clockMs={selected}
           precip={sample?.precipitation ?? null}
           airTemperature={sample?.airTemperature ?? null}
           flyTo={flyTo}
           cameraMode={cameraMode}
           fpsSpawn={fpsSpawn}
-          shadowFleetVessels={layerVisible.shadow ? shadowFleetVessels : NO_VESSELS}
+          shadowFleetVessels={
+            layerVisible.shadow ? shadowFleetVessels : NO_VESSELS
+          }
           patrolVessels={layerVisible.patrol ? patrolVessels : NO_VESSELS}
           onVesselSelect={handleVesselSelect}
           selectedVesselId={selectedId}
@@ -749,6 +931,7 @@ const App: FC = () => {
           onAtmosphereReady={handleAtmosphereReady}
           onOceanReady={handleOceanReady}
         />
+        <StalledFrameDriver active={phase !== 'ready'} />
         <ResizeSync />
       </Canvas>
       <BrandMark />
@@ -764,14 +947,10 @@ const App: FC = () => {
         now={clampedNow}
         selected={selected}
         onScrub={setScrubbed}
-        ais={SCENARIOS.find(s => s.id === activeScenario)?.ais ?? null}
-        bunkering={
-          SCENARIOS.find(s => s.id === activeScenario)?.bunkering ?? null
-        }
-        splat={SCENARIOS.find(s => s.id === activeScenario)?.splat ?? null}
-        process={
-          SCENARIOS.find(s => s.id === activeScenario)?.process ?? null
-        }
+        ais={activeScenarioDef?.ais ?? null}
+        bunkering={activeScenarioDef?.bunkering ?? null}
+        splat={activeScenarioDef?.splat ?? null}
+        process={activeScenarioDef?.process ?? null}
         selectedVessel={selectedVessel}
         onCloseVessel={() => setSelectedId(null)}
         installControls={
@@ -829,6 +1008,19 @@ const App: FC = () => {
                 onChange: setWingsOn
               },
               cover: { label: 'Cover', on: coverOn, onChange: setCoverOn }
+            },
+            slideshows: {
+              ...slideshows,
+              activeDeckId: activeSlideshowId,
+              open: slideshowOpen,
+              onOpenDeck: deckId => {
+                setActiveSlideshowId(deckId)
+                setSlideshowOpen(true)
+              },
+              onClose: () => {
+                setSlideshowOpen(false)
+                setActiveSlideshowId(null)
+              }
             }
           } satisfies ScenarioControlsState
         }
@@ -850,8 +1042,8 @@ const App: FC = () => {
 const BrandMark: FC = () => (
   <div style={{ position: 'fixed', top: 8, left: 8, zIndex: 5 }}>
     <a
-      href="/"
-      className="huma-brand"
+      href='/'
+      className='huma-brand'
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -877,12 +1069,19 @@ const BrandMark: FC = () => (
         }}
       >
         <img
-          src="/public/brand/huma-favicon.png"
-          alt="Huma"
+          src='/public/brand/huma-favicon.png'
+          alt='Huma'
           style={{ width: '1.25rem', height: '1.25rem' }} // size-5
         />
       </div>
-      <div style={{ display: 'grid', flex: 1, textAlign: 'left', lineHeight: 1.25 }}>
+      <div
+        style={{
+          display: 'grid',
+          flex: 1,
+          textAlign: 'left',
+          lineHeight: 1.25
+        }}
+      >
         <span
           style={{
             fontFamily: "'HumaDisplay', sans-serif",
@@ -917,8 +1116,16 @@ const BrandMark: FC = () => (
 // milestones (what the loader is doing this phase). Fades out (500 ms) once the
 // loader reports ready. No spinning while ready — display:none after the fade
 // so the spinner doesn't burn cycles in the background.
+//
+// Deliberately plain DOM + CSS. On the pathological stalled-refresh-driver
+// Firefox (see StalledFrameDriver) NOTHING a page does reaches the screen —
+// DOM paints, CSS transitions, WAAPI starts, and even 2D-canvas presentation
+// were each tried and all ride the dead driver; only animations registered
+// with the compositor at the initial paint keep running, which is exactly
+// this CSS spinner. The load completes regardless (title flips to ✓) and the
+// first tab switch/interaction repaints everything.
 const PHASE_STATUS: Record<Phase, string> = {
-  atmosphere: 'Precomputing atmosphere…',
+  atmosphere: 'Loading atmosphere…',
   ocean: 'Building ocean…',
   ready: 'Ready'
 }
@@ -976,7 +1183,7 @@ const Splash: FC<{ visible: boolean; phase: Phase }> = ({ visible, phase }) => {
 
 void detectWebGPU().then(available => {
   if (!available) {
-    unsupportedElement?.classList.add('show')
+    showUnsupported()
     return
   }
   // Surface any worker-side throws routed back via the synthetic-message

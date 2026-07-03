@@ -10,8 +10,8 @@
 
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import type { CubeTexture, Material, Mesh, Object3D, Texture } from 'three'
 import {
+  Color,
   FloatType,
   Matrix4,
   NearestFilter,
@@ -20,68 +20,82 @@ import {
   Vector2,
   Vector3,
   Vector4,
-  Color,
+  type CubeTexture,
+  type Material,
+  type Mesh,
+  type Object3D,
+  type Texture
 } from 'three'
-import { MeshBasicNodeMaterial, type Renderer } from 'three/webgpu'
 import {
   attribute,
+  float,
   modelViewMatrix,
   modelWorldMatrix,
   texture,
   uniform,
   vec2,
   vec3,
-  vec4,
-  float,
+  vec4
 } from 'three/tsl'
-import type { Node, UniformNode } from 'three/webgpu'
+import {
+  MeshBasicNodeMaterial,
+  type Node,
+  type Renderer,
+  type UniformNode
+} from 'three/webgpu'
 
 import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
 import { smoothstep } from '@takram/three-geospatial'
 
 // @ts-expect-error JS module
-import OceanChunkManager from '../../../packages/ocean-ifft/src/ocean/ocean.js'
-// @ts-expect-error JS module
 import {
   createLinearDepthMaterial,
-  createLinearDepthOccluderMaterial,
+  createLinearDepthOccluderMaterial
 } from '../../../packages/ocean-ifft/src/ocean/depth-material.js'
-import { chunkVertexStageWGSL as vertexStageWGSL } from './chunkVertexStageWGSL'
+// @ts-expect-error JS module
+import { ocean_constants } from '../../../packages/ocean-ifft/src/ocean/ocean-constants.js'
+// @ts-expect-error JS module
+import OceanChunkManager from '../../../packages/ocean-ifft/src/ocean/ocean.js'
 import {
   DEFAULT_GERSTNER_WAVES,
   GerstnerOverlay,
-  WaveSimulation,
+  WaveSimulation
 } from '../../../packages/ocean-ifft/src/waterpro/index.js'
-
 import {
   buildWaterproOceanMaterial,
   createWaterproOceanUniforms,
-  type WaterproOceanUniforms,
+  type WaterproOceanUniforms
 } from './buildWaterproOceanMaterial'
+import { chunkVertexStageWGSL as vertexStageWGSL } from './chunkVertexStageWGSL'
 
-// Mirror of ocean_constants used by OceanChunkManager. Kept here as plain
-// numbers so this file has no further package dependencies.
-const OCEAN_SIZE = 500_000
-const QT_OCEAN_MIN_CELL_SIZE = 500
-const QT_OCEAN_MIN_NUM_LAYERS = 15
-const QT_OCEAN_MIN_CELL_RESOLUTION = 36
-const QT_OCEAN_MIN_LOD_RADIUS = OCEAN_SIZE / 2 ** QT_OCEAN_MIN_NUM_LAYERS
+// Quadtree constants come straight from the package. The shader's morph rings
+// (minLodRadius uniform) MUST match the quadtree's LOD-ring assignment in
+// ocean.js — this file used to re-derive minLodRadius as OCEAN_SIZE / 2^15
+// (≈15.26 m) while the quadtree ran on the package's 1000 m, so `lod == n`
+// was never true, the CDLOD morph was globally disabled, and T-junction
+// cracks opened along every tile boundary once waves displaced the surface.
+const QT_OCEAN_MIN_NUM_LAYERS: number = ocean_constants.QT_OCEAN_MIN_NUM_LAYERS
+const QT_OCEAN_MIN_CELL_RESOLUTION: number =
+  ocean_constants.QT_OCEAN_MIN_CELL_RESOLUTION
+const QT_OCEAN_MIN_LOD_RADIUS: number = ocean_constants.QT_OCEAN_MIN_LOD_RADIUS
 
 const IFFT_RESOLUTION = 256
 const GERSTNER_MAX_WAVES = 8
 const DEPTH_PASS_PRIORITY = 0.5
 
 /**
- * userData key marking a mesh as a water-occluder volume (rendered into the
+ * UserData key marking a mesh as a water-occluder volume (rendered into the
  * depth pre-pass with the G=1 flag material so the water surface discards
- * behind it). Writers (e.g. ShipModel's hull box) must use this constant —
- * a bare-string typo on either side fails silently (hull fills with water).
+ * behind it). Writers (e.g. ShipModel's hull box) must use this constant — a
+ * bare-string typo on either side fails silently (hull fills with water).
  */
 export const WATER_OCCLUDER_KEY = 'waterOccluder'
 
-/** WGSL-vertex-stage uniform handles exposed via onReady. `time` is the live
+/**
+ * WGSL-vertex-stage uniform handles exposed via onReady. `time` is the live
  * wave-animation clock — CPU wave sampling (ship buoyancy, camera submersion)
- * reads it so its Gerstner phases match the rendered surface. */
+ * reads it so its Gerstner phases match the rendered surface.
+ */
 export interface VertexUniformsBag {
   lodScale: UniformNode<number>
   swellScale: UniformNode<number>
@@ -119,17 +133,22 @@ interface OceanChunksWaterproProps {
   /** Debug flag: skip the linear-depth pre-pass entirely. */
   skipDepthPrepass?: boolean
   /**
-   * Bisect debugger for the depth pre-pass — find the first stage that
-   * crashes the renderer.
-   *   0 = skip entirely (default; equivalent to skipDepthPrepass=true)
-   *   1 = setRenderTarget(target) + setRenderTarget(null) [nothing else]
-   *   2 = stage 1 + setClearColor + clear()
-   *   3 = stage 2 + render(scene, camera) with NO material swap
-   *   4 = stage 3 + material swap (current production path)
+   * Bisect debugger for the depth pre-pass — find the first stage that crashes
+   * the renderer. 0 = skip entirely (default; equivalent to
+   * skipDepthPrepass=true) 1 = setRenderTarget(target) + setRenderTarget(null)
+   * [nothing else] 2 = stage 1 + setClearColor + clear() 3 = stage 2 +
+   * render(scene, camera) with NO material swap 4 = stage 3 + material swap
+   * (current production path)
    */
   depthPrepassStage?: number
-  /** Optional analytic cloud reflection closure (see buildWaterproOceanMaterial). */
-  cloudReflect?: (reflectDir: Node, originWorld: Node) => {
+  /**
+   * Optional analytic cloud reflection closure (see
+   * buildWaterproOceanMaterial).
+   */
+  cloudReflect?: (
+    reflectDir: Node,
+    originWorld: Node
+  ) => {
     color: Node
     blend: Node
   }
@@ -149,13 +168,13 @@ export default function OceanChunksWaterpro({
   atmosphereContext,
   envCubeTexture,
   foamTexture,
-  numLayers = 3,
+  numLayers = QT_OCEAN_MIN_NUM_LAYERS,
   useDiagnosticMaterial = false,
   skipDepthPrepass = false,
   depthPrepassStage = 4,
   cloudReflect,
   cloudShadow,
-  onReady,
+  onReady
 }: OceanChunksWaterproProps): ReactElement | null {
   const { gl, scene: defaultScene, camera, size } = useThree()
   const renderer = gl as unknown as Renderer
@@ -212,7 +231,7 @@ export default function OceanChunksWaterpro({
       // Large-scale amplitude modulation — breaks top-down cascade-tile
       // repetition. swellStrength=0 → identity (uniform wave heights).
       swellScale: uniform(800.0),
-      swellStrength: uniform(0.5),
+      swellStrength: uniform(0.5)
     }),
     []
   )
@@ -244,7 +263,7 @@ export default function OceanChunksWaterpro({
       magFilter: NearestFilter,
       type: FloatType,
       format: RGBAFormat,
-      depthBuffer: true,
+      depthBuffer: true
     })
   }
   const depthTarget = depthTargetRef.current
@@ -330,7 +349,7 @@ export default function OceanChunksWaterpro({
         waveSim.cascades[2].lengthScale
       ),
       ifftResolution: uniform(waveSim.resolution),
-      lodScale: vertexUniforms.lodScale,
+      lodScale: vertexUniforms.lodScale
     }
 
     const positionNode = vertexStageWGSL.vertexStageWGSL(wgslParams)
@@ -386,7 +405,7 @@ export default function OceanChunksWaterpro({
       // aligns with actual wave peaks instead of cascade-sample drift.
       surfaceHeight: vDisplaced.y as unknown as Node,
       ...(cloudReflect != null ? { cloudReflect } : {}),
-      ...(cloudShadow != null ? { cloudShadow } : {}),
+      ...(cloudShadow != null ? { cloudShadow } : {})
     })
   }, [
     useDiagnosticMaterial,
@@ -402,7 +421,7 @@ export default function OceanChunksWaterpro({
     envCubeTexture,
     foamTexture,
     cloudReflect,
-    cloudShadow,
+    cloudShadow
   ])
 
   // OceanChunkManager init.
@@ -420,7 +439,7 @@ export default function OceanChunksWaterpro({
 
         const waveGeneratorShim = {
           oceanSet: { add: () => ({ onChange: () => {} }) },
-          params_: { gui: null },
+          params_: { gui: null }
         }
 
         const cam = camera as any
@@ -438,7 +457,7 @@ export default function OceanChunksWaterpro({
           gui: null,
           guiParams: {},
           numLayers,
-          material,
+          material
         })
 
         if (cancelled) {
@@ -460,9 +479,9 @@ export default function OceanChunksWaterpro({
             gerstnerWave1: vertexUniforms.gerstnerWave1,
             gerstnerWave2: vertexUniforms.gerstnerWave2,
             gerstnerSteepness: vertexUniforms.gerstnerSteepness,
-            time: vertexUniforms.time,
+            time: vertexUniforms.time
           },
-          oceanManager,
+          oceanManager
         })
       } catch (error) {
         console.error('OceanChunksWaterpro init failed:', error)
@@ -499,9 +518,9 @@ export default function OceanChunksWaterpro({
   useFrame(() => {
     if (skipDepthPrepass) return
     if (depthPrepassStage <= 0) return
-    const manager = oceanManagerRef.current as unknown as
-      | { group?: Object3D }
-      | null
+    const manager = oceanManagerRef.current as unknown as {
+      group?: Object3D
+    } | null
     if (manager == null) return
     const r = renderer as any
     if (r == null) return
@@ -663,8 +682,18 @@ export default function OceanChunksWaterpro({
   const oceanOriginScratch = useMemo(() => new Vector3(), [])
   const clockRef = useRef({
     start: performance.now() / 1000,
-    last: performance.now() / 1000,
+    last: performance.now() / 1000
   })
+
+  // Wave-sim gating during the initial chunk build: one update runs at mount
+  // (compiles the per-cascade compute pipelines and fills the wave textures so
+  // the reveal frame has real waves), then the sim pauses until the builder
+  // drains. A sim frame is ~210 compute dispatches — negligible on Chrome, but
+  // Firefox's per-dispatch overhead let it starve the initial build (85 s
+  // ocean phase). Polls the builder's real state, no timers; the frozen
+  // surface is invisible under the splash.
+  const simWarmedRef = useRef(false)
+  const buildDoneRef = useRef(false)
 
   useFrame((_, delta) => {
     if (oceanManagerRef.current == null || waveSim == null) return
@@ -673,7 +702,18 @@ export default function OceanChunksWaterpro({
     const dt = now - clockRef.current.last
     const t = now - clockRef.current.start
     clockRef.current.last = now
-    waveSim.update(dt, t)
+    if (!buildDoneRef.current) {
+      const mgr = oceanManagerRef.current
+      buildDoneRef.current =
+        mgr?.builder_ != null &&
+        mgr.builder_.Busy === false &&
+        mgr.chunks_ != null &&
+        Object.keys(mgr.chunks_).length > 0
+    }
+    if (buildDoneRef.current || !simWarmedRef.current) {
+      simWarmedRef.current = true
+      waveSim.update(dt, t)
+    }
     vertexUniforms.time.value = t
     vertexUniforms.gerstnerTime.value = t
 
@@ -696,9 +736,7 @@ export default function OceanChunksWaterpro({
       atmosphereContext?.sunDirectionECEF != null &&
       atmosphereContext.matrixWorldToECEF != null
     ) {
-      matrixECEFToWorld
-        .copy(atmosphereContext.matrixWorldToECEF.value)
-        .invert()
+      matrixECEFToWorld.copy(atmosphereContext.matrixWorldToECEF.value).invert()
       worldSun
         .copy(atmosphereContext.sunDirectionECEF.value)
         .transformDirection(matrixECEFToWorld)

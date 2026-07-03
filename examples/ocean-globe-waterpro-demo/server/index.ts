@@ -6,14 +6,14 @@
 
 import { createServer, type ServerResponse } from 'node:http'
 import path from 'node:path'
-
 import sirv from 'sirv'
 
-import { fetchMergedForecast } from '../../../netlify/functions/_met-core'
 import {
   fetchAisPositions,
   fetchVesselTrack
 } from '../../../netlify/functions/_ais-core'
+import { fetchMergedForecast } from '../../../netlify/functions/_met-core'
+import { handleAuthoringRequest } from '../authoring/api'
 import { SHADOW_FLEET } from '../ui/shadowFleet'
 
 const SHADOW_FLEET_IMOS = SHADOW_FLEET.map(v => v.imo)
@@ -41,7 +41,7 @@ const serveStatic = sirv(STATIC_DIR, {
     } else {
       res.setHeader('cache-control', 'no-cache')
     }
-  },
+  }
 })
 
 // Write a JSON response with an optional cache-control header.
@@ -57,8 +57,14 @@ function sendJson(
   res.end(JSON.stringify(body))
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
+}
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
+
+  if (handleAuthoringRequest(req, res)) return
 
   // Liveness probe — used by the compose healthcheck and the deploy script.
   if (url.pathname === '/health') {
@@ -87,9 +93,11 @@ const server = createServer((req, res) => {
         )
         sendJson(res, 200, forecast, `public, max-age=${maxAge}`)
       })
-      .catch((err: Error) =>
-        sendJson(res, 502, { error: err.message ?? 'MET fetch failed' })
-      )
+      .catch((err: unknown) => {
+        sendJson(res, 502, {
+          error: getErrorMessage(err, 'MET fetch failed')
+        })
+      })
     return
   }
 
@@ -99,10 +107,14 @@ const server = createServer((req, res) => {
   // fabricated data) when credentials are unset.
   if (url.pathname === '/.netlify/functions/ais-shadow-fleet') {
     fetchAisPositions(SHADOW_FLEET_IMOS)
-      .then(data => sendJson(res, 200, data, 'public, max-age=30'))
-      .catch((err: Error) =>
-        sendJson(res, 503, { error: err.message ?? 'AIS fetch failed' })
-      )
+      .then(data => {
+        sendJson(res, 200, data, 'public, max-age=30')
+      })
+      .catch((err: unknown) => {
+        sendJson(res, 503, {
+          error: getErrorMessage(err, 'AIS fetch failed')
+        })
+      })
     return
   }
 
@@ -115,10 +127,14 @@ const server = createServer((req, res) => {
       return
     }
     fetchVesselTrack(mmsi)
-      .then(data => sendJson(res, 200, data, 'public, max-age=60'))
-      .catch((err: Error) =>
-        sendJson(res, 503, { error: err.message ?? 'track fetch failed' })
-      )
+      .then(data => {
+        sendJson(res, 200, data, 'public, max-age=60')
+      })
+      .catch((err: unknown) => {
+        sendJson(res, 503, {
+          error: getErrorMessage(err, 'track fetch failed')
+        })
+      })
     return
   }
 
@@ -129,6 +145,5 @@ const server = createServer((req, res) => {
 })
 
 server.listen(PORT, HOST, () => {
-  // eslint-disable-next-line no-console
   console.log(`[twin] serving ${STATIC_DIR} on http://${HOST}:${PORT}`)
 })

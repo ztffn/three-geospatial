@@ -4,18 +4,19 @@
 // /ocean-ifft-resources/* -> packages/ocean-ifft/resources. Only the assets
 // the WaterPro globe story actually touches are copied into the build.
 
-import react from '@vitejs/plugin-react'
 import fs from 'node:fs'
 import type { ServerResponse } from 'node:http'
 import path from 'node:path'
+import react from '@vitejs/plugin-react'
 import sirv from 'sirv'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 
-import { fetchMergedForecast } from '../../netlify/functions/_met-core'
 import {
   fetchAisPositions,
   fetchVesselTrack
 } from '../../netlify/functions/_ais-core'
+import { fetchMergedForecast } from '../../netlify/functions/_met-core'
+import { handleAuthoringRequest } from './authoring/api'
 import { SHADOW_FLEET } from './ui/shadowFleet'
 
 const SHADOW_FLEET_IMOS = SHADOW_FLEET.map(v => v.imo)
@@ -37,11 +38,15 @@ if (process.env.NETLIFY !== 'true') {
   }
 }
 const storybookAssets = path.resolve(repoRoot, 'storybook-webgpu/assets')
-const oceanIfftResources = path.resolve(repoRoot, 'packages/ocean-ifft/resources')
+const oceanIfftResources = path.resolve(
+  repoRoot,
+  'packages/ocean-ifft/resources'
+)
 
 // Files referenced at runtime by GlobeWaterproOcean-Story.tsx +
-// OceanChunksWaterpro.tsx. Atmosphere LUTs are computed on-GPU in the WebGPU
-// pipeline (no .bin LUTs needed); stars.bin is bundled via `new URL(...)`.
+// OceanChunksWaterpro.tsx. The atmosphere LUT .bin files and stars.bin are
+// bundled via `new URL(..., import.meta.url)` (hashed assets), so they need
+// no entry here — see BakedAtmosphereLUT.ts.
 const staticAssets: Array<{ from: string; to: string }> = [
   // Subsea cable network: submarine power (OSM/ODbL) + telecom (TeleGeography/
   // CC BY-NC-SA) for the North Sea/Arctic overview, fetched and drawn as ECEF
@@ -167,11 +172,7 @@ function staticDirsPlugin(): Plugin {
 
 // Write a JSON response (shared by both dev proxies below). Dev responses are
 // always no-store so the browser re-hits the live upstream each time.
-function sendJson(
-  res: ServerResponse,
-  status: number,
-  body: unknown
-): void {
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status
   res.setHeader('content-type', 'application/json')
   res.setHeader('cache-control', 'no-store')
@@ -218,20 +219,29 @@ function aisDevProxyPlugin(): Plugin {
             .catch((err: Error) => sendJson(res, 503, { error: err.message }))
         }
       )
-      server.middlewares.use(
-        '/.netlify/functions/ais-track',
-        (req, res) => {
-          const url = new URL(req.url ?? '', 'http://localhost')
-          const mmsi = Number(url.searchParams.get('mmsi'))
-          if (!Number.isFinite(mmsi) || mmsi <= 0) {
-            sendJson(res, 400, { error: 'missing or invalid mmsi' })
-            return
-          }
-          fetchVesselTrack(mmsi)
-            .then(data => sendJson(res, 200, data))
-            .catch((err: Error) => sendJson(res, 503, { error: err.message }))
+      server.middlewares.use('/.netlify/functions/ais-track', (req, res) => {
+        const url = new URL(req.url ?? '', 'http://localhost')
+        const mmsi = Number(url.searchParams.get('mmsi'))
+        if (!Number.isFinite(mmsi) || mmsi <= 0) {
+          sendJson(res, 400, { error: 'missing or invalid mmsi' })
+          return
         }
-      )
+        fetchVesselTrack(mmsi)
+          .then(data => sendJson(res, 200, data))
+          .catch((err: Error) => sendJson(res, 503, { error: err.message }))
+      })
+    }
+  }
+}
+
+function authoringDevApiPlugin(): Plugin {
+  return {
+    name: 'authoring-dev-api',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (handleAuthoringRequest(req, res)) return
+        next()
+      })
     }
   }
 }
@@ -287,7 +297,7 @@ function ifftWorkerHardeningPlugin(): Plugin {
         if (!code.includes(target)) return null
         return {
           code:
-            "import __OCEAN_BUILDER_WORKER_URL__ from " +
+            'import __OCEAN_BUILDER_WORKER_URL__ from ' +
             "'./ocean-builder-threaded-worker.js?worker&url';\n" +
             code.replace(target, '__OCEAN_BUILDER_WORKER_URL__'),
           map: null
@@ -307,22 +317,22 @@ function ifftWorkerHardeningPlugin(): Plugin {
           return null
         }
         const replacement = [
-          "// Build-time injection by examples/ocean-globe-waterpro-demo/vite.config.ts",
-          "// (ifftWorkerHardeningPlugin). Surfaces synchronous Init/Build throws as",
-          "// synthetic messages so the WorkerThreadPool can free the busy slot",
-          "// instead of deadlocking forever.",
+          '// Build-time injection by examples/ocean-globe-waterpro-demo/vite.config.ts',
+          '// (ifftWorkerHardeningPlugin). Surfaces synchronous Init/Build throws as',
+          '// synthetic messages so the WorkerThreadPool can free the busy slot',
+          '// instead of deadlocking forever.',
           "self.addEventListener('error', function (e) {",
-          "  self.postMessage({ __workerError: true, message: e.message, filename: e.filename, lineno: e.lineno });",
-          "});",
-          "self.onmessage = function (msg) {",
-          "  try {",
-          "    CHUNK.Init(msg.data.params);",
-          "    const rebuiltData = CHUNK.Build();",
-          "    self.postMessage({ data: rebuiltData });",
-          "  } catch (err) {",
-          "    self.postMessage({ __workerError: true, message: err && err.message, stack: err && err.stack });",
-          "  }",
-          "};"
+          '  self.postMessage({ __workerError: true, message: e.message, filename: e.filename, lineno: e.lineno });',
+          '});',
+          'self.onmessage = function (msg) {',
+          '  try {',
+          '    CHUNK.Init(msg.data.params);',
+          '    const rebuiltData = CHUNK.Build();',
+          '    self.postMessage({ data: rebuiltData });',
+          '  } catch (err) {',
+          '    self.postMessage({ __workerError: true, message: err && err.message, stack: err && err.stack });',
+          '  }',
+          '};'
         ].join('\n')
         return { code: code.replace(onmessageRe, replacement), map: null }
       }
@@ -367,7 +377,8 @@ function secretGuardPlugin(): Plugin {
         .readdirSync(assetsDir)
         .filter(f => f.endsWith('.js'))
         .map(f => path.join(assetsDir, f))
-      const jwtRe = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/
+      const jwtRe =
+        /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/
       const pemRe = /-----BEGIN [A-Z ]*PRIVATE KEY-----/
       for (const file of jsFiles) {
         const txt = fs.readFileSync(file, 'utf8')
@@ -410,6 +421,7 @@ export default defineConfig({
     staticDirsPlugin(),
     metDevProxyPlugin(),
     aisDevProxyPlugin(),
+    authoringDevApiPlugin(),
     secretGuardPlugin()
   ],
   // Bundled workers ship as ES modules — required by ocean-builder-threaded.js's

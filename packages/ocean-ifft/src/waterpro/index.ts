@@ -9,19 +9,25 @@
 export {
   waterColorNode,
   buildWaterColumnDepth,
-  buildIsObjectInFront,
+  buildIsObjectInFront
 } from './nodes/water-color.js'
 export type {
   WaterColorParams,
   WaterColumnDepthParams,
-  WaterColorOutputs,
+  WaterColorOutputs
 } from './nodes/water-color.js'
 
 export { surfaceFoamNode } from './nodes/surface-foam.js'
-export type { SurfaceFoamParams, SurfaceFoamOutputs } from './nodes/surface-foam.js'
+export type {
+  SurfaceFoamParams,
+  SurfaceFoamOutputs
+} from './nodes/surface-foam.js'
 
 export { shorelineFoamNode } from './nodes/shoreline-foam.js'
-export type { ShorelineFoamParams, ShorelineFoamOutputs } from './nodes/shoreline-foam.js'
+export type {
+  ShorelineFoamParams,
+  ShorelineFoamOutputs
+} from './nodes/shoreline-foam.js'
 
 export { waveFoamNode } from './nodes/wave-foam.js'
 export type { WaveFoamParams, WaveFoamOutputs } from './nodes/wave-foam.js'
@@ -29,13 +35,13 @@ export type { WaveFoamParams, WaveFoamOutputs } from './nodes/wave-foam.js'
 export { fresnelDistanceNode } from './nodes/fresnel-distance.js'
 export type {
   FresnelDistanceParams,
-  FresnelDistanceOutputs,
+  FresnelDistanceOutputs
 } from './nodes/fresnel-distance.js'
 
 export { subSurfaceScatteringNode } from './nodes/sub-surface-scattering.js'
 export type {
   SubSurfaceScatteringParams,
-  SubSurfaceScatteringOutputs,
+  SubSurfaceScatteringOutputs
 } from './nodes/sub-surface-scattering.js'
 
 export { sparkleNode } from './nodes/sparkle.js'
@@ -45,7 +51,7 @@ export { turbulentFoamNode } from './nodes/turbulent-foam.js'
 export type {
   TurbulentFoamParams,
   TurbulentFoamOutputs,
-  WaveNormalSampler,
+  WaveNormalSampler
 } from './nodes/turbulent-foam.js'
 
 export { combineFoamNode } from './nodes/combine-foam.js'
@@ -56,7 +62,7 @@ export type {
   CombineFoamWave,
   CombineFoamShoreline,
   CombineFoamWake,
-  CombineFoamSceneInputs,
+  CombineFoamSceneInputs
 } from './nodes/combine-foam.js'
 
 // Wave simulation (ports of WaterPro SF cascade simulation + samplers).
@@ -67,23 +73,23 @@ export type { WaveCascadeParams } from './waves/wave-cascade.js'
 export {
   sampleWaveDisplacement,
   sampleWaveNormal,
-  sampleWaveSurface,
+  sampleWaveSurface
 } from './waves/wave-sampler.js'
 export type {
   DisplacementSample,
   NormalSample,
-  SampleOpts,
+  SampleOpts
 } from './waves/wave-sampler.js'
 export {
   DEFAULT_CASCADES,
   DEFAULT_RESOLUTION,
   makePrimarySpectrum,
-  makeSecondarySpectrum,
+  makeSecondarySpectrum
 } from './waves/wave-defaults.js'
 export type {
   CascadeConfig,
   SpectrumParams,
-  DualSpectrumParams,
+  DualSpectrumParams
 } from './waves/wave-defaults.js'
 
 // Gerstner overlay (port of WaterPro CPU setup + evaluateGerstnerCPU).
@@ -91,29 +97,47 @@ export { GerstnerOverlay, DEFAULT_GERSTNER_WAVES } from './waves/gerstner.js'
 export type {
   GerstnerWaveSpec,
   GerstnerOverlayParams,
-  GerstnerEvalOutputs,
+  GerstnerEvalOutputs
 } from './waves/gerstner.js'
 
-// Water-only scene presets (atmosphere / caustics / oceanFloor / postProcessing
-// / fresnel.underwater / ssr fields stripped — those belong elsewhere).
+// Water-only STYLE presets (colour / fresnel / sparkle / SSS / fog / foam
+// colour+size). Wave amplitude + foam AMOUNTS live in the sea-state ladder.
 export {
   WATERPRO_PRESETS,
   WATERPRO_PRESET_NAMES,
-  applyWaterproPreset,
+  applyWaterproPreset
 } from './presets.js'
 export type {
   WaterproPresetName,
   WaterproPresetWaterFields,
-  WaterproPresetUniformBag,
+  WaterproPresetUniformBag
 } from './presets.js'
+
+// Sea-state severity ladder (dead → storm) — the "how rough" axis.
+export {
+  SEA_STATE_PRESETS,
+  SEA_STATE_NAMES,
+  SEA_STATE_PARAM_KEYS,
+  sampleSeaState,
+  severityFromMetrics,
+  severityIndexOf,
+  applySeaState,
+  formatSeaStatePreset
+} from './sea-state.js'
+export type {
+  SeaStateName,
+  SeaStateParams,
+  SeaStatePreset,
+  SeaStateUniformBag
+} from './sea-state.js'
 
 // Underwater post effect (absorption fog + procedural Voronoi caustics).
 export {
   underwaterPostNode,
   createUnderwaterUniforms,
-  UNDERWATER_DEFAULTS,
+  UNDERWATER_DEFAULTS
 } from './nodes/underwater.js'
 export type {
   UnderwaterUniforms,
-  UnderwaterPostParams,
+  UnderwaterPostParams
 } from './nodes/underwater.js'

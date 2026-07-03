@@ -3,8 +3,10 @@ import {ocean_chunk} from './ocean-chunk.js';
 
 export const ocean_builder_threaded = (() => {
 	
-	//7 because my tablet has 8 cores in the processor. One is always used by the maintread. 
-	const _NUM_WORKERS = 7;
+	// Size the pool to the machine: all cores minus one for the main thread
+	// (which drains worker results and uploads chunk geometry). Was a fixed 7,
+	// tuned for an 8-core tablet - that undersubscribed 10-16-core desktops.
+	const _NUM_WORKERS = Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 1);
 	
 	let _IDs = 0;
 	
@@ -79,6 +81,9 @@ export const ocean_builder_threaded = (() => {
 			this.pool_ = {};
 			this.old_ = [];
 			
+			// Diagnostic: Firefox clamps hardwareConcurrency to 2 under
+			// privacy.resistFingerprinting, which would quietly gut this pool.
+			console.log(`[ocean-builder] worker pool: ${_NUM_WORKERS} (hardwareConcurrency=${globalThis.navigator?.hardwareConcurrency})`);
 			this.workerPool_ = new WorkerThreadPool(
 				_NUM_WORKERS,
 				new URL('./ocean-builder-threaded-worker.js', import.meta.url)

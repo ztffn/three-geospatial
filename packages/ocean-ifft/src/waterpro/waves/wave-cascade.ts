@@ -7,41 +7,48 @@
 //   - derivative   (RGBA HalfFloat) : ∂h/∂x, ∂h/∂z gradient + Jacobian terms
 //   - jacobian     (RGBA Float)     : foam-relevant Jacobian determinant terms
 //
-// The shader WGSL strings are reused from `resources/shader/IFFT/*.js` — pure
-// shader code, no framework coupling. Math is identical to WaterPro's WASM
-// IFFT (standard Tessendorf inverse FFT with Phillips spectrum).
+// Each pass is a TSL Fn that performs the storage-buffer element loads/stores
+// and calls the by-value WGSL kernels in wave-kernels.ts — core WGSL with
+// module-scope buffer access, so it validates on Firefox's Naga as well as
+// Chrome's Tint (the previous resources/shader/IFFT/*.js kernels took
+// ptr<storage> function parameters, which Naga rejects). Index math is kept
+// line-for-line from those originals; the math itself is identical to
+// WaterPro's WASM IFFT (standard Tessendorf inverse FFT with JONSWAP/TMA).
 
-import * as THREE from 'three/webgpu'
 import {
-  textureStore,
+  Fn,
   instanceIndex,
-  uniform,
-  uint,
-  storage,
-  workgroupId,
   localId,
+  storage,
+  textureStore,
+  uint,
+  uniform,
+  uvec2,
+  vec4,
+  workgroupId
 } from 'three/tsl'
-// @ts-expect-error — untyped WGSL string module
-import { InitialSpectrumWGSL } from '../../../resources/shader/IFFT/initialSpectrum.js'
-// @ts-expect-error
-import { InitialSpectrumWithInverseWGSL } from '../../../resources/shader/IFFT/initialSpectrumWithInverse.js'
-// @ts-expect-error
-import { TimeSpectrumWGSL } from '../../../resources/shader/IFFT/timeSpectrum.js'
-// @ts-expect-error
-import { IFFT_InitWGSL } from '../../../resources/shader/IFFT/IFFT_init.js'
-// @ts-expect-error
-import { IFFT_HorizontalWGSL } from '../../../resources/shader/IFFT/IFFT_Horizontal.js'
-// @ts-expect-error
-import { IFFT_VerticalWGSL } from '../../../resources/shader/IFFT/IFFT_Vertical.js'
-// @ts-expect-error
-import { IFFT_PermuteWGSL } from '../../../resources/shader/IFFT/IFFT_permute.js'
-// @ts-expect-error
-import { TexturesMergerWGSL } from '../../../resources/shader/IFFT/texturesMerger.js'
-import type { CascadeConfig, DualSpectrumParams } from './wave-defaults.js'
-import { DEFAULT_WORKGROUP } from './wave-defaults.js'
+import * as THREE from 'three/webgpu'
+
+import {
+  DEFAULT_WORKGROUP,
+  type CascadeConfig,
+  type DualSpectrumParams
+} from './wave-defaults.js'
+import {
+  ifftInitValueWGSL,
+  ifftPassValueWGSL,
+  initialSpectrumValueWGSL,
+  initialWaveDataValueWGSL,
+  mergeValueWGSL,
+  permuteValueWGSL,
+  pickChannelWGSL,
+  selectWriteWGSL,
+  timeSpectrumDerivativesWGSL,
+  timeSpectrumDisplacementWGSL
+} from './wave-kernels.js'
 
 export interface WaveCascadeParams {
-  renderer: any  // THREE.WebGPURenderer
+  renderer: any // THREE.WebGPURenderer
   size: number
   config: CascadeConfig
   spectrum: DualSpectrumParams
@@ -66,6 +73,7 @@ export class WaveCascade {
   private readonly ifftStep: any
   private readonly pingpong: any
   private readonly deltaTime: any
+  private readonly time: any
 
   private readonly spectrumBuffer: THREE.StorageBufferAttribute
   private readonly waveDataBuffer: THREE.StorageBufferAttribute
@@ -94,26 +102,51 @@ export class WaveCascade {
     this.workgroupSize = DEFAULT_WORKGROUP
     this.dispatchSize = [
       params.size / this.workgroupSize[0],
-      params.size / this.workgroupSize[1],
+      params.size / this.workgroupSize[1]
     ]
 
     const sq = params.size * params.size
     const buf2 = sq * 2
     const buf4 = sq * 4
 
-    this.spectrumBuffer = new THREE.StorageBufferAttribute(new Float32Array(buf4), 4)
-    this.waveDataBuffer = new THREE.StorageBufferAttribute(new Float32Array(buf4), 4)
-    this.DxDzBuffer = new THREE.StorageBufferAttribute(new Float32Array(buf2), 2)
-    this.DyDxzBuffer = new THREE.StorageBufferAttribute(new Float32Array(buf2), 2)
-    this.DyxDyzBuffer = new THREE.StorageBufferAttribute(new Float32Array(buf2), 2)
-    this.DxxDzzBuffer = new THREE.StorageBufferAttribute(new Float32Array(buf2), 2)
-    this.pingpongBuffer = new THREE.StorageBufferAttribute(new Float32Array(buf2 * 2), 4)
-    this.turbulenceBuffer = new THREE.StorageBufferAttribute(new Float32Array(sq), 1)
+    this.spectrumBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(buf4),
+      4
+    )
+    this.waveDataBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(buf4),
+      4
+    )
+    this.DxDzBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(buf2),
+      2
+    )
+    this.DyDxzBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(buf2),
+      2
+    )
+    this.DyxDyzBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(buf2),
+      2
+    )
+    this.DxxDzzBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(buf2),
+      2
+    )
+    this.pingpongBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(buf2 * 2),
+      4
+    )
+    this.turbulenceBuffer = new THREE.StorageBufferAttribute(
+      new Float32Array(sq),
+      1
+    )
 
     this.DDindex = uniform(0)
     this.ifftStep = uniform(0)
     this.pingpong = uniform(0)
     this.deltaTime = uniform(0)
+    this.time = uniform(0)
 
     this.displacement = this.makeStorageTex(params.size, THREE.HalfFloatType)
     this.derivative = this.makeStorageTex(params.size, THREE.HalfFloatType)
@@ -123,144 +156,397 @@ export class WaveCascade {
       tex.anisotropy = aniso
     }
 
-    // ── Initial spectrum compute kernels — sum primary + secondary spectra
-    // into the spectrumBuffer / waveDataBuffer.
-    this.computeInitialSpectrum = InitialSpectrumWGSL({
-      spectrumBuffer: storage(this.spectrumBuffer, 'vec4', this.spectrumBuffer.count),
-      waveDataBuffer: storage(this.waveDataBuffer, 'vec4', this.waveDataBuffer.count),
-      index: instanceIndex,
-      size: params.size,
-      waveLength: uniform(params.config.lengthScale),
-      boundaryLow: uniform(params.config.boundaryLow),
-      boundaryHigh: uniform(params.config.boundaryHigh),
-      // Primary spectrum (matches WGSL signature - no prefix)
-      depth: params.spectrum.primary.depth,
-      scaleHeight: params.spectrum.primary.scaleHeight,
-      windSpeed: params.spectrum.primary.windSpeed,
-      windDirection: params.spectrum.primary.windDirection,
-      fetch: params.spectrum.primary.fetch,
-      spreadBlend: params.spectrum.primary.spreadBlend,
-      swell: params.spectrum.primary.swell,
-      peakEnhancement: params.spectrum.primary.peakEnhancement,
-      shortWaveFade: params.spectrum.primary.shortWaveFade,
-      fadeLimit: params.spectrum.primary.fadeLimit,
-      // Secondary spectrum (d_ prefix matches WaterPro WGSL signature)
-      d_depth: params.spectrum.secondary.depth,
-      d_scaleHeight: params.spectrum.secondary.scaleHeight,
-      d_windSpeed: params.spectrum.secondary.windSpeed,
-      d_windDirection: params.spectrum.secondary.windDirection,
-      d_fetch: params.spectrum.secondary.fetch,
-      d_spreadBlend: params.spectrum.secondary.spreadBlend,
-      d_swell: params.spectrum.secondary.swell,
-      d_peakEnhancement: params.spectrum.secondary.peakEnhancement,
-      d_shortWaveFade: params.spectrum.secondary.shortWaveFade,
-      d_fadeLimit: params.spectrum.secondary.fadeLimit,
-    }).compute(sq)
+    // Shared node building blocks. `pos` reproduces the originals'
+    // `workgroupSize.xy * workgroupId.xy + localId.xy` (the workgroup size is a
+    // compile-time constant here instead of the redundant uniform it was).
+    const sizeU = uint(params.size)
+    const logNU = uint(this.logN)
+    const WG = uvec2(this.workgroupSize[0], this.workgroupSize[1])
+    const makePos = (): any => WG.mul(workgroupId.xy).add(localId.xy).toVar()
 
-    this.computeInitialSpectrumWithInverse = InitialSpectrumWithInverseWGSL({
-      spectrumBuffer: storage(this.spectrumBuffer, 'vec4', this.spectrumBuffer.count),
-      index: instanceIndex,
-      size: params.size,
-    }).compute(sq)
+    // ── Initial spectrum — sum primary + secondary spectra into the
+    // spectrumBuffer / waveDataBuffer (one dispatch, both texels; 1D indexed).
+    const waveLength = uniform(params.config.lengthScale)
+    const boundaryLow = uniform(params.config.boundaryLow)
+    const boundaryHigh = uniform(params.config.boundaryHigh)
+    const p = params.spectrum.primary
+    const s = params.spectrum.secondary
 
-    // ── Per-frame compute kernels ──────────────────────────────────────────
-    this.computeTimeSpectrum = TimeSpectrumWGSL({
-      writeDxDzBuffer: storage(this.DxDzBuffer, 'vec2', this.DxDzBuffer.count),
-      writeDyDxzBuffer: storage(this.DyDxzBuffer, 'vec2', this.DyDxzBuffer.count),
-      writeDyxDyzBuffer: storage(this.DyxDyzBuffer, 'vec2', this.DyxDyzBuffer.count),
-      writeDxxDzzBuffer: storage(this.DxxDzzBuffer, 'vec2', this.DxxDzzBuffer.count),
-      spectrumBuffer: storage(this.spectrumBuffer, 'vec4', this.spectrumBuffer.count),
-      waveDataBuffer: storage(this.waveDataBuffer, 'vec4', this.waveDataBuffer.count),
-      index: instanceIndex,
-      size: uint(params.size),
-      time: uniform(0),
-    }).computeKernel(this.workgroupSize)
+    this.computeInitialSpectrum = Fn(() => {
+      const spectrumN = storage(
+        this.spectrumBuffer,
+        'vec4',
+        this.spectrumBuffer.count
+      )
+      const waveDataN = storage(
+        this.waveDataBuffer,
+        'vec4',
+        this.waveDataBuffer.count
+      )
+      spectrumN.element(instanceIndex).assign(
+        initialSpectrumValueWGSL({
+          index: instanceIndex,
+          size: sizeU,
+          waveLength,
+          boundaryLow,
+          boundaryHigh,
+          // Primary spectrum (matches WGSL signature - no prefix)
+          depth: p.depth,
+          scaleHeight: p.scaleHeight,
+          windSpeed: p.windSpeed,
+          windDirection: p.windDirection,
+          fetch: p.fetch,
+          spreadBlend: p.spreadBlend,
+          swell: p.swell,
+          peakEnhancement: p.peakEnhancement,
+          shortWaveFade: p.shortWaveFade,
+          fadeLimit: p.fadeLimit,
+          // Secondary spectrum (d_ prefix matches WaterPro WGSL signature)
+          d_depth: s.depth,
+          d_scaleHeight: s.scaleHeight,
+          d_windSpeed: s.windSpeed,
+          d_windDirection: s.windDirection,
+          d_fetch: s.fetch,
+          d_spreadBlend: s.spreadBlend,
+          d_swell: s.swell,
+          d_peakEnhancement: s.peakEnhancement,
+          d_shortWaveFade: s.shortWaveFade,
+          d_fadeLimit: s.fadeLimit
+        })
+      )
+      waveDataN.element(instanceIndex).assign(
+        initialWaveDataValueWGSL({
+          index: instanceIndex,
+          size: sizeU,
+          waveLength,
+          boundaryLow,
+          boundaryHigh,
+          depth: p.depth
+        })
+      )
+    })().compute(sq)
 
-    const bf = storage(params.butterflyBuffer, 'vec4', params.butterflyBuffer.count).toReadOnly()
-    const pp = storage(this.pingpongBuffer, 'vec4', this.pingpongBuffer.count)
-    const wgUniform = uniform(new THREE.Vector2().fromArray(this.workgroupSize))
+    // Pack the conjugate of the mirrored (-k) cell into zw. Index math is the
+    // originals' `((size - i/size) % size) * size + (size - i % size) % size`;
+    // reads are hoisted to vars so both happen before the write.
+    this.computeInitialSpectrumWithInverse = Fn(() => {
+      const spectrumN = storage(
+        this.spectrumBuffer,
+        'vec4',
+        this.spectrumBuffer.count
+      )
+      const mirrored = sizeU
+        .sub(instanceIndex.div(sizeU))
+        .mod(sizeU)
+        .mul(sizeU)
+        .add(sizeU.sub(instanceIndex.mod(sizeU)).mod(sizeU))
+        .toVar()
+      const h0 = spectrumN.element(instanceIndex).toVar()
+      const h0MinusK = spectrumN.element(mirrored).toVar()
+      spectrumN
+        .element(instanceIndex)
+        .assign(vec4(h0.xy, h0MinusK.x, h0MinusK.y.negate()))
+    })().compute(sq)
 
-    this.computeInitialize = IFFT_InitWGSL({
-      size: uint(params.size),
-      step: uint(this.ifftStep),
-      logN: uint(this.logN),
-      butterflyBuffer: bf,
-      DxDzBuffer: storage(this.DxDzBuffer, 'vec2', this.DxDzBuffer.count).toReadOnly(),
-      DyDxzBuffer: storage(this.DyDxzBuffer, 'vec2', this.DyDxzBuffer.count).toReadOnly(),
-      DyxDyzBuffer: storage(this.DyxDyzBuffer, 'vec2', this.DyxDyzBuffer.count).toReadOnly(),
-      DxxDzzBuffer: storage(this.DxxDzzBuffer, 'vec2', this.DxxDzzBuffer.count).toReadOnly(),
-      pingpongBuffer: pp,
-      initBufferIndex: uint(this.DDindex),
-      index: instanceIndex,
-      workgroupSize: wgUniform,
-      workgroupId,
-      localId,
-    }).computeKernel(this.workgroupSize)
+    // ── Per-frame passes ───────────────────────────────────────────────────
 
-    this.computeHorizontal = IFFT_HorizontalWGSL({
-      size: uint(params.size),
-      step: uint(this.ifftStep),
-      logN: uint(this.logN),
-      butterflyBuffer: bf,
-      pingpongBuffer: pp,
-      initBufferIndex: uint(this.DDindex),
-      pingpong: uint(this.pingpong),
-      index: instanceIndex,
-      workgroupSize: wgUniform,
-      workgroupId,
-      localId,
-    }).computeKernel(this.workgroupSize)
+    // Time evolution: h0 → h(t); two kernel calls because a value function
+    // returns one texel (xy/zw packing documented in wave-kernels.ts).
+    this.computeTimeSpectrum = Fn(() => {
+      const spectrumN = storage(
+        this.spectrumBuffer,
+        'vec4',
+        this.spectrumBuffer.count
+      ).toReadOnly()
+      const waveDataN = storage(
+        this.waveDataBuffer,
+        'vec4',
+        this.waveDataBuffer.count
+      ).toReadOnly()
+      const h0 = spectrumN.element(instanceIndex).toVar()
+      const wave = waveDataN.element(instanceIndex).toVar()
+      const a = timeSpectrumDisplacementWGSL({
+        h0,
+        wave,
+        time: this.time
+      }).toVar()
+      const b = timeSpectrumDerivativesWGSL({
+        h0,
+        wave,
+        time: this.time
+      }).toVar()
+      storage(this.DxDzBuffer, 'vec2', this.DxDzBuffer.count)
+        .element(instanceIndex)
+        .assign(a.xy)
+      storage(this.DyDxzBuffer, 'vec2', this.DyDxzBuffer.count)
+        .element(instanceIndex)
+        .assign(a.zw)
+      storage(this.DyxDyzBuffer, 'vec2', this.DyxDyzBuffer.count)
+        .element(instanceIndex)
+        .assign(b.xy)
+      storage(this.DxxDzzBuffer, 'vec2', this.DxxDzzBuffer.count)
+        .element(instanceIndex)
+        .assign(b.zw)
+    })().computeKernel(this.workgroupSize)
 
-    this.computeVertical = IFFT_VerticalWGSL({
-      size: uint(params.size),
-      step: uint(this.ifftStep),
-      logN: uint(this.logN),
-      butterflyBuffer: bf,
-      pingpongBuffer: pp,
-      initBufferIndex: uint(this.DDindex),
-      pingpong: uint(this.pingpong),
-      index: instanceIndex,
-      workgroupSize: wgUniform,
-      workgroupId,
-      localId,
-    }).computeKernel(this.workgroupSize)
+    // First IFFT stage: gather the even/odd rows for the channel selected by
+    // DDindex into the pingpong buffer (butterfly indices from data.z/w).
+    this.computeInitialize = Fn(() => {
+      const bfN = storage(
+        params.butterflyBuffer,
+        'vec4',
+        params.butterflyBuffer.count
+      ).toReadOnly()
+      const ppN = storage(
+        this.pingpongBuffer,
+        'vec4',
+        this.pingpongBuffer.count
+      )
+      const dxdzN = storage(
+        this.DxDzBuffer,
+        'vec2',
+        this.DxDzBuffer.count
+      ).toReadOnly()
+      const dydxzN = storage(
+        this.DyDxzBuffer,
+        'vec2',
+        this.DyDxzBuffer.count
+      ).toReadOnly()
+      const dyxdyzN = storage(
+        this.DyxDyzBuffer,
+        'vec2',
+        this.DyxDyzBuffer.count
+      ).toReadOnly()
+      const dxxdzzN = storage(
+        this.DxxDzzBuffer,
+        'vec2',
+        this.DxxDzzBuffer.count
+      ).toReadOnly()
 
-    this.computePermute = IFFT_PermuteWGSL({
-      size: uint(params.size),
-      pingpongBuffer: storage(this.pingpongBuffer, 'vec4', this.pingpongBuffer.count).toReadOnly(),
-      DxDzBuffer: storage(this.DxDzBuffer, 'vec2', this.DxDzBuffer.count),
-      DyDxzBuffer: storage(this.DyDxzBuffer, 'vec2', this.DyDxzBuffer.count),
-      DyxDyzBuffer: storage(this.DyxDyzBuffer, 'vec2', this.DyxDyzBuffer.count),
-      DxxDzzBuffer: storage(this.DxxDzzBuffer, 'vec2', this.DxxDzzBuffer.count),
-      initBufferIndex: uint(this.DDindex),
-      index: instanceIndex,
-      workgroupSize: wgUniform,
-      workgroupId,
-      localId,
-    }).computeKernel(this.workgroupSize)
+      const pos = makePos()
+      const data = bfN
+        .element(pos.x.mul(logNU).add(uint(this.ifftStep)))
+        .toVar()
+      const evenIdx = pos.y.mul(sizeU).add(uint(data.z)).toVar()
+      const oddIdx = pos.y.mul(sizeU).add(uint(data.w)).toVar()
+      const sel = uint(this.DDindex)
+      const even = pickChannelWGSL({
+        a: dxdzN.element(evenIdx),
+        b: dydxzN.element(evenIdx),
+        c: dyxdyzN.element(evenIdx),
+        d: dxxdzzN.element(evenIdx),
+        sel
+      }).toVar()
+      const odd = pickChannelWGSL({
+        a: dxdzN.element(oddIdx),
+        b: dydxzN.element(oddIdx),
+        c: dyxdyzN.element(oddIdx),
+        d: dxxdzzN.element(oddIdx),
+        sel
+      }).toVar()
+      ppN.element(instanceIndex).assign(ifftInitValueWGSL({ data, even, odd }))
+    })().computeKernel(this.workgroupSize)
 
-    this.computeMerge = TexturesMergerWGSL({
-      size: uint(params.size),
-      index: instanceIndex,
-      lambda: uniform(params.config.lambda),
-      deltaTime: this.deltaTime,
-      DxDzBuffer: storage(this.DxDzBuffer, 'vec2', this.DxDzBuffer.count).toReadOnly(),
-      DyDxzBuffer: storage(this.DyDxzBuffer, 'vec2', this.DyDxzBuffer.count).toReadOnly(),
-      DyxDyzBuffer: storage(this.DyxDyzBuffer, 'vec2', this.DyxDyzBuffer.count).toReadOnly(),
-      DxxDzzBuffer: storage(this.DxxDzzBuffer, 'vec2', this.DxxDzzBuffer.count).toReadOnly(),
-      turbulenceBuffer: storage(this.turbulenceBuffer, 'float', this.turbulenceBuffer.count),
-      writeDisplacement: textureStore(this.displacement),
-      writeDerivative: textureStore(this.derivative),
-      writeJacobian: textureStore(this.jacobian),
-      workgroupSize: wgUniform,
-      workgroupId,
-      localId,
-    }).computeKernel(this.workgroupSize)
+    // Horizontal butterfly stages (rows): butterfly index walks pos.x.
+    this.computeHorizontal = Fn(() => {
+      const bfN = storage(
+        params.butterflyBuffer,
+        'vec4',
+        params.butterflyBuffer.count
+      ).toReadOnly()
+      const ppN = storage(
+        this.pingpongBuffer,
+        'vec4',
+        this.pingpongBuffer.count
+      )
+
+      const pos = makePos()
+      const data = bfN
+        .element(pos.x.mul(logNU).add(uint(this.ifftStep)))
+        .toVar()
+      const even4 = ppN.element(pos.y.mul(sizeU).add(uint(data.z))).toVar()
+      const odd4 = ppN.element(pos.y.mul(sizeU).add(uint(data.w))).toVar()
+      const current = ppN.element(instanceIndex).toVar()
+      ppN
+        .element(instanceIndex)
+        .assign(
+          ifftPassValueWGSL({
+            data,
+            even4,
+            odd4,
+            current,
+            pingpong: uint(this.pingpong)
+          })
+        )
+    })().computeKernel(this.workgroupSize)
+
+    // Vertical butterfly stages (columns): butterfly index walks pos.y and the
+    // even/odd rows come from data.z/w × size + pos.x.
+    this.computeVertical = Fn(() => {
+      const bfN = storage(
+        params.butterflyBuffer,
+        'vec4',
+        params.butterflyBuffer.count
+      ).toReadOnly()
+      const ppN = storage(
+        this.pingpongBuffer,
+        'vec4',
+        this.pingpongBuffer.count
+      )
+
+      const pos = makePos()
+      const data = bfN
+        .element(pos.y.mul(logNU).add(uint(this.ifftStep)))
+        .toVar()
+      const even4 = ppN.element(uint(data.z).mul(sizeU).add(pos.x)).toVar()
+      const odd4 = ppN.element(uint(data.w).mul(sizeU).add(pos.x)).toVar()
+      const current = ppN.element(instanceIndex).toVar()
+      ppN
+        .element(instanceIndex)
+        .assign(
+          ifftPassValueWGSL({
+            data,
+            even4,
+            odd4,
+            current,
+            pingpong: uint(this.pingpong)
+          })
+        )
+    })().computeKernel(this.workgroupSize)
+
+    // Permute (sign checkerboard) into the channel selected by DDindex; the
+    // other three channels are rewritten with their own value, matching the
+    // originals' select() writes.
+    this.computePermute = Fn(() => {
+      const ppN = storage(
+        this.pingpongBuffer,
+        'vec4',
+        this.pingpongBuffer.count
+      ).toReadOnly()
+      const dxdzN = storage(this.DxDzBuffer, 'vec2', this.DxDzBuffer.count)
+      const dydxzN = storage(this.DyDxzBuffer, 'vec2', this.DyDxzBuffer.count)
+      const dyxdyzN = storage(
+        this.DyxDyzBuffer,
+        'vec2',
+        this.DyxDyzBuffer.count
+      )
+      const dxxdzzN = storage(
+        this.DxxDzzBuffer,
+        'vec2',
+        this.DxxDzzBuffer.count
+      )
+
+      const pos = makePos()
+      const out = permuteValueWGSL({
+        input: ppN.element(instanceIndex).xy,
+        pos
+      }).toVar()
+      const sel = uint(this.DDindex)
+      dxdzN
+        .element(instanceIndex)
+        .assign(
+          selectWriteWGSL({
+            oldValue: dxdzN.element(instanceIndex),
+            newValue: out,
+            sel,
+            channel: uint(0)
+          })
+        )
+      dydxzN
+        .element(instanceIndex)
+        .assign(
+          selectWriteWGSL({
+            oldValue: dydxzN.element(instanceIndex),
+            newValue: out,
+            sel,
+            channel: uint(1)
+          })
+        )
+      dyxdyzN
+        .element(instanceIndex)
+        .assign(
+          selectWriteWGSL({
+            oldValue: dyxdyzN.element(instanceIndex),
+            newValue: out,
+            sel,
+            channel: uint(2)
+          })
+        )
+      dxxdzzN
+        .element(instanceIndex)
+        .assign(
+          selectWriteWGSL({
+            oldValue: dxxdzzN.element(instanceIndex),
+            newValue: out,
+            sel,
+            channel: uint(3)
+          })
+        )
+    })().computeKernel(this.workgroupSize)
+
+    // Merge: pack displacement/derivative texels (same swizzles as the original
+    // texturesMerger textureStores) + turbulence accumulation via the value
+    // kernel. The textureStores live here because Naga requires store targets
+    // to be module-scope globals, not function parameters.
+    const lambdaU = uniform(params.config.lambda)
+    this.computeMerge = Fn(() => {
+      const dxdzN = storage(
+        this.DxDzBuffer,
+        'vec2',
+        this.DxDzBuffer.count
+      ).toReadOnly()
+      const dydxzN = storage(
+        this.DyDxzBuffer,
+        'vec2',
+        this.DyDxzBuffer.count
+      ).toReadOnly()
+      const dyxdyzN = storage(
+        this.DyxDyzBuffer,
+        'vec2',
+        this.DyxDyzBuffer.count
+      ).toReadOnly()
+      const dxxdzzN = storage(
+        this.DxxDzzBuffer,
+        'vec2',
+        this.DxxDzzBuffer.count
+      ).toReadOnly()
+      const turbN = storage(
+        this.turbulenceBuffer,
+        'float',
+        this.turbulenceBuffer.count
+      )
+
+      const pos = makePos()
+      const bufferIndex = pos.y.mul(sizeU).add(pos.x).toVar()
+      const x = dxdzN.element(bufferIndex).toVar()
+      const y = dydxzN.element(bufferIndex).toVar()
+      const z = dyxdyzN.element(bufferIndex).toVar()
+      const w = dxxdzzN.element(bufferIndex).toVar()
+      const turbulence = mergeValueWGSL({
+        y,
+        w,
+        turbulenceOld: turbN.element(bufferIndex),
+        lambda: lambdaU,
+        deltaTime: this.deltaTime
+      }).toVar()
+      textureStore(
+        this.displacement,
+        pos,
+        vec4(lambdaU.mul(x.x), y.x, lambdaU.mul(x.y), 0)
+      ).toStack()
+      textureStore(
+        this.derivative,
+        pos,
+        vec4(z.x, z.y, w.x.mul(lambdaU), w.y.mul(lambdaU))
+      ).toStack()
+      textureStore(this.jacobian, pos, vec4(turbulence, 0, 0, 0)).toStack()
+      turbN.element(bufferIndex).assign(turbulence)
+    })().computeKernel(this.workgroupSize)
   }
 
   /**
-   * Run the one-shot initial spectrum compute. Call after construction and
-   * any time spectrum-driving uniforms (windSpeed, windDirection, etc.) change.
+   * Run the one-shot initial spectrum compute. Call after construction and any
+   * time spectrum-driving uniforms (windSpeed, windDirection, etc.) change.
    */
   initializeSpectrum(): void {
     this.renderer.compute(this.computeInitialSpectrum)
@@ -273,7 +559,7 @@ export class WaveCascade {
    * absolute animation time fed into the time-evolution kernel.
    */
   update(deltaTime: number, timeSec: number): void {
-    this.computeTimeSpectrum.computeNode.parameters.time.value = timeSec
+    this.time.value = timeSec
     this.renderer.compute(this.computeTimeSpectrum, this.dispatchSize)
     // Four channels: x/z horizontal, y vertical, ∂y/∂x ∂y/∂z, ∂²y/∂x∂z etc.
     this.runIFFT(0)
@@ -310,7 +596,10 @@ export class WaveCascade {
     this.renderer.compute(this.computePermute, this.dispatchSize)
   }
 
-  private makeStorageTex(size: number, type: THREE.TextureDataType): THREE.StorageTexture {
+  private makeStorageTex(
+    size: number,
+    type: THREE.TextureDataType
+  ): THREE.StorageTexture {
     const tex = new THREE.StorageTexture(size, size)
     tex.type = type
     tex.generateMipmaps = true

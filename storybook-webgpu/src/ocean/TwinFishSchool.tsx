@@ -6,9 +6,9 @@
 // (known seaLevelOffset) down to a band bottom clamped above the known seabed —
 // no terrain raycast; both references come straight from the ocean/cable controls.
 
+import { useControls } from 'leva'
 import { Suspense, useMemo, type FC } from 'react'
 import { Quaternion, Vector3 } from 'three'
-import { useControls } from 'leva'
 
 import { FishSchool } from '../fish/FishSchool'
 import { enuBasis } from './enu'
@@ -82,12 +82,16 @@ interface SiteFishSchoolProps {
   seaLevelOffset: number
   /** How deep below the surface the school's bottom may reach (metres). */
   bandDepth: number
-  /** Known seabed depth below the surface (the cables' value) — a hard clamp so
-   *  the band never reaches the floor even if bandDepth is set deeper. */
+  /**
+   * Known seabed depth below the surface (the cables' value) — a hard clamp so
+   * the band never reaches the floor even if bandDepth is set deeper.
+   */
   seabedDepth: number
-  /** Per-site cap on the band bottom (metres below surface) for shallow sites
-   *  where the global bandDepth would bury the school in the seabed. Omitted →
-   *  no extra cap. */
+  /**
+   * Per-site cap on the band bottom (metres below surface) for shallow sites
+   * where the global bandDepth would bury the school in the seabed. Omitted →
+   * no extra cap.
+   */
   maxDepth?: number
   brightness: number
   normalLift: number
@@ -161,9 +165,11 @@ const SiteFishSchool: FC<SiteFishSchoolProps> = ({
 export interface FishSite {
   /** ECEF anchor for this site's underwater school. */
   anchor: Vector3
-  /** Optional shallow-site cap on the band bottom (metres below surface). Use
-   *  at sites whose seabed is shallower than the global band, so the school
-   *  stays in the water column instead of sinking into the floor. */
+  /**
+   * Optional shallow-site cap on the band bottom (metres below surface). Use at
+   * sites whose seabed is shallower than the global band, so the school stays
+   * in the water column instead of sinking into the floor.
+   */
   maxDepth?: number
 }
 
@@ -172,8 +178,10 @@ export interface TwinFishSchoolsProps {
   sites: FishSite[]
   /** Sea-surface height above each anchor, metres (the ocean seaLevelOffset). */
   seaLevelOffset: number
-  /** Known seabed depth below the surface (the cables' seabedDepth) — clamps the
-   *  fish band so it never reaches the floor. */
+  /**
+   * Known seabed depth below the surface (the cables' seabedDepth) — clamps the
+   * fish band so it never reaches the floor.
+   */
   seabedDepth: number
   /** Staged-load gate — pass `!disableOcean` so fish don't load during stage 1. */
   ready?: boolean
@@ -189,19 +197,35 @@ export const TwinFishSchools: FC<TwinFishSchoolsProps> = ({
   seabedDepth,
   ready = true
 }) => {
-  const fish = useControls('Fish', {
-    enabled: { value: true, label: 'Fish schools' },
-    depth: {
-      value: 18,
-      min: 4,
-      max: 120,
-      step: 1,
-      label: 'Band depth below surface (m)'
+  const fish = useControls(
+    'Assets.Fish',
+    {
+      enabled: { value: true, label: 'Fish schools' },
+      depth: {
+        value: 18,
+        min: 4,
+        max: 120,
+        step: 1,
+        label: 'Band depth below surface (m)'
+      },
+      brightness: {
+        value: 0.4,
+        min: 0,
+        max: 1.5,
+        step: 0.01,
+        label: 'Brightness'
+      },
+      normalLift: {
+        value: 0.5,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Normal lift (belly fill)'
+      },
+      debug: { value: false, label: 'Show bounds' }
     },
-    brightness: { value: 0.4, min: 0, max: 1.5, step: 0.01, label: 'Brightness' },
-    normalLift: { value: 0.5, min: 0, max: 1, step: 0.01, label: 'Normal lift (belly fill)' },
-    debug: { value: false, label: 'Show bounds' }
-  })
+    { collapsed: true }
+  )
 
   if (!fish.enabled || !ready) {
     return null
