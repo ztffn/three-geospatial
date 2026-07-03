@@ -114,6 +114,7 @@ import {
   formatSeaStatePreset,
   sampleSeaState,
   SEA_STATE_NAMES,
+  SEA_STATE_PARAM_KEYS,
   SEA_STATE_PRESETS,
   severityFromMetrics,
   UNDERWATER_DEFAULTS,
@@ -4159,31 +4160,48 @@ export const Content: FC<{
     oceanUniforms.gerstnerAmplitude.value = waveControls.gerstnerAmplitude
   }, [oceanUniforms, waveControls])
 
+  // Sea-state uniform bag: every SeaStateParams key → its live uniform (most on
+  // the fragment bag; swell on the vertex bag). Single source of truth for the
+  // crossfade and the logPreset snapshot below — adding a sea-state field only
+  // touches SeaStateParams + this map, not three synchronized enumerations.
+  const seaStateBag = useMemo<Record<
+    keyof SeaStateParams,
+    { value: number }
+  > | null>(() => {
+    if (oceanUniforms == null || vertexUniforms == null) return null
+    return {
+      fftAmplitude: oceanUniforms.fftAmplitude,
+      gerstnerAmplitude: oceanUniforms.gerstnerAmplitude,
+      swellStrength: vertexUniforms.swellStrength,
+      swellScale: vertexUniforms.swellScale,
+      waveFoamCoverage: oceanUniforms.waveFoamCoverage,
+      waveFoamOpacity: oceanUniforms.waveFoamOpacity,
+      waveFoamCrestCoverage: oceanUniforms.waveFoamCrestCoverage,
+      waveFoamWindBias: oceanUniforms.waveFoamWindBias,
+      waveFoamWindStretch: oceanUniforms.waveFoamWindStretch,
+      surfaceFoamCoverage: oceanUniforms.surfaceFoamCoverage,
+      surfaceFoamOpacity: oceanUniforms.surfaceFoamOpacity,
+      surfaceFoamRegionThreshold: oceanUniforms.surfaceFoamRegionThreshold,
+      tipFoamIntensity: oceanUniforms.tipFoamIntensity,
+      tipFoamHeightThreshold: oceanUniforms.tipFoamHeightThreshold
+    }
+  }, [oceanUniforms, vertexUniforms])
+
   // Sea-state crossfade: ease every storminess uniform toward the target bag
   // with a time constant, so forecast scrubs and preset jumps glide instead of
   // popping. Null target ('off') leaves the manual panels in charge.
   useFrame((_, dt) => {
     const t = seaStateTarget
-    if (t == null || oceanUniforms == null || vertexUniforms == null) return
+    if (t == null || seaStateBag == null) return
     const tau = seaStateControls.crossfadeSeconds
+    // Inlined exponential damp (the MathUtils.damp used elsewhere in this file)
+    // so the single Math.exp is shared across all fields, not recomputed per
+    // uniform.
     const k = tau <= 0 ? 1 : 1 - Math.exp(-dt / tau)
-    const ease = (u: { value: number }, target: number): void => {
-      u.value += (target - u.value) * k
+    for (const key of SEA_STATE_PARAM_KEYS) {
+      const u = seaStateBag[key]
+      u.value += (t[key] - u.value) * k
     }
-    ease(oceanUniforms.fftAmplitude, t.fftAmplitude)
-    ease(oceanUniforms.gerstnerAmplitude, t.gerstnerAmplitude)
-    ease(vertexUniforms.swellStrength, t.swellStrength)
-    ease(vertexUniforms.swellScale, t.swellScale)
-    ease(oceanUniforms.waveFoamCoverage, t.waveFoamCoverage)
-    ease(oceanUniforms.waveFoamOpacity, t.waveFoamOpacity)
-    ease(oceanUniforms.waveFoamCrestCoverage, t.waveFoamCrestCoverage)
-    ease(oceanUniforms.waveFoamWindBias, t.waveFoamWindBias)
-    ease(oceanUniforms.waveFoamWindStretch, t.waveFoamWindStretch)
-    ease(oceanUniforms.surfaceFoamCoverage, t.surfaceFoamCoverage)
-    ease(oceanUniforms.surfaceFoamOpacity, t.surfaceFoamOpacity)
-    ease(oceanUniforms.surfaceFoamRegionThreshold, t.surfaceFoamRegionThreshold)
-    ease(oceanUniforms.tipFoamIntensity, t.tipFoamIntensity)
-    ease(oceanUniforms.tipFoamHeightThreshold, t.tipFoamHeightThreshold)
   })
 
   // Preset-tuning snapshot (Sea State 'logPreset' button): dumps the LIVE
@@ -4191,23 +4209,10 @@ export const Content: FC<{
   // SEA_STATE_PRESETS. Reads uniforms rather than leva state so whatever is
   // actually on screen — sliders, look-presets, eased sea state — is captured.
   seaStateLogRef.current = () => {
-    if (oceanUniforms == null || vertexUniforms == null) return
-    const params: SeaStateParams = {
-      fftAmplitude: oceanUniforms.fftAmplitude.value,
-      gerstnerAmplitude: oceanUniforms.gerstnerAmplitude.value,
-      swellStrength: vertexUniforms.swellStrength.value,
-      swellScale: vertexUniforms.swellScale.value,
-      waveFoamCoverage: oceanUniforms.waveFoamCoverage.value,
-      waveFoamOpacity: oceanUniforms.waveFoamOpacity.value,
-      waveFoamCrestCoverage: oceanUniforms.waveFoamCrestCoverage.value,
-      waveFoamWindBias: oceanUniforms.waveFoamWindBias.value,
-      waveFoamWindStretch: oceanUniforms.waveFoamWindStretch.value,
-      surfaceFoamCoverage: oceanUniforms.surfaceFoamCoverage.value,
-      surfaceFoamOpacity: oceanUniforms.surfaceFoamOpacity.value,
-      surfaceFoamRegionThreshold:
-        oceanUniforms.surfaceFoamRegionThreshold.value,
-      tipFoamIntensity: oceanUniforms.tipFoamIntensity.value,
-      tipFoamHeightThreshold: oceanUniforms.tipFoamHeightThreshold.value
+    if (seaStateBag == null) return
+    const params = {} as SeaStateParams
+    for (const key of SEA_STATE_PARAM_KEYS) {
+      params[key] = seaStateBag[key].value
     }
     console.log(
       formatSeaStatePreset(

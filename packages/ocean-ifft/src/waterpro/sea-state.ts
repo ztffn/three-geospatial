@@ -4,6 +4,8 @@
 // to MET metrics; callers crossfade between adjacent presets and either ease
 // them in (globe story) or apply instantly (applySeaState, atmosphere story).
 
+import { MathUtils } from 'three'
+
 export interface SeaStateParams {
   fftAmplitude: number
   gerstnerAmplitude: number
@@ -158,21 +160,20 @@ export function severityIndexOf(name: SeaStateName): number {
   return i < 0 ? 0 : i
 }
 
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
-
 /**
  * Interpolated parameter bag at a severity expressed in ladder-index space (0 =
  * dead … 4 = storm, fractional between). Clamped at both ends.
  */
 export function sampleSeaState(severity: number): SeaStateParams {
   const max = SEA_STATE_PRESETS.length - 1
-  const s = Math.min(Math.max(severity, 0), max)
-  const lo = SEA_STATE_PRESETS[Math.floor(s)].params
-  const hi = SEA_STATE_PRESETS[Math.min(Math.floor(s) + 1, max)].params
-  const t = s - Math.floor(s)
+  const s = MathUtils.clamp(severity, 0, max)
+  const i = Math.floor(s)
+  const lo = SEA_STATE_PRESETS[i].params
+  const hi = SEA_STATE_PRESETS[Math.min(i + 1, max)].params
+  const t = s - i
   const out = {} as SeaStateParams
   for (const key of SEA_STATE_PARAM_KEYS) {
-    out[key] = lerp(lo[key], hi[key], t)
+    out[key] = MathUtils.lerp(lo[key], hi[key], t)
   }
   return out
 }
@@ -185,7 +186,7 @@ function severityFromAnchors(value: number, anchors: number[]): number {
   if (value >= anchors[last]) return last
   let i = 0
   while (value > anchors[i + 1]) i++
-  return i + (value - anchors[i]) / (anchors[i + 1] - anchors[i])
+  return i + MathUtils.inverseLerp(anchors[i], anchors[i + 1], value)
 }
 
 /**
@@ -244,25 +245,11 @@ export function applySeaState(
   params: SeaStateParams,
   bag: SeaStateUniformBag
 ): void {
-  bag.fftAmplitude.value = params.fftAmplitude
-  bag.gerstnerAmplitude.value = params.gerstnerAmplitude
-  bag.waveFoamCoverage.value = params.waveFoamCoverage
-  bag.waveFoamOpacity.value = params.waveFoamOpacity
-  bag.waveFoamCrestCoverage.value = params.waveFoamCrestCoverage
-  bag.waveFoamWindBias.value = params.waveFoamWindBias
-  bag.waveFoamWindStretch.value = params.waveFoamWindStretch
-  bag.surfaceFoamCoverage.value = params.surfaceFoamCoverage
-  bag.surfaceFoamOpacity.value = params.surfaceFoamOpacity
-  if (bag.swellStrength != null) bag.swellStrength.value = params.swellStrength
-  if (bag.swellScale != null) bag.swellScale.value = params.swellScale
-  if (bag.surfaceFoamRegionThreshold != null) {
-    bag.surfaceFoamRegionThreshold.value = params.surfaceFoamRegionThreshold
-  }
-  if (bag.tipFoamIntensity != null) {
-    bag.tipFoamIntensity.value = params.tipFoamIntensity
-  }
-  if (bag.tipFoamHeightThreshold != null) {
-    bag.tipFoamHeightThreshold.value = params.tipFoamHeightThreshold
+  // Bag keys are exactly the SeaStateParams keys (9 required + 5 optional
+  // vertex-stage-only fields); the null-check covers whichever the caller omits.
+  for (const key of SEA_STATE_PARAM_KEYS) {
+    const u = bag[key]
+    if (u != null) u.value = params[key]
   }
 }
 
