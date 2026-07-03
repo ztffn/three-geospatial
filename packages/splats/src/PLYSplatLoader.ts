@@ -1,3 +1,9 @@
+// Three.js Loader for 3D Gaussian splat PLY files (INRIA / PlayCanvas layout): parses
+// the ASCII/binary header, reads position/scale/rotation/opacity plus DC + rest SH
+// properties, converts the DC term to base color and the opacity through a sigmoid,
+// and emits a validated GaussianSplatData. The `.ply` entry point for the splat
+// pipeline (the `.spz` format has its own loader in SpzSplatLoader).
+
 import { FileLoader, Loader } from 'three'
 import invariant from 'tiny-invariant'
 

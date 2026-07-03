@@ -1,3 +1,9 @@
+// The renderer-agnostic in-memory model for a 3D Gaussian splat cloud: typed-array
+// positions, scales, rotations, and RGBA colors, plus optional spherical-harmonics
+// coefficients. Provides SH-degree/coefficient-count helpers, bounds computation, and
+// the validation every loader (PLY/SPZ) and both render paths share. No Three render
+// objects — just the data other splat modules turn into geometry, textures, and sorts.
+
 import { Box3, Vector3 } from 'three'
 import invariant from 'tiny-invariant'
 

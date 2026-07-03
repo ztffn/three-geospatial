@@ -1,3 +1,9 @@
+// The shared Mesh that renders a GaussianSplatData: owns the geometry, a SplatMaterial
+// (WebGL or WebGPU node), and a depth sorter, and drives per-frame re-sorting and
+// projection-uniform updates via update(). Optional octree LOD selects a budgeted
+// subset each frame and feeds an injected GPU LOD pipeline (WebGPU). Renderer-agnostic
+// — the pipeline is injected, so this file keeps no runtime dependency on three/webgpu.
+
 import {
   Frustum,
   Matrix4,

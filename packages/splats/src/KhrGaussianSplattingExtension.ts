@@ -1,3 +1,9 @@
+// GLTFLoader plugin for the KHR_gaussian_splatting glTF extension (and its SPZ
+// compression variant): detects splat mesh primitives, decodes their attributes into
+// a GaussianSplatData, and builds a GaussianSplatMesh. Lets glTF / 3D-Tiles assets
+// carry Gaussian-splat content that loads through the standard three GLTFLoader
+// pipeline instead of a bespoke loader.
+
 import type { BufferAttribute } from 'three'
 import type {
   GLTFLoaderPlugin,

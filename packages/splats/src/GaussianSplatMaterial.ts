@@ -1,3 +1,9 @@
+// The WebGL ShaderMaterial for 3D Gaussian splats: the classic per-vertex EWA
+// projection (3D covariance → screen-space ellipse) with premultiplied-alpha "over"
+// blending, sampling the GaussianSplatGeometry data textures. The WebGL counterpart
+// to the WebGPU GaussianSplatNodeMaterial; both satisfy the mesh's SplatMaterial
+// contract, so the mesh, sorter, and geometry are shared across both renderers.
+
 import {
   AddEquation,
   CustomBlending,

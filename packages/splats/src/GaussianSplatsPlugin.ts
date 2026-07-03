@@ -1,3 +1,9 @@
+// 3d-tiles-renderer plugin that swaps tile models carrying Gaussian-splat content for
+// GaussianSplatMesh instances as tiles load and unload. Structurally typed against
+// TilesRenderer so the package keeps 3d-tiles-renderer an optional peer dependency
+// (no hard version coupling). Bridges streamed 3D-Tiles tilesets to the splat render
+// path so large splat scenes can be tiled and paged like ordinary 3D-Tiles content.
+
 import type { Camera, Object3D, WebGLRenderer } from 'three'
 
 import { GaussianSplatMesh } from './GaussianSplatMesh'

@@ -1,3 +1,9 @@
+// Builds the InstancedBufferGeometry + per-splat data textures (position/opacity,
+// covariance, color, spherical harmonics) that both render paths sample, from a
+// GaussianSplatData. One screen-aligned quad is instanced per splat; this also holds
+// the sort/order instance attributes and the bounds/centroid. Renderer-agnostic — the
+// WebGL material and the WebGPU node material consume the same textures + attributes.
+
 import {
   BufferAttribute,
   DataTexture,
