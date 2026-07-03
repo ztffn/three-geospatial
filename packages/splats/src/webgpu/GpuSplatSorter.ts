@@ -68,6 +68,12 @@ export class GpuSplatSorter {
   private lastPositions: Float32Array | null = null
   private count = 0
 
+  // Reused key-uniform staging: count (u32) + camera (f32 ×3). Two views over one
+  // 16-byte buffer, so each sort writes it in place with no allocation.
+  private readonly uniformBuffer = new ArrayBuffer(16)
+  private readonly uniformU32 = new Uint32Array(this.uniformBuffer, 0, 1)
+  private readonly uniformF32 = new Float32Array(this.uniformBuffer, 4, 3)
+
   // Builds the device-dependent resources on first use, once the renderer's
   // backend has a device. Returns false until then (pre-init frames are skipped).
   private initDevice(renderer: WebGpuRendererLike): boolean {
@@ -185,14 +191,11 @@ export class GpuSplatSorter {
     }
     this.setCenters(positions, count)
 
-    const uniformData = new ArrayBuffer(16)
-    new Uint32Array(uniformData, 0, 1)[0] = count
-    new Float32Array(uniformData, 4, 3).set([
-      cameraPosition.x,
-      cameraPosition.y,
-      cameraPosition.z
-    ])
-    device.queue.writeBuffer(this.keysUniform!, 0, uniformData)
+    this.uniformU32[0] = count
+    this.uniformF32[0] = cameraPosition.x
+    this.uniformF32[1] = cameraPosition.y
+    this.uniformF32[2] = cameraPosition.z
+    device.queue.writeBuffer(this.keysUniform!, 0, this.uniformBuffer)
 
     const encoder = device.createCommandEncoder()
 

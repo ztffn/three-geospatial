@@ -112,12 +112,13 @@ export class SplatLodSelector {
       selectedSplats += leaves[i].lodCounts[lod]
     }
 
-    // Pass 2: budget. Coarsen farthest-first until under budget.
+    // Pass 2: budget. Coarsen farthest-first until under budget. Sort the visible
+    // slice of `leafOrder` in place (no per-frame allocation); the later gather over
+    // the same slice is order-independent, so reordering it here is harmless.
     if (selectedSplats > budget) {
       const distance = this.leafDistance
-      const farFirst = Array.from(this.leafOrder.subarray(0, visibleCount)).sort(
-        (a, b) => distance[b] - distance[a]
-      )
+      const farFirst = this.leafOrder.subarray(0, visibleCount)
+      farFirst.sort((a, b) => distance[b] - distance[a])
       let pass = 0
       while (selectedSplats > budget && pass <= maxLod) {
         let modified = false
