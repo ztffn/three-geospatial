@@ -888,6 +888,7 @@ const App: FC = () => {
           turbineRpm={telemetry.rpm}
           windHeading={telemetry.yawHeading}
           windSpeed={sample?.windSpeed ?? null}
+          waveHeight={sample?.waveHeight ?? null}
           clockMs={selected}
           precip={sample?.precipitation ?? null}
           airTemperature={sample?.airTemperature ?? null}

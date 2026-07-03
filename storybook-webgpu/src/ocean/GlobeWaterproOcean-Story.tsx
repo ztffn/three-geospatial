@@ -111,9 +111,16 @@ import { sampleGerstnerUniformsCPU } from '../../../packages/ocean-ifft/src/ocea
 import {
   applyWaterproPreset,
   createUnderwaterUniforms,
+  formatSeaStatePreset,
+  sampleSeaState,
+  SEA_STATE_NAMES,
+  SEA_STATE_PRESETS,
+  severityFromMetrics,
   UNDERWATER_DEFAULTS,
   underwaterPostNode,
   WATERPRO_PRESET_NAMES,
+  WATERPRO_PRESETS,
+  type SeaStateParams,
   type WaterproPresetName,
   type WaterproPresetUniformBag
 } from '../../../packages/ocean-ifft/src/waterpro/index.js'
@@ -2086,9 +2093,14 @@ export const Content: FC<{
   // Orients the turbine array's wake-aware spacing and yaws every rotor into
   // the wind. null/undefined → the leva 'Wind from' slider governs (Storybook).
   windHeading?: number | null
-  // Wind speed (m/s) from the deploy's live MET feed. Drives the calm↔storm
-  // wave-strength blend. null/undefined → the leva 'Wind speed' slider governs.
+  // Wind speed (m/s) from the deploy's live MET feed. Fallback sea-state
+  // driver. null/undefined → the manual severity slider governs (Storybook).
   windSpeed?: number | null
+  // Significant wave height (m) from the deploy's live MET oceanforecast
+  // feed. PREFERRED sea-state driver — the wave model is location-aware
+  // (coastal shelter / fetch / bathymetry), so the same wind reads calmer
+  // near land than in open sea. null outside ocean coverage → wind fallback.
+  waveHeight?: number | null
   // Absolute UTC instant (ms) the scene's sun/moon should depict — the deploy's
   // forecast scrubber time. When set, it overrides the leva day/time sliders so
   // the lighting tracks the scrubbed forecast hour. Undefined in Storybook.
@@ -2208,6 +2220,7 @@ export const Content: FC<{
   turbineRpm,
   windHeading,
   windSpeed,
+  waveHeight,
   clockMs,
   precip,
   airTemperature,
@@ -2318,31 +2331,35 @@ export const Content: FC<{
 
   // Function-form `useControls` returns [values, set]; we use `setLocation` from
   // the picker handler to programmatically reposition the fly-to target.
-  const [locationControls, setLocation] = useControls('Location', () => ({
-    preset: {
-      value: 'Karmøy',
-      options: [...Object.keys(locationPresets), 'Custom'],
-      label: 'Fly to'
-    },
-    longitude: {
-      value: locationPresets.Karmøy.longitude,
-      min: -180,
-      max: 180,
-      step: 0.0001
-    },
-    latitude: {
-      value: locationPresets.Karmøy.latitude,
-      min: -90,
-      max: 90,
-      step: 0.0001
-    },
-    height: {
-      value: locationPresets.Karmøy.height,
-      min: -500,
-      max: 5000,
-      step: 1
-    }
-  }))
+  const [locationControls, setLocation] = useControls(
+    'Scene.Location',
+    () => ({
+      preset: {
+        value: 'Karmøy',
+        options: [...Object.keys(locationPresets), 'Custom'],
+        label: 'Fly to'
+      },
+      longitude: {
+        value: locationPresets.Karmøy.longitude,
+        min: -180,
+        max: 180,
+        step: 0.0001
+      },
+      latitude: {
+        value: locationPresets.Karmøy.latitude,
+        min: -90,
+        max: 90,
+        step: 0.0001
+      },
+      height: {
+        value: locationPresets.Karmøy.height,
+        min: -500,
+        max: 5000,
+        step: 1
+      }
+    }),
+    { collapsed: true }
+  )
   const activeLocation =
     locationControls.preset === 'Custom'
       ? locationControls
@@ -2465,30 +2482,34 @@ export const Content: FC<{
     return setters
   }, [])
 
-  const atmosphereControls = useControls('Atmosphere', {
-    exposure: { value: 10, min: 0, max: 30, step: 0.25 },
-    dayOfYear: { value: 152, min: 0, max: 364, step: 1 },
-    timeOfDay: { value: 12, min: 0, max: 24, step: 0.1, label: 'Local time' },
-    year: { value: 2025, min: 2000, max: 2050, step: 1 },
-    showGround: { value: true },
-    showSun: { value: true },
-    showMoon: { value: true },
-    showStars: { value: true },
-    moonIntensity: { value: 25, min: 0, max: 100, step: 1 },
-    starsIntensity: { value: 20, min: 0, max: 100, step: 1 },
-    // Orbital-clarity blend: as the camera climbs, fade the aerial-perspective
-    // inscatter (the additive airlight that washes the surface from far up) down
-    // toward `orbitalInscatter`, so the globe holds contrast against the
-    // atmosphere. Ground (≤ startKm) keeps full inscatter (=1); the sky/limb is
-    // unaffected (inscatter only feeds the surface branch). Drives
-    // AerialPerspectiveNode.inscatterScale per-frame below.
-    orbitalInscatter: { value: 0.2, min: 0, max: 1, step: 0.01 },
-    orbitalBlendStartKm: { value: 600, min: 0, max: 5000, step: 10 },
-    orbitalBlendEndKm: { value: 1800, min: 0, max: 30000, step: 50 },
-    // Shapes the fade across the band: applied as f^power. <1 front-loads it
-    // (clears fast right after startKm), 1 = linear, >1 eases in slowly.
-    orbitalBlendPower: { value: 0.2, min: 0.1, max: 3, step: 0.05 }
-  })
+  const atmosphereControls = useControls(
+    'Sky.Atmosphere',
+    {
+      exposure: { value: 10, min: 0, max: 30, step: 0.25 },
+      dayOfYear: { value: 152, min: 0, max: 364, step: 1 },
+      timeOfDay: { value: 12, min: 0, max: 24, step: 0.1, label: 'Local time' },
+      year: { value: 2025, min: 2000, max: 2050, step: 1 },
+      showGround: { value: true },
+      showSun: { value: true },
+      showMoon: { value: true },
+      showStars: { value: true },
+      moonIntensity: { value: 25, min: 0, max: 100, step: 1 },
+      starsIntensity: { value: 20, min: 0, max: 100, step: 1 },
+      // Orbital-clarity blend: as the camera climbs, fade the aerial-perspective
+      // inscatter (the additive airlight that washes the surface from far up) down
+      // toward `orbitalInscatter`, so the globe holds contrast against the
+      // atmosphere. Ground (≤ startKm) keeps full inscatter (=1); the sky/limb is
+      // unaffected (inscatter only feeds the surface branch). Drives
+      // AerialPerspectiveNode.inscatterScale per-frame below.
+      orbitalInscatter: { value: 0.2, min: 0, max: 1, step: 0.01 },
+      orbitalBlendStartKm: { value: 600, min: 0, max: 5000, step: 10 },
+      orbitalBlendEndKm: { value: 1800, min: 0, max: 30000, step: 50 },
+      // Shapes the fade across the band: applied as f^power. <1 front-loads it
+      // (clears fast right after startKm), 1 = linear, >1 eases in slowly.
+      orbitalBlendPower: { value: 0.2, min: 0.1, max: 3, step: 0.05 }
+    },
+    { collapsed: true }
+  )
 
   // Aerial-perspective inscatter scale as a stable uniform so the orbital-clarity
   // blend (useFrame below) can drive it per-frame without rebuilding the post
@@ -2498,24 +2519,28 @@ export const Content: FC<{
 
   // Function-form useControls so a preset selection can push values back into
   // the sliders via `setCloudControls`. Slider defaults match the 'fair' preset.
-  const [cloudControls, setCloudControls] = useControls('Clouds', () => ({
-    enabled: { value: true },
-    source: { value: 'procedural', options: ['procedural', 'live'] },
-    preset: { value: 'fair' as CloudPresetName, options: CLOUD_PRESET_NAMES },
-    altitude: { value: 4000, min: 500, max: 12000, step: 100 },
-    opacity: { value: 0.24, min: 0, max: 1, step: 0.01 },
-    coverage: { value: 0.71, min: 0, max: 1, step: 0.01 },
-    windSpeed: { value: 0.004, min: 0, max: 0.05, step: 0.001 },
-    tiles: { value: 69, min: 1, max: 100, step: 1 },
-    dayColor: '#ffffff',
-    nightAmbient: { value: 0.03, min: 0, max: 0.5, step: 0.01 },
-    density: { value: 0, min: 0, max: 1, step: 0.01 },
-    intensity: { value: 2.5, min: 0, max: 6, step: 0.1 },
-    contrast: { value: 1.3, min: 0.5, max: 5, step: 0.1 },
-    // Analytic effects on the ocean (shared coverage; no extra passes).
-    reflectionStrength: { value: 0.05, min: 0, max: 1, step: 0.01 },
-    shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 }
-  }))
+  const [cloudControls, setCloudControls] = useControls(
+    'Sky.Clouds',
+    () => ({
+      enabled: { value: true },
+      source: { value: 'procedural', options: ['procedural', 'live'] },
+      preset: { value: 'fair' as CloudPresetName, options: CLOUD_PRESET_NAMES },
+      altitude: { value: 4000, min: 500, max: 12000, step: 100 },
+      opacity: { value: 0.24, min: 0, max: 1, step: 0.01 },
+      coverage: { value: 0.71, min: 0, max: 1, step: 0.01 },
+      windSpeed: { value: 0.004, min: 0, max: 0.05, step: 0.001 },
+      tiles: { value: 69, min: 1, max: 100, step: 1 },
+      dayColor: '#ffffff',
+      nightAmbient: { value: 0.03, min: 0, max: 0.5, step: 0.01 },
+      density: { value: 0, min: 0, max: 1, step: 0.01 },
+      intensity: { value: 2.5, min: 0, max: 6, step: 0.1 },
+      contrast: { value: 1.3, min: 0.5, max: 5, step: 0.1 },
+      // Analytic effects on the ocean (shared coverage; no extra passes).
+      reflectionStrength: { value: 0.05, min: 0, max: 1, step: 0.01 },
+      shadowStrength: { value: 0.6, min: 0, max: 1, step: 0.01 }
+    }),
+    { collapsed: true }
+  )
 
   // Apply a preset's field bag to the sliders when the selector changes.
   // (Manual slider edits afterward just override live; the selector label
@@ -2557,22 +2582,26 @@ export const Content: FC<{
   })
   const cloudEffectsEnabled = cloudControls.enabled
 
-  const oceanFrameControls = useControls('Ocean Frame', {
-    seaLevelOffset: {
-      value: 29,
-      min: -500,
-      max: 5000,
-      step: 1,
-      label: 'Sea level offset'
+  const oceanFrameControls = useControls(
+    'Ocean.Setup.Frame',
+    {
+      seaLevelOffset: {
+        value: 29,
+        min: -500,
+        max: 5000,
+        step: 1,
+        label: 'Sea level offset'
+      },
+      oceanScale: {
+        value: 0.5,
+        min: 0.1,
+        max: 5,
+        step: 0.05,
+        label: 'Ocean scale'
+      }
     },
-    oceanScale: {
-      value: 0.5,
-      min: 0.1,
-      max: 5,
-      step: 0.05,
-      label: 'Ocean scale'
-    }
-  })
+    { collapsed: true }
+  )
 
   // Sea scenario without an explicit spawn: the anchor sits seaLevelOffset below
   // the ocean surface, so the raw FPS eye would be underwater. Lift it radially
@@ -2696,55 +2725,59 @@ export const Content: FC<{
 
   // Default values come from UNDERWATER_DEFAULTS (single source of truth in
   // the package) — leva only contributes ranges/labels.
-  const underwaterControls = useControls('Underwater', {
-    enabled: { value: true },
-    murkiness: {
-      value: UNDERWATER_DEFAULTS.absorptionScale,
-      min: 0.05,
-      max: 5,
-      step: 0.05,
-      label: 'Murkiness'
+  const underwaterControls = useControls(
+    'Ocean.Setup.Underwater',
+    {
+      enabled: { value: true },
+      murkiness: {
+        value: UNDERWATER_DEFAULTS.absorptionScale,
+        min: 0.05,
+        max: 5,
+        step: 0.05,
+        label: 'Murkiness'
+      },
+      waterTint: { value: UNDERWATER_DEFAULTS.waterTint, label: 'Water tint' },
+      fogIntensity: {
+        value: UNDERWATER_DEFAULTS.fogIntensity,
+        min: 0,
+        max: 10,
+        step: 0.1,
+        label: 'Fog intensity'
+      },
+      ambientFalloff: {
+        value: UNDERWATER_DEFAULTS.ambientFalloff,
+        min: 0,
+        max: 0.2,
+        step: 0.005,
+        label: 'Depth darkening'
+      },
+      causticsIntensity: {
+        value: UNDERWATER_DEFAULTS.causticsIntensity,
+        min: 0,
+        max: 5,
+        step: 0.05
+      },
+      causticsScale: {
+        value: UNDERWATER_DEFAULTS.causticsScale,
+        min: 1,
+        max: 300,
+        step: 1
+      },
+      causticsSpeed: {
+        value: UNDERWATER_DEFAULTS.causticsSpeed,
+        min: 0,
+        max: 3,
+        step: 0.05
+      },
+      causticsSharpness: {
+        value: UNDERWATER_DEFAULTS.causticsSharpness,
+        min: 1,
+        max: 16,
+        step: 0.5
+      }
     },
-    waterTint: { value: UNDERWATER_DEFAULTS.waterTint, label: 'Water tint' },
-    fogIntensity: {
-      value: UNDERWATER_DEFAULTS.fogIntensity,
-      min: 0,
-      max: 10,
-      step: 0.1,
-      label: 'Fog intensity'
-    },
-    ambientFalloff: {
-      value: UNDERWATER_DEFAULTS.ambientFalloff,
-      min: 0,
-      max: 0.2,
-      step: 0.005,
-      label: 'Depth darkening'
-    },
-    causticsIntensity: {
-      value: UNDERWATER_DEFAULTS.causticsIntensity,
-      min: 0,
-      max: 5,
-      step: 0.05
-    },
-    causticsScale: {
-      value: UNDERWATER_DEFAULTS.causticsScale,
-      min: 1,
-      max: 300,
-      step: 1
-    },
-    causticsSpeed: {
-      value: UNDERWATER_DEFAULTS.causticsSpeed,
-      min: 0,
-      max: 3,
-      step: 0.05
-    },
-    causticsSharpness: {
-      value: UNDERWATER_DEFAULTS.causticsSharpness,
-      min: 1,
-      max: 16,
-      step: 0.5
-    }
-  })
+    { collapsed: true }
+  )
   useEffect(() => {
     const u = underwaterUniforms
     u.enabled.value = underwaterControls.enabled ? 1 : 0
@@ -2759,59 +2792,99 @@ export const Content: FC<{
     u.causticsSharpness.value = underwaterControls.causticsSharpness
   }, [underwaterControls, underwaterUniforms])
 
-  const oceanMaterialParams = useControls('Ocean Material', {
-    wireframe: { value: false }
-  })
+  const oceanMaterialParams = useControls(
+    'Ocean.Setup.Material',
+    {
+      wireframe: { value: false }
+    },
+    { collapsed: true }
+  )
 
-  // Full WaterPro control set — mirrors WaterproAtmosphere-Story.tsx
-  // Story.args / argTypes. Same defaults, same ranges, just leva-formatted.
-  const presetOptions = useMemo<string[]>(
-    () => ['custom', ...WATERPRO_PRESET_NAMES],
+  // Water STYLE selector (colour / light / foam look) — orthogonal to Sea
+  // State (roughness). Post-split these presets carry NO roughness, so the
+  // sea-state-like names are just looks now; only storm/hurricane/tranquil are
+  // hidden (redundant with the ladder's severity). 'choppy' stays because it
+  // is the committed default look (restored — dropping it lost that default).
+  const styleOptions = useMemo<string[]>(
+    () =>
+      [
+        'custom',
+        ...WATERPRO_PRESET_NAMES.filter(
+          n => !['storm', 'hurricane', 'tranquil'].includes(n)
+        )
+      ] as string[],
     []
   )
-  const presetControls = useControls('Ocean Preset', {
-    preset: { value: 'choppy', options: presetOptions }
-  })
-
-  const toggleControls = useControls('Ocean Toggles', {
-    skyReflection: { value: true },
-    sss: { value: true, label: 'SSS' },
-    sparkle: { value: true },
-    surfaceFoam: { value: true },
-    waveFoam: { value: true },
-    turbulentFoam: { value: true },
-    shorelineFoam: { value: true }
-  })
-
-  const turbineControls = useControls('Turbine', {
-    scale: { value: 0.5, min: 0.1, max: 50, step: 0.1 },
-    heightOffset: { value: 2.5, min: -200, max: 200, step: 0.5 },
-    spin: { value: true },
-    spinSpeed: { value: 2.0, min: 0, max: 20, step: 0.1 },
-    count: { value: 15, min: 1, max: 60, step: 1, label: 'Farm count' },
-    // Wake-aware spacing in rotor diameters (D = 164 m). Offshore arrays sit
-    // ~7–10 D apart along the wind, ~4–5 D across it.
-    downwindD: { value: 8, min: 3, max: 15, step: 0.5, label: 'Downwind (D)' },
-    crosswindD: {
-      value: 5,
-      min: 2,
-      max: 12,
-      step: 0.5,
-      label: 'Crosswind (D)'
+  const presetControls = useControls(
+    'Ocean.Look.Style',
+    {
+      // Default 'choppy' = the original committed default look (deep teal).
+      // 'custom' is NOT a stored look — it means "use the current sliders",
+      // whose colour defaults are tropical cyan, so it is not a usable default.
+      preset: { value: 'choppy', options: styleOptions }
     },
-    stagger: { value: true, label: 'Offset rows' },
-    // Manual wind bearing for Storybook (no MET feed); the deploy overrides this
-    // with live MET wind via the windHeading prop.
-    windDir: { value: 225, min: 0, max: 359, step: 1, label: 'Wind from (°)' },
-    yawOffset: {
-      value: 0,
-      min: -180,
-      max: 180,
-      step: 1,
-      label: 'Rotor offset (°)'
+    { collapsed: true }
+  )
+
+  const toggleControls = useControls(
+    'Ocean.Setup.Toggles',
+    {
+      skyReflection: { value: true },
+      sss: { value: true, label: 'SSS' },
+      sparkle: { value: true },
+      surfaceFoam: { value: true },
+      waveFoam: { value: true },
+      turbulentFoam: { value: true },
+      shorelineFoam: { value: true }
     },
-    cover: { value: true, label: 'Hero: cover' }
-  })
+    { collapsed: true }
+  )
+
+  const turbineControls = useControls(
+    'Assets.Turbine',
+    {
+      scale: { value: 0.5, min: 0.1, max: 50, step: 0.1 },
+      heightOffset: { value: 2.5, min: -200, max: 200, step: 0.5 },
+      spin: { value: true },
+      spinSpeed: { value: 2.0, min: 0, max: 20, step: 0.1 },
+      count: { value: 15, min: 1, max: 60, step: 1, label: 'Farm count' },
+      // Wake-aware spacing in rotor diameters (D = 164 m). Offshore arrays sit
+      // ~7–10 D apart along the wind, ~4–5 D across it.
+      downwindD: {
+        value: 8,
+        min: 3,
+        max: 15,
+        step: 0.5,
+        label: 'Downwind (D)'
+      },
+      crosswindD: {
+        value: 5,
+        min: 2,
+        max: 12,
+        step: 0.5,
+        label: 'Crosswind (D)'
+      },
+      stagger: { value: true, label: 'Offset rows' },
+      // Manual wind bearing for Storybook (no MET feed); the deploy overrides this
+      // with live MET wind via the windHeading prop.
+      windDir: {
+        value: 225,
+        min: 0,
+        max: 359,
+        step: 1,
+        label: 'Wind from (°)'
+      },
+      yawOffset: {
+        value: 0,
+        min: -180,
+        max: 180,
+        step: 1,
+        label: 'Rotor offset (°)'
+      },
+      cover: { value: true, label: 'Hero: cover' }
+    },
+    { collapsed: true }
+  )
 
   // Effective fly heading. For close-ups anchored to the yawing turbine
   // (flyTo.headingRefYaw set — the turbine facing the shot was framed at), add
@@ -2939,64 +3012,72 @@ export const Content: FC<{
   // Shared buoyancy + hull-occlusion rig for both ships. Motion amplitude
   // follows the Wind→Waves storm blending automatically because ShipModel
   // reads the live gerstnerAmplitude uniform every frame.
-  const shipMotionControls: ShipMotionControls = useControls('Ship motion', {
-    enabled: { value: true },
-    heaveGain: { value: 1, min: 0, max: 3, step: 0.05, label: 'Heave gain' },
-    tiltGain: { value: 2, min: 0, max: 8, step: 0.1, label: 'Tilt gain' },
-    response: {
-      value: 1.5,
-      min: 0.1,
-      max: 5,
-      step: 0.05,
-      label: 'Response (s)'
+  const shipMotionControls: ShipMotionControls = useControls(
+    'Assets.Ship',
+    {
+      enabled: { value: true },
+      heaveGain: { value: 1, min: 0, max: 3, step: 0.05, label: 'Heave gain' },
+      tiltGain: { value: 2, min: 0, max: 8, step: 0.1, label: 'Tilt gain' },
+      response: {
+        value: 1.5,
+        min: 0.1,
+        max: 5,
+        step: 0.05,
+        label: 'Response (s)'
+      },
+      hullOcclusion: { value: true, label: 'Hull occlusion' },
+      showOccluders: { value: false, label: 'Show occluder boxes' },
+      occLengthFrac: {
+        value: 0.75,
+        min: 0.1,
+        max: 1,
+        step: 0.01,
+        label: 'Occluder length'
+      },
+      occWidthFrac: {
+        value: 0.8,
+        min: 0.1,
+        max: 1,
+        step: 0.01,
+        label: 'Occluder width'
+      },
+      occTopFrac: {
+        value: 0.3,
+        min: 0.02,
+        max: 1,
+        step: 0.01,
+        label: 'Occluder height'
+      }
     },
-    hullOcclusion: { value: true, label: 'Hull occlusion' },
-    showOccluders: { value: false, label: 'Show occluder boxes' },
-    occLengthFrac: {
-      value: 0.75,
-      min: 0.1,
-      max: 1,
-      step: 0.01,
-      label: 'Occluder length'
-    },
-    occWidthFrac: {
-      value: 0.8,
-      min: 0.1,
-      max: 1,
-      step: 0.01,
-      label: 'Occluder width'
-    },
-    occTopFrac: {
-      value: 0.3,
-      min: 0.02,
-      max: 1,
-      step: 0.01,
-      label: 'Occluder height'
-    }
-  })
+    { collapsed: true }
+  )
 
   // Auto-routed subsea inter-array cables — every turbine string runs to a hub
   // (Ship 1, the substation vessel). Baked once; see TurbineCables.
-  const cableControls = useControls('Cables', {
-    // Disabled by default: the TurbineCables bake (terrain raycasts + Verlet
-    // solve) re-bakes on every terrain tile-load while coverage improves, and a
-    // committed snapshot only loads when its byte-exact signature matches the
-    // live scene — too brittle for the main path. Pending a refactor into a
-    // detachable scene-dressing plugin (see PERFORMANCE-FINDINGS.md). Flip on to
-    // author/inspect cables in the meantime.
-    enabled: { value: false },
-    // Fallback floor only — where terrain raycasts have coverage, the
-    // cables drape onto the sampled tile surface instead.
-    seabedDepth: {
-      value: 35,
-      min: -100,
-      max: 200,
-      step: 1,
-      label: 'Seabed depth (m)'
+  const cableControls = useControls(
+    'Assets.Cables',
+    {
+      // Disabled by default: the TurbineCables bake (terrain raycasts + Verlet
+      // solve) re-bakes on every terrain tile-load while coverage improves, and a
+      // committed snapshot only loads when its byte-exact signature matches the
+      // live scene — too brittle for the main path. Pending a refactor into a
+      // detachable scene-dressing plugin (see PERFORMANCE-FINDINGS.md). Flip on to
+      // author/inspect cables in the meantime.
+      enabled: { value: false },
+      // Fallback floor only — where terrain raycasts have coverage, the
+      // cables drape onto the sampled tile surface instead.
+      seabedDepth: {
+        value: 35,
+        min: -100,
+        max: 200,
+        step: 1,
+        label: 'Seabed depth (m)'
+      },
+      slack: { value: 0.3, min: 0, max: 0.5, step: 0.01 },
+      radius: { value: 0.7, min: 0.1, max: 10, step: 0.1, label: 'Radius (m)' }
     },
-    slack: { value: 0.3, min: 0, max: 0.5, step: 0.01 },
-    radius: { value: 0.7, min: 0.1, max: 10, step: 0.1, label: 'Radius (m)' }
-  })
+    { collapsed: true }
+  )
   // Latest LIVE bake snapshot (ref — onBake fires during render). The button
   // emits a ready-to-paste cable-bake.ts so production loads skip the solve.
   const latestCableBakeRef = useRef<CableBakeSnapshot | null>(null)
@@ -3004,36 +3085,40 @@ export const Content: FC<{
     latestCableBakeRef.current = snapshot
   }, [])
   const [cableRebakeNonce, setCableRebakeNonce] = useState(0)
-  useControls('Cables', {
-    // Clears the converged bake and solves fresh against the CURRENT tiles —
-    // use after the terrain has visibly finished loading.
-    Rebake: button(() => {
-      setCableRebakeNonce(v => v + 1)
-    }),
-    'Copy bake': button(() => {
-      const snapshot = latestCableBakeRef.current
-      if (snapshot == null) {
-        console.warn(
-          '[TurbineCables] no live bake to copy yet (snapshot in use or still solving)'
-        )
-        return
-      }
-      const file =
-        "// Committed cable-bake snapshot for TurbineCables. When the snapshot's sig\n" +
-        '// matches the live scene inputs, cables load instantly from these node paths\n' +
-        '// (no terrain raycasts, no Verlet solve, no tile-streaming wait). Regenerate:\n' +
-        '// let the scene bake (console shows coverage converging), click the Cables\n' +
-        "// leva folder's 'Copy bake' button, and paste the clipboard over this file.\n" +
-        '\n' +
-        "import type { CableBakeSnapshot } from './TurbineCables'\n" +
-        '\n' +
-        'export const CABLE_BAKE: CableBakeSnapshot | null =\n  ' +
-        JSON.stringify(snapshot) +
-        '\n'
-      console.log(file)
-      void navigator.clipboard?.writeText(file)
-    })
-  })
+  useControls(
+    'Assets.Cables',
+    {
+      // Clears the converged bake and solves fresh against the CURRENT tiles —
+      // use after the terrain has visibly finished loading.
+      Rebake: button(() => {
+        setCableRebakeNonce(v => v + 1)
+      }),
+      'Copy bake': button(() => {
+        const snapshot = latestCableBakeRef.current
+        if (snapshot == null) {
+          console.warn(
+            '[TurbineCables] no live bake to copy yet (snapshot in use or still solving)'
+          )
+          return
+        }
+        const file =
+          "// Committed cable-bake snapshot for TurbineCables. When the snapshot's sig\n" +
+          '// matches the live scene inputs, cables load instantly from these node paths\n' +
+          '// (no terrain raycasts, no Verlet solve, no tile-streaming wait). Regenerate:\n' +
+          '// let the scene bake (console shows coverage converging), click the Cables\n' +
+          "// leva folder's 'Copy bake' button, and paste the clipboard over this file.\n" +
+          '\n' +
+          "import type { CableBakeSnapshot } from './TurbineCables'\n" +
+          '\n' +
+          'export const CABLE_BAKE: CableBakeSnapshot | null =\n  ' +
+          JSON.stringify(snapshot) +
+          '\n'
+        console.log(file)
+        void navigator.clipboard?.writeText(file)
+      })
+    },
+    { collapsed: true }
+  )
   // Terrain handle + re-sample counter from the TilesTerrainBridge. The
   // cables' coverage lock turns most of these signals into no-ops.
   const [cableTerrain, setCableTerrain] = useState<Object3D | null>(null)
@@ -3074,69 +3159,81 @@ export const Content: FC<{
     ]
   )
 
-  const cameraControls = useControls('Camera', {
-    minDistance: { value: 1, min: 0.1, max: 5000, step: 0.1 },
-    // 30,000 km lets the camera pull back to a planetary full-disk view (earth
-    // radius ~6,371 km); the deploy's zoom slider maps to this same ceiling.
-    maxDistance: {
-      value: 30_000_000,
-      min: 1000,
-      max: 50_000_000,
-      step: 100_000
+  const cameraControls = useControls(
+    'Scene.Camera',
+    {
+      minDistance: { value: 1, min: 0.1, max: 5000, step: 0.1 },
+      // 30,000 km lets the camera pull back to a planetary full-disk view (earth
+      // radius ~6,371 km); the deploy's zoom slider maps to this same ceiling.
+      maxDistance: {
+        value: 30_000_000,
+        min: 1000,
+        max: 50_000_000,
+        step: 100_000
+      },
+      autoOrbit: { value: true },
+      orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
+      // After a full load, frame the view you want, then click this. It logs +
+      // copies the exact camera pose so it can be hardcoded as the start view.
+      dumpView: button(() => {
+        const tgt = orbitControlsRef.current?.target
+        const data = {
+          position: camera.position.toArray(),
+          quaternion: camera.quaternion.toArray(),
+          up: camera.up.toArray(),
+          target: tgt != null ? tgt.toArray() : null,
+          distance: tgt != null ? camera.position.distanceTo(tgt) : null
+        }
+        const json = JSON.stringify(data, null, 2)
+        // eslint-disable-next-line no-console
+        console.log('[camera dump]\n' + json)
+        void navigator.clipboard?.writeText(json)
+      })
     },
-    autoOrbit: { value: true },
-    orbitSpeed: { value: 0.3, min: -5, max: 5, step: 0.05 },
-    // After a full load, frame the view you want, then click this. It logs +
-    // copies the exact camera pose so it can be hardcoded as the start view.
-    dumpView: button(() => {
-      const tgt = orbitControlsRef.current?.target
-      const data = {
-        position: camera.position.toArray(),
-        quaternion: camera.quaternion.toArray(),
-        up: camera.up.toArray(),
-        target: tgt != null ? tgt.toArray() : null,
-        distance: tgt != null ? camera.position.distanceTo(tgt) : null
-      }
-      const json = JSON.stringify(data, null, 2)
-      // eslint-disable-next-line no-console
-      console.log('[camera dump]\n' + json)
-      void navigator.clipboard?.writeText(json)
-    })
-  })
+    { collapsed: true }
+  )
 
   // Snapshot button — dumps every leva value (across all panels) as JSON to
   // the console + clipboard. Use it to capture your current scene tweaks and
   // paste them back into the source-code defaults.
-  useControls('Snapshot', {
-    copyDefaults: button(() => {
-      const data = levaStore.getData()
-      const out: Record<string, Record<string, unknown>> = {}
-      for (const [path, entry] of Object.entries(data)) {
-        if (
-          entry == null ||
-          typeof entry !== 'object' ||
-          !('value' in (entry as any))
-        ) {
-          continue
+  useControls(
+    'Scene.Snapshot',
+    {
+      copyDefaults: button(() => {
+        const data = levaStore.getData()
+        const out: Record<string, Record<string, unknown>> = {}
+        for (const [path, entry] of Object.entries(data)) {
+          if (
+            entry == null ||
+            typeof entry !== 'object' ||
+            !('value' in (entry as any))
+          ) {
+            continue
+          }
+          const parts = path.split('.')
+          const key = parts.pop() as string
+          const folder = parts.length > 0 ? parts.join('.') : '_root'
+          ;(out[folder] ??= {})[key] = (entry as any).value
         }
-        const parts = path.split('.')
-        const key = parts.pop() as string
-        const folder = parts.length > 0 ? parts.join('.') : '_root'
-        ;(out[folder] ??= {})[key] = (entry as any).value
-      }
-      const json = JSON.stringify(out, null, 2)
-      console.log('[snapshot]\n' + json)
-      void navigator.clipboard?.writeText(json).catch(() => {})
-    })
-  })
+        const json = JSON.stringify(out, null, 2)
+        console.log('[snapshot]\n' + json)
+        void navigator.clipboard?.writeText(json).catch(() => {})
+      })
+    },
+    { collapsed: true }
+  )
 
-  const pickControls = useControls('Pick', {
-    enabled: { value: false, label: 'Click → reposition fly-to' },
-    keepHeight: {
-      value: true,
-      label: 'Keep current height'
-    }
-  })
+  const pickControls = useControls(
+    'Scene.Pick',
+    {
+      enabled: { value: false, label: 'Click → reposition fly-to' },
+      keepHeight: {
+        value: true,
+        label: 'Keep current height'
+      }
+    },
+    { collapsed: true }
+  )
 
   // Raycast-pick on click. When enabled, a stationary mouse click on any
   // visible scene geometry (terrain tiles, ocean, turbine) repositions the
@@ -3194,326 +3291,402 @@ export const Content: FC<{
     setLocation
   ])
 
-  const waveControls = useControls('Waves', {
-    fftAmplitude: { value: 1.0, min: 0, max: 2, step: 0.01 },
-    gerstnerAmplitude: { value: 1.0, min: 0, max: 6, step: 0.01 }
-  })
-
-  const reflectionControls = useControls('Reflection', {
-    skyReflectionColor: '#ffffff',
-    skyReflectionExposure: { value: 0.2, min: 0.01, max: 2, step: 0.01 },
-    skyReflectionScale: { value: 1.0, min: 0, max: 3, step: 0.05 }
-  })
-
-  const fresnelControls = useControls('Fresnel', {
-    fresnelPower: { value: 3.0, min: 1, max: 8, step: 0.1 },
-    normalStrength: { value: 0.1, min: 0, max: 1, step: 0.01 }
-  })
-
-  const sparkleControls = useControls('Sparkle', {
-    sparkleIntensity: { value: 1.5, min: 0, max: 10, step: 0.1 },
-    sparkleFocusPower: { value: 75.7, min: 1, max: 1000, step: 1 }
-  })
-
-  const sssControls = useControls('SSS', {
-    sssIntensity: { value: 0.5, min: 0, max: 5, step: 0.05 },
-    sssPower: { value: 16.0, min: 0.5, max: 64, step: 0.1 }
-  })
-
-  const surfaceFoamControls = useControls('Surface Foam', {
-    surfaceFoamCoverage: { value: 0.02, min: 0, max: 1, step: 0.01 },
-    surfaceFoamOpacity: { value: 0.25, min: 0, max: 1, step: 0.01 },
-    surfaceFoamSize: { value: 20.0, min: 1, max: 250, step: 1 },
-    regionEnabled: { value: true, label: 'Blob mask' },
-    regionScale: {
-      value: 1500.0,
-      min: 200,
-      max: 8000,
-      step: 50,
-      label: 'Blob scale (m)'
+  const waveControls = useControls(
+    'Ocean.Waves.Amplitude',
+    {
+      fftAmplitude: { value: 1.0, min: 0, max: 2, step: 0.01 },
+      gerstnerAmplitude: { value: 1.0, min: 0, max: 6, step: 0.01 }
     },
-    regionThreshold: {
-      value: 0.5,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Blob coverage'
+    { collapsed: true }
+  )
+
+  const reflectionControls = useControls(
+    'Ocean.Look.Reflection',
+    {
+      skyReflectionColor: '#ffffff',
+      skyReflectionExposure: { value: 0.2, min: 0.01, max: 2, step: 0.01 },
+      skyReflectionScale: { value: 1.0, min: 0, max: 3, step: 0.05 }
     },
-    regionDrift: {
-      value: 0.0005,
-      min: 0,
-      max: 0.01,
-      step: 0.0001,
-      label: 'Blob drift (tex/s)'
+    { collapsed: true }
+  )
+
+  const fresnelControls = useControls(
+    'Ocean.Look.Fresnel',
+    {
+      fresnelPower: { value: 3.0, min: 1, max: 8, step: 0.1 },
+      normalStrength: { value: 0.1, min: 0, max: 1, step: 0.01 }
+    },
+    { collapsed: true }
+  )
+
+  const sparkleControls = useControls(
+    'Ocean.Look.Sparkle',
+    {
+      sparkleIntensity: { value: 1.5, min: 0, max: 10, step: 0.1 },
+      sparkleFocusPower: { value: 75.7, min: 1, max: 1000, step: 1 }
+    },
+    { collapsed: true }
+  )
+
+  const sssControls = useControls(
+    'Ocean.Look.SSS',
+    {
+      sssIntensity: { value: 0.5, min: 0, max: 5, step: 0.05 },
+      sssPower: { value: 16.0, min: 0.5, max: 64, step: 0.1 }
+    },
+    { collapsed: true }
+  )
+
+  const surfaceFoamControls = useControls(
+    'Ocean.Foam.Surface',
+    {
+      surfaceFoamCoverage: { value: 0.02, min: 0, max: 1, step: 0.01 },
+      surfaceFoamOpacity: { value: 0.25, min: 0, max: 1, step: 0.01 },
+      surfaceFoamSize: { value: 20.0, min: 1, max: 250, step: 1 },
+      regionEnabled: { value: true, label: 'Blob mask' },
+      regionScale: {
+        value: 1500.0,
+        min: 200,
+        max: 8000,
+        step: 50,
+        label: 'Blob scale (m)'
+      },
+      regionThreshold: {
+        value: 0.5,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Blob coverage'
+      },
+      regionDrift: {
+        value: 0.0005,
+        min: 0,
+        max: 0.01,
+        step: 0.0001,
+        label: 'Blob drift (tex/s)'
+      }
+    },
+    { collapsed: true }
+  )
+
+  const waveFoamControls = useControls(
+    'Ocean.Foam.Wave',
+    {
+      waveFoamCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
+      waveFoamOpacity: { value: 0.6, min: 0, max: 1, step: 0.01 },
+      waveFoamCrestCoverage: { value: 0.3, min: 0, max: 1, step: 0.01 },
+      // Wind streaking — exposed so every sea-state preset field has a slider
+      // for the tuning round-trip. Defaults match the uniform defaults.
+      windBias: { value: 0.8, min: 0, max: 1, step: 0.01, label: 'Wind bias' },
+      windStretch: {
+        value: 0.5,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Wind stretch'
+      }
+    },
+    { collapsed: true }
+  )
+
+  const swellControls = useControls(
+    'Ocean.Waves.Swell',
+    {
+      swellStrength: {
+        value: 0.5,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Strength (0=uniform)'
+      },
+      swellScale: {
+        value: 800,
+        min: 50,
+        max: 5000,
+        step: 10,
+        label: 'Variance scale (m)'
+      }
+    },
+    { collapsed: true }
+  )
+
+  // Sea state — MET-driven storminess ladder (waterpro/sea-state.ts). Replaces
+  // the old two-endpoint 'Wind → Waves' lerp with five artistic presets
+  // (dead → calm → moderate → rough → storm) crossfaded continuously.
+  // 'met' derives severity from live significant wave height (preferred — the
+  // oceanforecast wave model is location-aware: coastal shelter vs open sea),
+  // else wind speed, else the manual slider; 'manual' follows the slider;
+  // 'off' hands every overlapping uniform back to the manual panels — that is
+  // the preset-TUNING mode (sculpt with sliders, press logPreset, paste the
+  // printed block into SEA_STATE_PRESETS). (Wave DIRECTION is intentionally
+  // NOT wind-coupled — the IFFT spectrum has no proper wind-direction tie-in
+  // yet, and rotating it spun the whole water surface.)
+  const seaStateLogRef = useRef<() => void>(() => {})
+  const seaStateControls = useControls(
+    'Ocean.Waves.Sea State',
+    {
+      source: { value: 'met', options: ['met', 'manual', 'off'] },
+      severity: {
+        value: 0.4,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Manual severity'
+      },
+      preview: {
+        value: 'none',
+        options: ['none', ...SEA_STATE_NAMES],
+        label: 'Preview preset'
+      },
+      crossfadeSeconds: {
+        value: 3,
+        min: 0,
+        max: 15,
+        step: 0.5,
+        label: 'Crossfade (s)'
+      },
+      logPreset: button(() => {
+        seaStateLogRef.current()
+      })
+    },
+    { collapsed: true }
+  )
+
+  // Interpolated target bag, or null when sea state is off (manual panels
+  // govern). Preview locks the ladder to one preset for A/B and tuning.
+  const seaStateTarget = useMemo<SeaStateParams | null>(() => {
+    if (seaStateControls.source === 'off') return null
+    if (seaStateControls.preview !== 'none') {
+      const p = SEA_STATE_PRESETS.find(s => s.name === seaStateControls.preview)
+      if (p != null) return p.params
     }
-  })
-
-  const waveFoamControls = useControls('Wave Foam', {
-    waveFoamCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
-    waveFoamOpacity: { value: 0.6, min: 0, max: 1, step: 0.01 },
-    waveFoamCrestCoverage: { value: 0.3, min: 0, max: 1, step: 0.01 }
-  })
-
-  const swellControls = useControls('Swell Variance', {
-    swellStrength: {
-      value: 0.5,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Strength (0=uniform)'
-    },
-    swellScale: {
-      value: 800,
-      min: 50,
-      max: 5000,
-      step: 10,
-      label: 'Variance scale (m)'
-    }
-  })
-
-  // Couple the sea STRENGTH to the wind: blend wave amplitude from calm → storm
-  // by wind speed. (Wave DIRECTION is intentionally NOT wind-coupled — the IFFT
-  // spectrum has no proper wind-direction tie-in yet, and rotating it spun the
-  // whole water surface; revisit when the spectrum supports it.) When off, the
-  // manual Waves/Swell controls govern (unchanged behaviour). Storm endpoints
-  // are the operator-tuned heavy-condition values; calm endpoints are defaults.
-  const windWaveControls = useControls('Wind → Waves', {
-    enabled: { value: true, label: 'Couple to wind' },
-    windSpeed: {
-      value: 10,
-      min: 0,
-      max: 30,
-      step: 0.5,
-      label: 'Wind speed (m/s)'
-    },
-    calmWind: { value: 4, min: 0, max: 15, step: 0.5, label: 'Calm at (m/s)' },
-    stormWind: {
-      value: 22,
-      min: 5,
-      max: 30,
-      step: 0.5,
-      label: 'Storm at (m/s)'
-    }
-  })
-  // Effective wind speed: live MET in the deploy, else the leva slider.
-  const effWindSpeed = windSpeed ?? windWaveControls.windSpeed
-  // 0 = calm, 1 = storm.
-  const stormT = windWaveControls.enabled
-    ? MathUtils.clamp(
-        (effWindSpeed - windWaveControls.calmWind) /
-          Math.max(
-            1e-3,
-            windWaveControls.stormWind - windWaveControls.calmWind
-          ),
-        0,
-        1
-      )
-    : 0
+    const manualSeverity =
+      seaStateControls.severity * (SEA_STATE_PRESETS.length - 1)
+    const severity =
+      seaStateControls.source === 'met'
+        ? (severityFromMetrics(waveHeight, windSpeed) ?? manualSeverity)
+        : manualSeverity
+    return sampleSeaState(severity)
+  }, [
+    seaStateControls.source,
+    seaStateControls.preview,
+    seaStateControls.severity,
+    waveHeight,
+    windSpeed
+  ])
 
   // Precipitation (rain/snow) — a detachable plugin (storybook-webgpu/src/weather).
   // Live MET precip/temperature drive it in the deploy; this panel governs in
   // Storybook. Intensity 0 (or null precip) mounts nothing — no synthesized rain.
-  const precipControls = useControls('Precipitation', {
-    enabled: { value: true },
-    source: { value: 'met', options: ['met', 'manual'] },
-    intensity: {
-      value: 0.6,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Intensity (manual)'
+  const precipControls = useControls(
+    'Weather.Precipitation',
+    {
+      enabled: { value: true },
+      source: { value: 'met', options: ['met', 'manual'] },
+      intensity: {
+        value: 0.6,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Intensity (manual)'
+      },
+      fullAtMm: {
+        value: 50,
+        min: 5,
+        max: 150,
+        step: 1,
+        label: 'Whiteout at (mm/h)'
+      },
+      mode: { value: 'auto', options: ['auto', 'rain', 'snow'] },
+      windFrom: {
+        value: 225,
+        min: 0,
+        max: 360,
+        step: 1,
+        label: 'Wind from° (manual)'
+      },
+      windSpeed: {
+        value: 12,
+        min: 0,
+        max: 35,
+        step: 0.5,
+        label: 'Wind speed (manual)'
+      },
+      // Defaults come from PRECIP_DEFAULTS (single source shared with the factory +
+      // wrapper); only the leva ranges/labels are local. Fade controls are in km.
+      opacity: { value: PRECIP_DEFAULTS.opacity, min: 0, max: 1, step: 0.01 },
+      area: { value: PRECIP_DEFAULTS.area, min: 10, max: 300, step: 5 },
+      height: { value: PRECIP_DEFAULTS.height, min: 10, max: 300, step: 5 },
+      dropLength: {
+        value: PRECIP_DEFAULTS.dropLength,
+        min: 0.2,
+        max: 20,
+        step: 0.1
+      },
+      dropWidth: {
+        value: PRECIP_DEFAULTS.dropWidth,
+        min: 0.01,
+        max: 1,
+        step: 0.01
+      },
+      flakeSize: {
+        value: PRECIP_DEFAULTS.flakeSize,
+        min: 0.02,
+        max: 2,
+        step: 0.01
+      },
+      fallSpeedRain: {
+        value: PRECIP_DEFAULTS.fallSpeedRain,
+        min: 2,
+        max: 60,
+        step: 0.5
+      },
+      fallSpeedSnow: {
+        value: PRECIP_DEFAULTS.fallSpeedSnow,
+        min: 0.3,
+        max: 10,
+        step: 0.1
+      },
+      // Altitude fade band (km): rain is full below 'start', gone above 'end'. Raise
+      // 'end' to keep rain visible from higher up (it silently hides everything when
+      // the camera is above the band, which can make every slider look dead).
+      fadeStartKm: {
+        value: PRECIP_DEFAULTS.fadeStartAlt / 1000,
+        min: 0,
+        max: 40,
+        step: 0.5,
+        label: 'Fade start (km)'
+      },
+      fadeEndKm: {
+        value: PRECIP_DEFAULTS.fadeEndAlt / 1000,
+        min: 0.5,
+        max: 80,
+        step: 0.5,
+        label: 'Fade end (km)'
+      },
+      // Underwater: suspended specks (slow rise + sideways drift), always present
+      // when submerged regardless of rain above. Driven by the underwater detector.
+      underwaterIntensity: {
+        value: PRECIP_DEFAULTS.underwaterIntensity,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'UW density'
+      },
+      uwRise: {
+        value: PRECIP_DEFAULTS.uwRise,
+        min: 0,
+        max: 2,
+        step: 0.01,
+        label: 'UW rise (m/s)'
+      },
+      uwSize: {
+        value: PRECIP_DEFAULTS.uwSize,
+        min: 0.01,
+        max: 0.5,
+        step: 0.01,
+        label: 'UW speck size (m)'
+      },
+      uwOpacity: {
+        value: PRECIP_DEFAULTS.uwOpacity,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'UW opacity'
+      }
     },
-    fullAtMm: {
-      value: 50,
-      min: 5,
-      max: 150,
-      step: 1,
-      label: 'Whiteout at (mm/h)'
-    },
-    mode: { value: 'auto', options: ['auto', 'rain', 'snow'] },
-    windFrom: {
-      value: 225,
-      min: 0,
-      max: 360,
-      step: 1,
-      label: 'Wind from° (manual)'
-    },
-    windSpeed: {
-      value: 12,
-      min: 0,
-      max: 35,
-      step: 0.5,
-      label: 'Wind speed (manual)'
-    },
-    // Defaults come from PRECIP_DEFAULTS (single source shared with the factory +
-    // wrapper); only the leva ranges/labels are local. Fade controls are in km.
-    opacity: { value: PRECIP_DEFAULTS.opacity, min: 0, max: 1, step: 0.01 },
-    area: { value: PRECIP_DEFAULTS.area, min: 10, max: 300, step: 5 },
-    height: { value: PRECIP_DEFAULTS.height, min: 10, max: 300, step: 5 },
-    dropLength: {
-      value: PRECIP_DEFAULTS.dropLength,
-      min: 0.2,
-      max: 20,
-      step: 0.1
-    },
-    dropWidth: {
-      value: PRECIP_DEFAULTS.dropWidth,
-      min: 0.01,
-      max: 1,
-      step: 0.01
-    },
-    flakeSize: {
-      value: PRECIP_DEFAULTS.flakeSize,
-      min: 0.02,
-      max: 2,
-      step: 0.01
-    },
-    fallSpeedRain: {
-      value: PRECIP_DEFAULTS.fallSpeedRain,
-      min: 2,
-      max: 60,
-      step: 0.5
-    },
-    fallSpeedSnow: {
-      value: PRECIP_DEFAULTS.fallSpeedSnow,
-      min: 0.3,
-      max: 10,
-      step: 0.1
-    },
-    // Altitude fade band (km): rain is full below 'start', gone above 'end'. Raise
-    // 'end' to keep rain visible from higher up (it silently hides everything when
-    // the camera is above the band, which can make every slider look dead).
-    fadeStartKm: {
-      value: PRECIP_DEFAULTS.fadeStartAlt / 1000,
-      min: 0,
-      max: 40,
-      step: 0.5,
-      label: 'Fade start (km)'
-    },
-    fadeEndKm: {
-      value: PRECIP_DEFAULTS.fadeEndAlt / 1000,
-      min: 0.5,
-      max: 80,
-      step: 0.5,
-      label: 'Fade end (km)'
-    },
-    // Underwater: suspended specks (slow rise + sideways drift), always present
-    // when submerged regardless of rain above. Driven by the underwater detector.
-    underwaterIntensity: {
-      value: PRECIP_DEFAULTS.underwaterIntensity,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'UW density'
-    },
-    uwRise: {
-      value: PRECIP_DEFAULTS.uwRise,
-      min: 0,
-      max: 2,
-      step: 0.01,
-      label: 'UW rise (m/s)'
-    },
-    uwSize: {
-      value: PRECIP_DEFAULTS.uwSize,
-      min: 0.01,
-      max: 0.5,
-      step: 0.01,
-      label: 'UW speck size (m)'
-    },
-    uwOpacity: {
-      value: PRECIP_DEFAULTS.uwOpacity,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'UW opacity'
-    }
-  })
+    { collapsed: true }
+  )
   // Wet-lens raindrop refraction — a screen-space POST effect (not scene geometry
   // like the rain plugin). Defaults from LENS_DROPS_DEFAULTS (single source shared
   // with the node); only ranges/labels are local. 'enabled' is the STRUCTURAL gate:
   // off ⇒ the post pipeline stays the plain composite (no extra RTT/pass). When on,
   // the per-frame 'strength' gate (raining × out-of-water × near-surface) fades it.
-  const lensControls = useControls('Lens Drops', {
-    enabled: { value: true },
-    // DEBUG: bypass the rain/out-of-water/altitude gates so the effect shows
-    // whenever the panel is on (the gates normally hide it from orbit / in clear
-    // weather). Off by default — flip on to tune the look from any view.
-    forceVisible: { value: false, label: 'Force visible (debug)' },
-    strength: {
-      value: LENS_DROPS_DEFAULTS.strength,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Strength (max)'
+  const lensControls = useControls(
+    'Weather.Lens',
+    {
+      enabled: { value: true },
+      // DEBUG: bypass the rain/out-of-water/altitude gates so the effect shows
+      // whenever the panel is on (the gates normally hide it from orbit / in clear
+      // weather). Off by default — flip on to tune the look from any view.
+      forceVisible: { value: false, label: 'Force visible (debug)' },
+      strength: {
+        value: LENS_DROPS_DEFAULTS.strength,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Strength (max)'
+      },
+      density: {
+        value: LENS_DROPS_DEFAULTS.density,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Drop density'
+      },
+      refract: {
+        value: LENS_DROPS_DEFAULTS.refract,
+        min: 0,
+        max: 4,
+        step: 0.05,
+        label: 'Refraction'
+      },
+      blur: {
+        value: LENS_DROPS_DEFAULTS.blur,
+        min: 0,
+        max: 6,
+        step: 0.1,
+        label: 'Wet blur (px)'
+      },
+      dropOpacity: {
+        value: LENS_DROPS_DEFAULTS.dropOpacity,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Drop opacity'
+      },
+      rim: {
+        value: LENS_DROPS_DEFAULTS.rim,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Edge highlight'
+      },
+      // Max 7: beyond ~7 the longest tail (radius·streak) exceeds one cell and the
+      // one-row vertical neighbour sampler can no longer cover it → tail clips.
+      streak: {
+        value: LENS_DROPS_DEFAULTS.streak,
+        min: 1,
+        max: 7,
+        step: 0.1,
+        label: 'Streak max (1=round)'
+      },
+      linger: {
+        value: LENS_DROPS_DEFAULTS.linger,
+        min: 0.3,
+        max: 4,
+        step: 0.1,
+        label: 'Linger (lifespan)'
+      },
+      lifeJitter: {
+        value: LENS_DROPS_DEFAULTS.lifeJitter,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Disappear randomness'
+      },
+      // Seconds the lens stays wet after breaching the surface (water sheeting off
+      // the camera). 0 disables the surfacing trigger, leaving rain as the only one.
+      surfaceWet: {
+        value: 3,
+        min: 0,
+        max: 8,
+        step: 0.1,
+        label: 'Surface wet (s)'
+      }
     },
-    density: {
-      value: LENS_DROPS_DEFAULTS.density,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Drop density'
-    },
-    refract: {
-      value: LENS_DROPS_DEFAULTS.refract,
-      min: 0,
-      max: 4,
-      step: 0.05,
-      label: 'Refraction'
-    },
-    blur: {
-      value: LENS_DROPS_DEFAULTS.blur,
-      min: 0,
-      max: 6,
-      step: 0.1,
-      label: 'Wet blur (px)'
-    },
-    dropOpacity: {
-      value: LENS_DROPS_DEFAULTS.dropOpacity,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Drop opacity'
-    },
-    rim: {
-      value: LENS_DROPS_DEFAULTS.rim,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Edge highlight'
-    },
-    // Max 7: beyond ~7 the longest tail (radius·streak) exceeds one cell and the
-    // one-row vertical neighbour sampler can no longer cover it → tail clips.
-    streak: {
-      value: LENS_DROPS_DEFAULTS.streak,
-      min: 1,
-      max: 7,
-      step: 0.1,
-      label: 'Streak max (1=round)'
-    },
-    linger: {
-      value: LENS_DROPS_DEFAULTS.linger,
-      min: 0.3,
-      max: 4,
-      step: 0.1,
-      label: 'Linger (lifespan)'
-    },
-    lifeJitter: {
-      value: LENS_DROPS_DEFAULTS.lifeJitter,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Disappear randomness'
-    },
-    // Seconds the lens stays wet after breaching the surface (water sheeting off
-    // the camera). 0 disables the surfacing trigger, leaving rain as the only one.
-    surfaceWet: {
-      value: 3,
-      min: 0,
-      max: 8,
-      step: 0.1,
-      label: 'Surface wet (s)'
-    }
-  })
+    { collapsed: true }
+  )
   // Built once; the post memo wires its node graph and a useFrame pushes the gate.
   const lensDrops = useMemo(() => createLensDrops(), [])
   // Decaying "just surfaced" wetness [0,1]: pinned at 1 while submerged, then
@@ -3613,90 +3786,117 @@ export const Content: FC<{
     })
   })
 
-  const tipFoamControls = useControls('Tip Foam', {
-    enabled: { value: true },
-    intensity: { value: 1.0, min: 0, max: 5, step: 0.05 },
-    heightThreshold: {
-      value: 0.6,
-      min: 0,
-      max: 5,
-      step: 0.05,
-      label: 'Height threshold (m)'
+  const tipFoamControls = useControls(
+    'Ocean.Foam.Tip',
+    {
+      enabled: { value: true },
+      intensity: { value: 1.0, min: 0, max: 5, step: 0.05 },
+      heightThreshold: {
+        value: 0.6,
+        min: 0,
+        max: 5,
+        step: 0.05,
+        label: 'Height threshold (m)'
+      },
+      softness: {
+        value: 0.4,
+        min: 0.05,
+        max: 2,
+        step: 0.05,
+        label: 'Threshold softness (m)'
+      },
+      rarity: {
+        value: 0.65,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        label: 'Rarity (1=rare)'
+      },
+      size: { value: 8.0, min: 1, max: 100, step: 0.5, label: 'Tile size (m)' }
     },
-    softness: {
-      value: 0.4,
-      min: 0.05,
-      max: 2,
-      step: 0.05,
-      label: 'Threshold softness (m)'
-    },
-    rarity: {
-      value: 0.65,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'Rarity (1=rare)'
-    },
-    size: { value: 8.0, min: 1, max: 100, step: 0.5, label: 'Tile size (m)' }
-  })
+    { collapsed: true }
+  )
 
-  const shorelineFoamControls = useControls('Shoreline Foam', {
-    shorelineBandRange: { value: 2.0, min: 0.1, max: 100, step: 0.1 },
-    shorelineBandCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
-    shorelineBandOpacity: { value: 1.0, min: 0, max: 1, step: 0.01 },
-    shorelineTintRange: { value: 30.0, min: 1, max: 200, step: 1 },
-    shorelineTintCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
-    shorelineTintOpacity: { value: 0.3, min: 0, max: 1, step: 0.01 }
-  })
+  const shorelineFoamControls = useControls(
+    'Ocean.Foam.Shoreline',
+    {
+      shorelineBandRange: { value: 2.0, min: 0.1, max: 100, step: 0.1 },
+      shorelineBandCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
+      shorelineBandOpacity: { value: 1.0, min: 0, max: 1, step: 0.01 },
+      shorelineTintRange: { value: 30.0, min: 1, max: 200, step: 1 },
+      shorelineTintCoverage: { value: 0.5, min: 0, max: 1, step: 0.01 },
+      shorelineTintOpacity: { value: 0.3, min: 0, max: 1, step: 0.01 }
+    },
+    { collapsed: true }
+  )
 
-  const turbulentFoamControls = useControls('Turbulent Foam', {
-    turbulentIntensity: { value: 0.2, min: 0, max: 2, step: 0.05 }
-  })
+  const turbulentFoamControls = useControls(
+    'Ocean.Foam.Turbulent',
+    {
+      turbulentIntensity: { value: 0.2, min: 0, max: 2, step: 0.05 }
+    },
+    { collapsed: true }
+  )
 
-  const waterColorControls = useControls('Water Color', {
-    depthFalloff: { value: 50.0, min: 1, max: 300, step: 1 },
-    waterDepth: { value: 20.0, min: 1, max: 100, step: 1 },
-    // sRGB hex equivalents of the linear (0,0.8,0.8) / (0,0.2,0.4) defaults
-    shallowColor: '#00e7e7',
-    deepColor: '#007baa'
-  })
-  const oceanDebugParams = useControls('Ocean Debug', {
-    numLayers: {
-      value: 3,
-      min: 1,
-      max: 15,
-      step: 1,
-      label: 'Quadtree LOD layers'
+  const waterColorControls = useControls(
+    'Ocean.Look.Color',
+    {
+      depthFalloff: { value: 50.0, min: 1, max: 300, step: 1 },
+      waterDepth: { value: 20.0, min: 1, max: 100, step: 1 },
+      // sRGB hex equivalents of the linear (0,0.8,0.8) / (0,0.2,0.4) defaults
+      shallowColor: '#00e7e7',
+      deepColor: '#007baa'
     },
-    enableOcean: {
-      value: true,
-      label: 'Enable ocean'
+    { collapsed: true }
+  )
+  const oceanDebugParams = useControls(
+    'Ocean.Setup.Debug',
+    {
+      numLayers: {
+        // 15 = full LOD cascade (matches QT_OCEAN_MIN_NUM_LAYERS). Lower values
+        // were a chunk-build-time shortcut, but they leave unsplit far tiles
+        // with lod=-1 → the vertex morph can't stitch their boundaries.
+        value: 15,
+        min: 1,
+        max: 15,
+        step: 1,
+        label: 'Quadtree LOD layers'
+      },
+      enableOcean: {
+        value: true,
+        label: 'Enable ocean'
+      },
+      useDiagnosticMaterial: {
+        value: false,
+        label: 'Diagnostic material (flat blue)'
+      },
+      skipDepthPrepass: {
+        // Default OFF — the pre-pass works as of the envNode-strip fix.
+        // Flip on as a fallback if a future regression breaks it.
+        value: false,
+        label: 'Skip depth pre-pass'
+      },
+      depthPrepassStage: {
+        value: 4,
+        min: 1,
+        max: 4,
+        step: 1,
+        label: 'Pre-pass stage (1-4)'
+      }
     },
-    useDiagnosticMaterial: {
-      value: false,
-      label: 'Diagnostic material (flat blue)'
-    },
-    skipDepthPrepass: {
-      // Default OFF — the pre-pass works as of the envNode-strip fix.
-      // Flip on as a fallback if a future regression breaks it.
-      value: false,
-      label: 'Skip depth pre-pass'
-    },
-    depthPrepassStage: {
-      value: 4,
-      min: 1,
-      max: 4,
-      step: 1,
-      label: 'Pre-pass stage (1-4)'
-    }
-  })
+    { collapsed: true }
+  )
 
-  const terrainControls = useControls('Terrain', {
-    source: {
-      value: 'Auto',
-      options: ['Auto', 'Global', 'Japan Regional']
-    }
-  })
+  const terrainControls = useControls(
+    'Scene.Terrain',
+    {
+      source: {
+        value: 'Auto',
+        options: ['Auto', 'Global', 'Japan Regional']
+      }
+    },
+    { collapsed: true }
+  )
   const terrainAssetId =
     terrainControls.source === 'Japan Regional' ||
     (terrainControls.source === 'Auto' &&
@@ -3876,8 +4076,6 @@ export const Content: FC<{
       depthFalloff: u.depthFalloff,
       transmissionColor: u.transmissionColor,
       surfaceFoamColor: u.surfaceFoamColor,
-      surfaceFoamCoverage: u.surfaceFoamCoverage,
-      surfaceFoamOpacity: u.surfaceFoamOpacity,
       surfaceFoamSize: u.surfaceFoamSize,
       shorelineFoamColor: u.shorelineFoamColor,
       shorelineFoamCoverage: u.shorelineFoamCoverage,
@@ -3885,14 +4083,9 @@ export const Content: FC<{
       shorelineFoamRange: u.shorelineFoamRange,
       shorelineFoamSize: u.shorelineFoamSize,
       waveFoamColor: u.waveFoamColor,
-      waveFoamCoverage: u.waveFoamCoverage,
-      waveFoamCrestCoverage: u.waveFoamCrestCoverage,
-      waveFoamOpacity: u.waveFoamOpacity,
       waveFoamPeakIntensity: u.waveFoamPeakIntensity,
       waveFoamRippleWeight: u.waveFoamRippleWeight,
       waveFoamWaveWeight: u.waveFoamWaveWeight,
-      waveFoamWindBias: u.waveFoamWindBias,
-      waveFoamWindStretch: u.waveFoamWindStretch,
       waveFoamSize: u.waveFoamSize,
       fresnelNormalStrength: u.fresnelNormalStrength,
       fresnelPower: u.fresnelPower,
@@ -3901,10 +4094,11 @@ export const Content: FC<{
       sparkleIntensity: u.sparkleIntensity,
       sparkleFocusPower: u.sparkleFocusPower,
       sssIntensity: u.sssIntensity,
-      sssPower: u.sssPower,
-      fftAmplitude: u.fftAmplitude,
-      gerstnerAmplitude: u.gerstnerAmplitude
+      sssPower: u.sssPower
     }
+    // NOTE: wave amplitude + foam AMOUNTS (fft/gerstner, wave/surface foam
+    // coverage/opacity, wind bias/stretch) are deliberately absent — those
+    // are owned by the Sea State ladder now, not the style preset.
   }, [oceanUniforms])
 
   // Snapshot the factory defaults the first time presetBag is available, so
@@ -3941,15 +4135,71 @@ export const Content: FC<{
 
   useEffect(() => {
     if (oceanUniforms == null) return
-    // Wind-coupled: blend calm → storm wave amplitude by wind speed. Else the
-    // manual Waves panel governs.
-    oceanUniforms.fftAmplitude.value = windWaveControls.enabled
-      ? MathUtils.lerp(1.0, 1.51, stormT)
-      : waveControls.fftAmplitude
-    oceanUniforms.gerstnerAmplitude.value = windWaveControls.enabled
-      ? MathUtils.lerp(1.0, 1.8, stormT)
-      : waveControls.gerstnerAmplitude
-  }, [oceanUniforms, waveControls, windWaveControls.enabled, stormT])
+    // Manual Waves panel — authoritative when Sea State is 'off'; while sea
+    // state is active the crossfade loop below re-eases these every frame.
+    oceanUniforms.fftAmplitude.value = waveControls.fftAmplitude
+    oceanUniforms.gerstnerAmplitude.value = waveControls.gerstnerAmplitude
+  }, [oceanUniforms, waveControls])
+
+  // Sea-state crossfade: ease every storminess uniform toward the target bag
+  // with a time constant, so forecast scrubs and preset jumps glide instead of
+  // popping. Null target ('off') leaves the manual panels in charge.
+  useFrame((_, dt) => {
+    const t = seaStateTarget
+    if (t == null || oceanUniforms == null || vertexUniforms == null) return
+    const tau = seaStateControls.crossfadeSeconds
+    const k = tau <= 0 ? 1 : 1 - Math.exp(-dt / tau)
+    const ease = (u: { value: number }, target: number): void => {
+      u.value += (target - u.value) * k
+    }
+    ease(oceanUniforms.fftAmplitude, t.fftAmplitude)
+    ease(oceanUniforms.gerstnerAmplitude, t.gerstnerAmplitude)
+    ease(vertexUniforms.swellStrength, t.swellStrength)
+    ease(vertexUniforms.swellScale, t.swellScale)
+    ease(oceanUniforms.waveFoamCoverage, t.waveFoamCoverage)
+    ease(oceanUniforms.waveFoamOpacity, t.waveFoamOpacity)
+    ease(oceanUniforms.waveFoamCrestCoverage, t.waveFoamCrestCoverage)
+    ease(oceanUniforms.waveFoamWindBias, t.waveFoamWindBias)
+    ease(oceanUniforms.waveFoamWindStretch, t.waveFoamWindStretch)
+    ease(oceanUniforms.surfaceFoamCoverage, t.surfaceFoamCoverage)
+    ease(oceanUniforms.surfaceFoamOpacity, t.surfaceFoamOpacity)
+    ease(oceanUniforms.surfaceFoamRegionThreshold, t.surfaceFoamRegionThreshold)
+    ease(oceanUniforms.tipFoamIntensity, t.tipFoamIntensity)
+    ease(oceanUniforms.tipFoamHeightThreshold, t.tipFoamHeightThreshold)
+  })
+
+  // Preset-tuning snapshot (Sea State 'logPreset' button): dumps the LIVE
+  // uniform values of every sea-state field as a paste-ready block for
+  // SEA_STATE_PRESETS. Reads uniforms rather than leva state so whatever is
+  // actually on screen — sliders, look-presets, eased sea state — is captured.
+  seaStateLogRef.current = () => {
+    if (oceanUniforms == null || vertexUniforms == null) return
+    const params: SeaStateParams = {
+      fftAmplitude: oceanUniforms.fftAmplitude.value,
+      gerstnerAmplitude: oceanUniforms.gerstnerAmplitude.value,
+      swellStrength: vertexUniforms.swellStrength.value,
+      swellScale: vertexUniforms.swellScale.value,
+      waveFoamCoverage: oceanUniforms.waveFoamCoverage.value,
+      waveFoamOpacity: oceanUniforms.waveFoamOpacity.value,
+      waveFoamCrestCoverage: oceanUniforms.waveFoamCrestCoverage.value,
+      waveFoamWindBias: oceanUniforms.waveFoamWindBias.value,
+      waveFoamWindStretch: oceanUniforms.waveFoamWindStretch.value,
+      surfaceFoamCoverage: oceanUniforms.surfaceFoamCoverage.value,
+      surfaceFoamOpacity: oceanUniforms.surfaceFoamOpacity.value,
+      surfaceFoamRegionThreshold:
+        oceanUniforms.surfaceFoamRegionThreshold.value,
+      tipFoamIntensity: oceanUniforms.tipFoamIntensity.value,
+      tipFoamHeightThreshold: oceanUniforms.tipFoamHeightThreshold.value
+    }
+    console.log(
+      formatSeaStatePreset(
+        seaStateControls.preview !== 'none'
+          ? seaStateControls.preview
+          : 'custom',
+        params
+      )
+    )
+  }
 
   useEffect(() => {
     if (oceanUniforms == null) return
@@ -4002,17 +4252,15 @@ export const Content: FC<{
     oceanUniforms.waveFoamOpacity.value = waveFoamControls.waveFoamOpacity
     oceanUniforms.waveFoamCrestCoverage.value =
       waveFoamControls.waveFoamCrestCoverage
+    oceanUniforms.waveFoamWindBias.value = waveFoamControls.windBias
+    oceanUniforms.waveFoamWindStretch.value = waveFoamControls.windStretch
   }, [oceanUniforms, waveFoamControls])
 
   useEffect(() => {
     if (vertexUniforms == null) return
-    vertexUniforms.swellStrength.value = windWaveControls.enabled
-      ? MathUtils.lerp(0.5, 0.57, stormT)
-      : swellControls.swellStrength
-    vertexUniforms.swellScale.value = windWaveControls.enabled
-      ? MathUtils.lerp(800, 3460, stormT)
-      : swellControls.swellScale
-  }, [vertexUniforms, swellControls, windWaveControls.enabled, stormT])
+    vertexUniforms.swellStrength.value = swellControls.swellStrength
+    vertexUniforms.swellScale.value = swellControls.swellScale
+  }, [vertexUniforms, swellControls])
 
   useEffect(() => {
     if (oceanUniforms?.tipFoamEnabled == null) return
@@ -4068,12 +4316,19 @@ export const Content: FC<{
   // only re-runs when the preset or the material rebuilds.)
   useEffect(() => {
     if (presetBag == null) return
+    // 'custom' = the manual sliders are authoritative. The preset system must
+    // not touch uniforms OR the leva store here, or it would overwrite the
+    // user's hand-tuned default look on mount (the reported "default tuned to
+    // perfection" regression). The slider effects, which run before this one,
+    // already put the custom look on screen.
+    if (presetControls.preset === 'custom') return
+    const preset = presetControls.preset as WaterproPresetName
+    const p = WATERPRO_PRESETS[preset]
     const snap = defaultsSnapshotRef.current
     if (snap != null) {
       // Restore factory defaults to every preset-bag field first. This
-      // guarantees switching preset → custom (or preset A → preset B) starts
-      // from a known baseline; without it, fields only the leaving preset
-      // wrote would persist into the next state.
+      // guarantees switching preset A → preset B starts from a known baseline;
+      // without it, fields only the leaving preset wrote would persist.
       for (const [key, uni] of Object.entries(presetBag)) {
         const saved = snap[key]
         const target = (uni as any).value
@@ -4085,8 +4340,31 @@ export const Content: FC<{
         }
       }
     }
-    if (presetControls.preset === 'custom') return
-    applyWaterproPreset(presetControls.preset as WaterproPresetName, presetBag)
+    applyWaterproPreset(preset, presetBag)
+    // Sync the slider-backed STYLE fields back into the leva store so the
+    // panels sit where the style preset just put the uniforms. Without this,
+    // the sliders keep their stale pre-preset state, and the slider effects
+    // (which are the SOLE writers of these uniforms) re-apply their defaults —
+    // visually "resetting" the preset. This is why every style looked tropical:
+    // the Water Color pickers kept their tropical-cyan defaults and their
+    // effect clobbered each preset's water colour. Colours ARE synced now, as
+    // the preset's SOURCE hex strings (no lossy linear→hex inversion needed).
+    const u = presetBag
+    levaStore.set(
+      {
+        'Ocean.Look.Fresnel.fresnelPower': u.fresnelPower.value,
+        'Ocean.Look.Fresnel.normalStrength': u.fresnelNormalStrength.value,
+        'Ocean.Look.Sparkle.sparkleIntensity': u.sparkleIntensity.value,
+        'Ocean.Look.Sparkle.sparkleFocusPower': u.sparkleFocusPower.value,
+        'Ocean.Look.SSS.sssIntensity': u.sssIntensity.value,
+        'Ocean.Look.SSS.sssPower': u.sssPower.value,
+        'Ocean.Foam.Surface.surfaceFoamSize': u.surfaceFoamSize.value,
+        'Ocean.Look.Color.depthFalloff': u.depthFalloff.value,
+        'Ocean.Look.Color.shallowColor': p.color.shallow,
+        'Ocean.Look.Color.deepColor': p.color.deep
+      },
+      false
+    )
   }, [presetBag, presetControls.preset])
 
   useEffect(() => {

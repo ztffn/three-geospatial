@@ -53,6 +53,8 @@ import {
   createLinearDepthOccluderMaterial
 } from '../../../packages/ocean-ifft/src/ocean/depth-material.js'
 // @ts-expect-error JS module
+import { ocean_constants } from '../../../packages/ocean-ifft/src/ocean/ocean-constants.js'
+// @ts-expect-error JS module
 import OceanChunkManager from '../../../packages/ocean-ifft/src/ocean/ocean.js'
 import {
   DEFAULT_GERSTNER_WAVES,
@@ -66,13 +68,16 @@ import {
 } from './buildWaterproOceanMaterial'
 import { chunkVertexStageWGSL as vertexStageWGSL } from './chunkVertexStageWGSL'
 
-// Mirror of ocean_constants used by OceanChunkManager. Kept here as plain
-// numbers so this file has no further package dependencies.
-const OCEAN_SIZE = 500_000
-const QT_OCEAN_MIN_CELL_SIZE = 500
-const QT_OCEAN_MIN_NUM_LAYERS = 15
-const QT_OCEAN_MIN_CELL_RESOLUTION = 36
-const QT_OCEAN_MIN_LOD_RADIUS = OCEAN_SIZE / 2 ** QT_OCEAN_MIN_NUM_LAYERS
+// Quadtree constants come straight from the package. The shader's morph rings
+// (minLodRadius uniform) MUST match the quadtree's LOD-ring assignment in
+// ocean.js — this file used to re-derive minLodRadius as OCEAN_SIZE / 2^15
+// (≈15.26 m) while the quadtree ran on the package's 1000 m, so `lod == n`
+// was never true, the CDLOD morph was globally disabled, and T-junction
+// cracks opened along every tile boundary once waves displaced the surface.
+const QT_OCEAN_MIN_NUM_LAYERS: number = ocean_constants.QT_OCEAN_MIN_NUM_LAYERS
+const QT_OCEAN_MIN_CELL_RESOLUTION: number =
+  ocean_constants.QT_OCEAN_MIN_CELL_RESOLUTION
+const QT_OCEAN_MIN_LOD_RADIUS: number = ocean_constants.QT_OCEAN_MIN_LOD_RADIUS
 
 const IFFT_RESOLUTION = 256
 const GERSTNER_MAX_WAVES = 8
@@ -163,7 +168,7 @@ export default function OceanChunksWaterpro({
   atmosphereContext,
   envCubeTexture,
   foamTexture,
-  numLayers = 3,
+  numLayers = QT_OCEAN_MIN_NUM_LAYERS,
   useDiagnosticMaterial = false,
   skipDepthPrepass = false,
   depthPrepassStage = 4,

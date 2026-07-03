@@ -11,14 +11,19 @@
 // keeps its MeshBasic + no-tonemap reference path.
 
 import { OrbitControls } from '@react-three/drei'
-import { extend, useFrame, useThree, type ThreeElement } from '@react-three/fiber'
+import {
+  extend,
+  useFrame,
+  useThree,
+  type ThreeElement
+} from '@react-three/fiber'
 import {
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type FC,
+  type FC
 } from 'react'
 import {
   AgXToneMapping,
@@ -28,109 +33,114 @@ import {
   HalfFloatType,
   LinearFilter,
   Matrix4,
-  type Group,
-  type Mesh,
-  type Material,
-  type Object3D,
   NearestFilter,
   PlaneGeometry,
   RenderTarget,
+  RepeatWrapping,
   RGBAFormat,
   SRGBColorSpace,
   TextureLoader,
   Vector2,
   Vector3,
-  RepeatWrapping,
+  type Group,
+  type Material,
+  type Mesh,
+  type Object3D
 } from 'three'
 import {
-  MeshBasicNodeMaterial,
-  MeshStandardNodeMaterial,
-  PostProcessing,
-  type Renderer,
-} from 'three/webgpu'
-import {
-  Fn,
   attribute,
+  cameraFar,
+  cameraNear,
   cameraPosition,
   cubeTexture,
   dot,
   exp,
   float,
+  Fn,
   mix,
-  saturate,
+  modelWorldMatrix,
   normalLocal,
   pass,
   positionView,
-  cameraNear,
-  cameraFar,
-  reflect as tslReflect,
+  saturate,
   toneMapping,
+  reflect as tslReflect,
   uniform,
   vec2,
   vec3,
-  vec4,
-  modelWorldMatrix,
+  vec4
 } from 'three/tsl'
+import {
+  MeshBasicNodeMaterial,
+  MeshStandardNodeMaterial,
+  PostProcessing,
+  type Renderer
+} from 'three/webgpu'
 
 import {
   getECIToECEFRotationMatrix,
   getMoonDirectionECI,
-  getSunDirectionECI,
+  getSunDirectionECI
 } from '@takram/three-atmosphere'
 import {
   aerialPerspective,
   AtmosphereContext,
   AtmosphereLight,
   AtmosphereLightNode,
-  skyEnvironment,
+  skyEnvironment
 } from '@takram/three-atmosphere/webgpu'
 import { dithering, lensFlare } from '@takram/three-geospatial/webgpu'
 
+import {
+  applySeaState,
+  applyWaterproPreset,
+  combineFoamNode,
+  DEFAULT_GERSTNER_WAVES,
+  fresnelDistanceNode,
+  GerstnerOverlay,
+  sampleSeaState,
+  sampleWaveDisplacement,
+  sampleWaveNormal,
+  severityIndexOf,
+  shorelineFoamNode,
+  sparkleNode,
+  subSurfaceScatteringNode,
+  surfaceFoamNode,
+  turbulentFoamNode,
+  waterColorNode,
+  WATERPRO_PRESET_NAMES,
+  WATERPRO_PRESETS,
+  waveFoamNode,
+  WaveSimulation,
+  type SeaStateUniformBag,
+  type WaterproPresetName,
+  type WaterproPresetUniformBag
+} from '../../../packages/ocean-ifft/src/waterpro/index.js'
 import type { StoryFC } from '../components/createStory'
 import { WebGPUCanvas } from '../components/WebGPUCanvas'
 import {
   localDateArgs,
   localDateArgTypes,
   useLocalDateControls,
-  type LocalDateArgs,
+  type LocalDateArgs
 } from '../controls/localDateControls'
 import {
   locationArgs,
   locationArgTypes,
   useLocationControls,
-  type LocationArgs,
+  type LocationArgs
 } from '../controls/locationControls'
 import {
   toneMappingArgs,
   toneMappingArgTypes,
   useToneMappingControls,
-  type ToneMappingArgs,
+  type ToneMappingArgs
 } from '../controls/toneMappingControls'
 import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
 import { useGLTF } from '../hooks/useGLTF'
 import { useGuardedFrame } from '../hooks/useGuardedFrame'
 import { useResource } from '../hooks/useResource'
 import { useTransientControl } from '../hooks/useTransientControl'
-import {
-  WaveSimulation,
-  GerstnerOverlay,
-  DEFAULT_GERSTNER_WAVES,
-  sampleWaveDisplacement,
-  sampleWaveNormal,
-  waterColorNode,
-  surfaceFoamNode,
-  waveFoamNode,
-  shorelineFoamNode,
-  fresnelDistanceNode,
-  subSurfaceScatteringNode,
-  sparkleNode,
-  turbulentFoamNode,
-  combineFoamNode,
-  applyWaterproPreset,
-  WATERPRO_PRESET_NAMES,
-  type WaterproPresetName,
-  type WaterproPresetUniformBag,
-} from '../../../packages/ocean-ifft/src/waterpro/index.js'
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
@@ -159,14 +169,19 @@ function createLinearDepthMaterial(): MeshBasicNodeMaterial {
   const mat = new MeshBasicNodeMaterial()
   mat.side = DoubleSide
   mat.colorNode = Fn(() => {
-    const d = positionView.z.negate().sub(cameraNear).div(cameraFar.sub(cameraNear))
+    const d = positionView.z
+      .negate()
+      .sub(cameraNear)
+      .div(cameraFar.sub(cameraNear))
     return vec4(d, float(0), float(1), float(1))
   })()
   return mat
 }
 
 const loader = new TextureLoader()
-const foamTexture = loader.load('/ocean-ifft-resources/textures/simplex-noise.png')
+const foamTexture = loader.load(
+  '/ocean-ifft-resources/textures/simplex-noise.png'
+)
 foamTexture.wrapS = RepeatWrapping
 foamTexture.wrapT = RepeatWrapping
 
@@ -299,7 +314,7 @@ const Content: FC = () => {
         magFilter: NearestFilter,
         type: HalfFloatType,
         format: RGBAFormat,
-        depthBuffer: true,
+        depthBuffer: true
       }
     )
   }
@@ -315,7 +330,12 @@ const Content: FC = () => {
   }, [])
 
   const oceanGeometry = useMemo(() => {
-    const g = new PlaneGeometry(PLANE_SIZE, PLANE_SIZE, PLANE_SEGMENTS, PLANE_SEGMENTS)
+    const g = new PlaneGeometry(
+      PLANE_SIZE,
+      PLANE_SIZE,
+      PLANE_SEGMENTS,
+      PLANE_SEGMENTS
+    )
     g.rotateX(-Math.PI / 2)
     return g
   }, [])
@@ -412,7 +432,7 @@ const Content: FC = () => {
       // fadeStart/fadePower writes have a destination (visual no-op).
       fadeStart: uniform(50.0),
       fadeEnd: uniform(200.0),
-      fadePower: uniform(1.0),
+      fadePower: uniform(1.0)
     }),
     []
   )
@@ -424,8 +444,6 @@ const Content: FC = () => {
       depthFalloff: u.depthFalloff,
       transmissionColor: u.transmissionColor,
       surfaceFoamColor: u.surfaceFoamColor,
-      surfaceFoamCoverage: u.surfaceFoamCoverage,
-      surfaceFoamOpacity: u.surfaceFoamOpacity,
       surfaceFoamSize: u.surfaceFoamSize,
       shorelineFoamColor: u.shorelineFoamColor,
       shorelineFoamCoverage: u.shorelineFoamCoverage,
@@ -433,14 +451,9 @@ const Content: FC = () => {
       shorelineFoamRange: u.shorelineFoamRange,
       shorelineFoamSize: u.shorelineFoamSize,
       waveFoamColor: u.waveFoamColor,
-      waveFoamCoverage: u.waveFoamCoverage,
-      waveFoamCrestCoverage: u.waveFoamCrestCoverage,
-      waveFoamOpacity: u.waveFoamOpacity,
       waveFoamPeakIntensity: u.waveFoamPeakIntensity,
       waveFoamRippleWeight: u.waveFoamRippleWeight,
       waveFoamWaveWeight: u.waveFoamWaveWeight,
-      waveFoamWindBias: u.waveFoamWindBias,
-      waveFoamWindStretch: u.waveFoamWindStretch,
       waveFoamSize: u.waveFoamSize,
       fresnelNormalStrength: u.fresnelNormalStrength,
       fresnelPower: u.fresnelPower,
@@ -450,27 +463,50 @@ const Content: FC = () => {
       sparkleFocusPower: u.sparkleFocusPower,
       sssIntensity: u.sssIntensity,
       sssPower: u.sssPower,
-      fftAmplitude: u.fftAmplitude,
-      gerstnerAmplitude: u.gerstnerAmplitude,
       // Optional bag slots — applier only writes these when the preset defines
       // the matching field. Lets presets like `tropical` carry user-tuned
       // reflection grading + turbulent foam intensity.
       skyReflectionColor: u.skyReflectionColor,
       skyReflectionExposure: u.skyReflectionExposure,
       skyReflectionScale: u.skyReflectionScale,
-      turbulentIntensity: u.turbulentIntensity,
+      turbulentIntensity: u.turbulentIntensity
     }),
     [u]
   )
 
-  // Preset selector. Atmosphere/caustics/oceanFloor/postProcessing/fresnel.underwater/ssr
-  // fields from the source presets are intentionally skipped — those belong on
-  // the AtmosphereContextNode + post pass.
+  // Roughness bag for applySeaState — the wave amplitude + foam-amount uniforms
+  // the style preset no longer carries. This story has no live MET severity, so
+  // each style's `defaultSeaState` supplies a matching roughness.
+  const seaStateBag: SeaStateUniformBag = useMemo(
+    () => ({
+      fftAmplitude: u.fftAmplitude,
+      gerstnerAmplitude: u.gerstnerAmplitude,
+      waveFoamCoverage: u.waveFoamCoverage,
+      waveFoamOpacity: u.waveFoamOpacity,
+      waveFoamCrestCoverage: u.waveFoamCrestCoverage,
+      waveFoamWindBias: u.waveFoamWindBias,
+      waveFoamWindStretch: u.waveFoamWindStretch,
+      surfaceFoamCoverage: u.surfaceFoamCoverage,
+      surfaceFoamOpacity: u.surfaceFoamOpacity
+    }),
+    [u]
+  )
+
+  // Preset selector. Applies the STYLE preset (colour/light/foam look) plus the
+  // roughness the style implies via its defaultSeaState. Atmosphere/caustics/
+  // oceanFloor/postProcessing/fresnel.underwater/ssr fields are skipped — those
+  // belong on the AtmosphereContextNode + post pass.
   useTransientControl(
     (args: StoryArgs) => args.preset,
     preset => {
       if (preset === 'custom') return
       applyWaterproPreset(preset, presetBag)
+      applySeaState(
+        sampleSeaState(
+          severityIndexOf(WATERPRO_PRESETS[preset].defaultSeaState)
+        ),
+        seaStateBag
+      )
     }
   )
 
@@ -569,12 +605,20 @@ const Content: FC = () => {
     if (waveSim == null || gerstner == null) return null
 
     // Vertex displacement (IFFT + Gerstner) — both scaled by preset amplitude.
-    const localPos = vec3(attribute('position').x, attribute('position').y, attribute('position').z)
+    const localPos = vec3(
+      attribute('position').x,
+      attribute('position').y,
+      attribute('position').z
+    )
     const worldXZ = vec2(localPos.x, localPos.z)
-    const { displacement: ifftDispRaw } = sampleWaveDisplacement(waveSim, { worldXZ })
+    const { displacement: ifftDispRaw } = sampleWaveDisplacement(waveSim, {
+      worldXZ
+    })
     const ifftDisp = ifftDispRaw.mul(u.fftAmplitude)
     const gerstnerEvalVtx = gerstner.evaluate(worldXZ, gerstnerTime)
-    const gerstnerDispVtx = gerstnerEvalVtx.displacement.mul(u.gerstnerAmplitude)
+    const gerstnerDispVtx = gerstnerEvalVtx.displacement.mul(
+      u.gerstnerAmplitude
+    )
     const displacedLocal = localPos.add(ifftDisp).add(gerstnerDispVtx)
 
     // Fragment normals + Jacobian eigenvalues.
@@ -583,11 +627,13 @@ const Content: FC = () => {
     const cascadeSample = sampleWaveNormal(waveSim, { worldXZ: fragWorldXZ })
     const gerstnerFrag = gerstner.evaluate(fragWorldXZ, gerstnerTime)
     const surfaceNormal = vec3(
-      cascadeSample.normal.x.add(gerstnerFrag.normal.x.mul(u.gerstnerAmplitude)),
+      cascadeSample.normal.x.add(
+        gerstnerFrag.normal.x.mul(u.gerstnerAmplitude)
+      ),
       cascadeSample.normal.y.add(
         gerstnerFrag.normal.y.sub(float(1)).mul(u.gerstnerAmplitude)
       ),
-      cascadeSample.normal.z.add(gerstnerFrag.normal.z.mul(u.gerstnerAmplitude)),
+      cascadeSample.normal.z.add(gerstnerFrag.normal.z.mul(u.gerstnerAmplitude))
     )
     const eigen0 = cascadeSample.eigen0.sub(
       gerstnerFrag.folding.mul(u.gerstnerAmplitude)
@@ -602,7 +648,7 @@ const Content: FC = () => {
         waterDepth: u.waterDepth,
         depthFalloff: u.depthFalloff,
         shallowColor: u.shallowColor,
-        deepColor: u.deepColor,
+        deepColor: u.deepColor
       })
 
     // Program 5 (surface foam).
@@ -612,7 +658,7 @@ const Content: FC = () => {
       size: u.surfaceFoamSize,
       coverage: u.surfaceFoamCoverage,
       opacity: u.surfaceFoamOpacity,
-      foamColor: u.surfaceFoamColor,
+      foamColor: u.surfaceFoamColor
     })
 
     // Program 7 (wave foam).
@@ -633,7 +679,7 @@ const Content: FC = () => {
       eigen0,
       eigen1,
       hasJacobianFoam: uniform(1.0),
-      surfaceNormal,
+      surfaceNormal
     })
 
     // Program 6 (shoreline foam) — two layers (matches depth-demo two-layer
@@ -645,7 +691,7 @@ const Content: FC = () => {
       size: u.shorelineFoamSize,
       coverage: u.shorelineBandCoverage,
       opacity: u.shorelineBandOpacity,
-      foamColor: u.shorelineFoamColor,
+      foamColor: u.shorelineFoamColor
     })
     const shorelineTint = shorelineFoamNode(waterColumnDepth, {
       foamTexture,
@@ -654,7 +700,7 @@ const Content: FC = () => {
       size: u.shorelineFoamSize,
       coverage: u.shorelineTintCoverage,
       opacity: u.shorelineTintOpacity,
-      foamColor: u.shorelineFoamColor,
+      foamColor: u.shorelineFoamColor
     })
     const shorelineFoam = shorelineBand
 
@@ -676,14 +722,16 @@ const Content: FC = () => {
       fadeEnd: noFadeEnd,
       fadePower: noFadePower,
       normalStrength: u.fresnelNormalStrength,
-      power: u.fresnelPower,
+      power: u.fresnelPower
     })
     const { fresnel: fresnelRaw, distanceToCamera } = fresnelOut
     // SSS short-range mask — artistic, kept at WaterPro defaults.
     const sssFadeStart = uniform(50.0)
     const sssFadeEnd = uniform(200.0)
 
-    const viewDir = cameraPosition.sub(vec3(fragWorldXZ.x, float(0), fragWorldXZ.y)).normalize()
+    const viewDir = cameraPosition
+      .sub(vec3(fragWorldXZ.x, float(0), fragWorldXZ.y))
+      .normalize()
 
     // WaterPro SSS + sparkle nodes expect sunDir = light propagation direction
     // (sun → scene; downward at noon). sunDirUniform is the atmosphere
@@ -704,7 +752,7 @@ const Content: FC = () => {
       fadeEnd: sssFadeEnd,
       enabled: u.sssOn,
       power: u.sssPower,
-      intensity: u.sssIntensity,
+      intensity: u.sssIntensity
     })
 
     // Program 1 (sparkle). Sparkle color tracks sun elevation: horizon
@@ -714,9 +762,9 @@ const Content: FC = () => {
     // saturate so below-horizon → 0 → full horizon-orange.
     const sunElevation = saturate(dot(sunDirUniform, vec3(0, 1, 0)))
     const sparkleSunColor = mix(
-      vec3(1.0, 0.45, 0.20), // horizon — warm orange
+      vec3(1.0, 0.45, 0.2), // horizon — warm orange
       vec3(1.0, 0.97, 0.88), // noon — warm-white
-      sunElevation,
+      sunElevation
     )
     const sparkleOut = sparkleNode({
       viewDir,
@@ -725,7 +773,7 @@ const Content: FC = () => {
       enabled: u.sparkleOn,
       focusPower: u.sparkleFocusPower,
       intensity: u.sparkleIntensity,
-      color: sparkleSunColor,
+      color: sparkleSunColor
     })
 
     // Program 11 (turbulent foam).
@@ -735,7 +783,7 @@ const Content: FC = () => {
       sampleEpsilon: uniform(2.0),
       depthAttenuation: uniform(0.5),
       intensity: u.turbulentIntensity,
-      worldXZ: fragWorldXZ,
+      worldXZ: fragWorldXZ
     })
 
     // AF.build composition.
@@ -743,7 +791,7 @@ const Content: FC = () => {
       surfaceFoam,
       waveFoam,
       shorelineFoam,
-      scene: { isObjectInFront, isDynamic, fresnel: fresnelRaw },
+      scene: { isObjectInFront, isDynamic, fresnel: fresnelRaw }
     })
 
     // Reflection direction in world space (used for the atmosphere cube sample).
@@ -788,14 +836,18 @@ const Content: FC = () => {
     const withCombined = mix(
       waterColorLitGlow,
       combined.combinedFoamColor,
-      combined.combinedFoamStrength,
+      combined.combinedFoamStrength
     )
     const withTurbulent = withCombined.add(turbulentFoam.foam.mul(float(0.1)))
-    const withTint = mix(withTurbulent, shorelineTint.color, shorelineTint.strength)
+    const withTint = mix(
+      withTurbulent,
+      shorelineTint.color,
+      shorelineTint.strength
+    )
     const withShoreline = mix(
       withTint,
       combined.shorelineFoamTint,
-      combined.shorelineFoamStrength,
+      combined.shorelineFoamStrength
     )
     const finalColor = withShoreline
 
@@ -847,7 +899,10 @@ const Content: FC = () => {
   })
 
   // Per-frame wave + sun-direction write.
-  const clockRef = useRef({ start: performance.now() / 1000, last: performance.now() / 1000 })
+  const clockRef = useRef({
+    start: performance.now() / 1000,
+    last: performance.now() / 1000
+  })
   useFrame(() => {
     if (waveSim == null) return
     const now = performance.now() / 1000
@@ -902,7 +957,9 @@ const Content: FC = () => {
     r.setClearColor(0x000000, 1.0)
     scene.background = prevBg
 
-    swapped.forEach(({ mesh, mat }) => { mesh.material = mat })
+    swapped.forEach(({ mesh, mat }) => {
+      mesh.material = mat
+    })
     if (oceanMesh) oceanMesh.visible = true
   }, DEPTH_PASS_PRIORITY)
 
@@ -926,12 +983,12 @@ const Content: FC = () => {
 
       <mesh ref={terrainMeshRef} position={[0, -15, 0]} rotation={[0.6, 0, 0]}>
         <boxGeometry args={[40, 2, 60]} />
-        <meshStandardMaterial color="#5a7a3a" />
+        <meshStandardMaterial color='#5a7a3a' />
       </mesh>
 
       <mesh ref={capsuleMeshRef} position={[25, 0, 0]}>
         <capsuleGeometry args={[3, 4, 8, 24]} />
-        <meshStandardMaterial color="#c04040" />
+        <meshStandardMaterial color='#c04040' />
       </mesh>
 
       <Turbine groupRef={turbineGroupRef} wingsRef={turbineWingsRef} />
@@ -946,7 +1003,11 @@ const Content: FC = () => {
       )}
 
       {oceanMaterial != null && (
-        <mesh ref={oceanMeshRef} geometry={oceanGeometry} material={oceanMaterial} />
+        <mesh
+          ref={oceanMeshRef}
+          geometry={oceanGeometry}
+          material={oceanMaterial}
+        />
       )}
     </>
   )
@@ -960,7 +1021,7 @@ export const Story: StoryFC<{}, StoryArgs> = () => {
         antialias: true,
         onInit: r => {
           r.library.addLight(AtmosphereLightNode, AtmosphereLight)
-        },
+        }
       }}
     >
       <Content />
@@ -969,7 +1030,7 @@ export const Story: StoryFC<{}, StoryArgs> = () => {
 }
 
 const range = (min: number, max: number, step = 0.01) => ({
-  control: { type: 'range' as const, min, max, step },
+  control: { type: 'range' as const, min, max, step }
 })
 
 Story.args = {
@@ -1017,7 +1078,7 @@ Story.args = {
   deepColor: '#007baa',
   turbineHeight: -28,
   turbineSpin: true,
-  turbineSpinSpeed: 2.0,
+  turbineSpinSpeed: 2.0
 }
 
 Story.argTypes = {
@@ -1027,20 +1088,20 @@ Story.argTypes = {
   preset: {
     control: { type: 'select' },
     options: ['custom', ...WATERPRO_PRESET_NAMES],
-    table: { category: 'Preset' },
+    table: { category: 'Preset' }
   },
   skyReflection: { control: 'boolean', table: { category: 'Toggles' } },
   skyReflectionColor: {
     control: { type: 'color' },
-    table: { category: 'Reflection' },
+    table: { category: 'Reflection' }
   },
   skyReflectionExposure: {
     ...range(0.01, 2, 0.01),
-    table: { category: 'Reflection' },
+    table: { category: 'Reflection' }
   },
   skyReflectionScale: {
     ...range(0, 3, 0.05),
-    table: { category: 'Reflection' },
+    table: { category: 'Reflection' }
   },
   sss: { control: 'boolean', table: { category: 'Toggles' } },
   sparkle: { control: 'boolean', table: { category: 'Toggles' } },
@@ -1061,34 +1122,64 @@ Story.argTypes = {
   sssIntensity: { ...range(0, 5, 0.05), table: { category: 'SSS' } },
   sssPower: { ...range(0.5, 64, 0.1), table: { category: 'SSS' } },
 
-  surfaceFoamCoverage: { ...range(0, 1, 0.01), table: { category: 'Surface foam' } },
-  surfaceFoamOpacity: { ...range(0, 1, 0.01), table: { category: 'Surface foam' } },
+  surfaceFoamCoverage: {
+    ...range(0, 1, 0.01),
+    table: { category: 'Surface foam' }
+  },
+  surfaceFoamOpacity: {
+    ...range(0, 1, 0.01),
+    table: { category: 'Surface foam' }
+  },
   surfaceFoamSize: { ...range(1, 250, 1), table: { category: 'Surface foam' } },
 
   waveFoamCoverage: { ...range(0, 1, 0.01), table: { category: 'Wave foam' } },
   waveFoamOpacity: { ...range(0, 1, 0.01), table: { category: 'Wave foam' } },
-  waveFoamCrestCoverage: { ...range(0, 1, 0.01), table: { category: 'Wave foam' } },
+  waveFoamCrestCoverage: {
+    ...range(0, 1, 0.01),
+    table: { category: 'Wave foam' }
+  },
 
-  shorelineBandRange: { ...range(0.1, 100, 0.1), table: { category: 'Shoreline foam – band' } },
-  shorelineBandCoverage: { ...range(0, 1, 0.01), table: { category: 'Shoreline foam – band' } },
-  shorelineBandOpacity: { ...range(0, 1, 0.01), table: { category: 'Shoreline foam – band' } },
-  shorelineTintRange: { ...range(1, 200, 1), table: { category: 'Shoreline foam – tint' } },
-  shorelineTintCoverage: { ...range(0, 1, 0.01), table: { category: 'Shoreline foam – tint' } },
-  shorelineTintOpacity: { ...range(0, 1, 0.01), table: { category: 'Shoreline foam – tint' } },
+  shorelineBandRange: {
+    ...range(0.1, 100, 0.1),
+    table: { category: 'Shoreline foam – band' }
+  },
+  shorelineBandCoverage: {
+    ...range(0, 1, 0.01),
+    table: { category: 'Shoreline foam – band' }
+  },
+  shorelineBandOpacity: {
+    ...range(0, 1, 0.01),
+    table: { category: 'Shoreline foam – band' }
+  },
+  shorelineTintRange: {
+    ...range(1, 200, 1),
+    table: { category: 'Shoreline foam – tint' }
+  },
+  shorelineTintCoverage: {
+    ...range(0, 1, 0.01),
+    table: { category: 'Shoreline foam – tint' }
+  },
+  shorelineTintOpacity: {
+    ...range(0, 1, 0.01),
+    table: { category: 'Shoreline foam – tint' }
+  },
 
-  turbulentIntensity: { ...range(0, 2, 0.05), table: { category: 'Turbulent foam' } },
+  turbulentIntensity: {
+    ...range(0, 2, 0.05),
+    table: { category: 'Turbulent foam' }
+  },
 
   depthFalloff: { ...range(1, 300, 1), table: { category: 'Water color' } },
   waterDepth: { ...range(1, 100, 1), table: { category: 'Water color' } },
   shallowColor: {
     control: { type: 'color' },
-    table: { category: 'Water color' },
+    table: { category: 'Water color' }
   },
   deepColor: {
     control: { type: 'color' },
-    table: { category: 'Water color' },
+    table: { category: 'Water color' }
   },
   turbineHeight: { ...range(-50, 50, 0.1), table: { category: 'Turbine' } },
   turbineSpin: { control: 'boolean', table: { category: 'Turbine' } },
-  turbineSpinSpeed: { ...range(0, 20, 0.1), table: { category: 'Turbine' } },
+  turbineSpinSpeed: { ...range(0, 20, 0.1), table: { category: 'Turbine' } }
 }

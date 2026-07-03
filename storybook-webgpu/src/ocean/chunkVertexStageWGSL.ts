@@ -2,12 +2,16 @@
 // vertexStageWGSL.js. Adds a `fftAmplitude: f32` parameter that scales the
 // IFFT cascade displacement before it's added to the morphed position —
 // matches WaterproAtmosphere-Story.tsx's TSL `ifftDispRaw.mul(fftAmplitude)`
-// behaviour so the slider does what users expect on chunks too. The package
-// WGSL stays untouched so localhost:5173's legacy material keeps working.
+// behaviour so the slider does what users expect on chunks too. Also diverges
+// from the package original by computing the cascade-fade viewDist from the
+// MORPHED position (see comment in WGSLPosition) so LOD-collapsed vertices
+// stay watertight. The package WGSL stays untouched so localhost:5173's
+// legacy material keeps working.
+
+import { varyingProperty, wgslFn } from 'three/tsl'
 
 // @ts-expect-error untyped JS module
 import { gerstnerWGSL } from '../../../packages/ocean-ifft/resources/shader/ocean/fragments/gerstner.wgsl.js'
-import { wgslFn, varyingProperty } from 'three/tsl'
 
 export const chunkVertexStageWGSL = (() => {
   const vDisplacedPosition = varyingProperty('vec3', 'vDisplacedPosition')
@@ -46,8 +50,12 @@ export const chunkVertexStageWGSL = (() => {
         var morphedVertex: vec2<f32> = morphVertex(position, morphValue, f32(vindex), gridResolution, width);
         var morphedPosition: vec3<f32> = vec3<f32>(morphedVertex.x, 0, morphedVertex.y);
 
-        var viewVector = cameraPosition - position;
-        var viewDist = length(viewVector);
+        // Cascade fades must be computed at the MORPHED position: at a full
+        // morph an odd vertex coincides with its even neighbour, and both
+        // must apply identical lod0/1/2 factors or the collapsed triangles
+        // reopen into slits at LOD boundaries. (The package original uses
+        // the pre-morph position — a small residual crack source.)
+        var viewDist = length(cameraPosition - morphedPosition);
 
         var lod0 = min(lodScale * waveLengths.x / viewDist, 1.0);
         var lod1 = min(lodScale * waveLengths.y / viewDist, 1.0);
@@ -179,15 +187,16 @@ export const chunkVertexStageWGSL = (() => {
 
     `
 
-  const vertexStageWGSL = wgslFn(
-    [entrypointWGSL, gerstnerWGSL].join('\n'),
-    [vDisplacedPosition, vMorphedPosition, vCascadeScales]
-  )
+  const vertexStageWGSL = wgslFn([entrypointWGSL, gerstnerWGSL].join('\n'), [
+    vDisplacedPosition,
+    vMorphedPosition,
+    vCascadeScales
+  ])
 
   return {
     vertexStageWGSL,
     vDisplacedPosition,
     vMorphedPosition,
-    vCascadeScales,
+    vCascadeScales
   }
 })()
