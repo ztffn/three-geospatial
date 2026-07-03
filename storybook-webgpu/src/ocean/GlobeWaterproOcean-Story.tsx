@@ -2064,9 +2064,6 @@ export interface ContentReadinessRefs {
   isPrewarmed: () => boolean
 }
 
-// TEMP boot-trace flag — see the marker at the top of Content.
-let contentRenderLogged = false
-
 export const Content: FC<{
   onReadinessRefs?: (refs: ContentReadinessRefs) => void
   // When true, the ocean surface is NOT mounted — atmosphere + terrain only.
@@ -2239,15 +2236,6 @@ export const Content: FC<{
   rigTimeScale = 1,
   onRigClipFinished
 }) => {
-  // TEMP boot-trace (once per load): proves the Content function body started
-  // executing. If this is present but the readiness refs never report, a hook
-  // below is suspending forever (R3F's internal Suspense keeps the whole
-  // subtree unmounted with no console output) or the render threw.
-  if (!contentRenderLogged) {
-    contentRenderLogged = true
-    // eslint-disable-next-line no-console
-    console.log('[boot] Content render started')
-  }
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
@@ -4219,9 +4207,6 @@ export const Content: FC<{
 
   // Last drawing-buffer size seen by the render loop, to detect mid-resize frames.
   const lastDrawSizeRef = useRef({ w: 0, h: 0 })
-  // Diagnostic: one-time confirmation the size gate opened and a frame rendered
-  // (tells a "gate never opens" regression apart from a downstream compute hang).
-  const firstRenderLoggedRef = useRef(false)
   useFrame(() => {
     // Size gate (all phases). Never render while the canvas is at the 300×150 HTML
     // default or mid-resize: during those frames the renderer's colour and
@@ -4249,10 +4234,6 @@ export const Content: FC<{
     // the ocean phase (atmosphere-only, or Storybook before the ocean mounts)
     // this is a no-op.
     if (!disableOcean && oceanManager != null && !prewarmDone) return
-    if (!firstRenderLoggedRef.current) {
-      firstRenderLoggedRef.current = true
-      console.log(`[render] first frame at ${w}x${h}`)
-    }
     postProcessingData.postProcessing.render()
   }, 1)
 

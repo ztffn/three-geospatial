@@ -77,14 +77,6 @@ const toMarker = (p: ShadowFleetPosition): VesselMarker => ({
   speedOverGround: p.speedOverGround
 })
 
-// TEMP boot-trace diagnostics (remove once the Firefox init stall is solved).
-// The whole readiness pipeline lives INSIDE <Canvas>, so when the async gl
-// factory never resolves the console is silent — these logs bracket each boot
-// stage so a stall pinpoints itself: module eval → adapter probe → renderer
-// construction → renderer.init() → readiness refs from Content.
-// eslint-disable-next-line no-console
-console.log('[boot] main.tsx module evaluated')
-
 const rootElement = document.getElementById('root')
 const unsupportedElement = document.getElementById('unsupported')
 
@@ -188,25 +180,16 @@ function showUnsupported(): void {
 // entries are valid. Scoped to R3F's one measure hook via the Canvas
 // `resize.polyfill` option — no global patching.
 class MeasureResizeObserver {
-  // TEMP boot-trace counters, printed by the 2s diagnostic in App: prove the
-  // polyfill was constructed / attached / delivered without needing the logs
-  // of each step to survive a console export.
-  static constructed = 0
-  static observed = 0
-  static delivered = 0
-
   private readonly native: ResizeObserver
   private readonly callback: ResizeObserverCallback
   private timer: ReturnType<typeof setTimeout> | undefined
 
   constructor(callback: ResizeObserverCallback) {
-    MeasureResizeObserver.constructed++
     this.callback = callback
     this.native = new ResizeObserver(callback)
   }
 
   observe(target: Element, options?: ResizeObserverOptions): void {
-    MeasureResizeObserver.observed++
     this.native.observe(target, options)
     clearTimeout(this.timer)
     // setTimeout, NOT requestAnimationFrame: every mechanism that silently
@@ -216,9 +199,6 @@ class MeasureResizeObserver {
     // page before the render loop exists. Timers are unthrottled for a
     // visible foreground tab.
     this.timer = setTimeout(() => {
-      MeasureResizeObserver.delivered++
-      // eslint-disable-next-line no-console
-      console.log('[boot] measure polyfill: delivering initial notification')
       this.callback([], this.native)
     }, 0)
   }
@@ -285,20 +265,10 @@ const ReadinessProbe: FC<{
         cb(performance.now() - phaseStart)
       }, PROBE_INTERVAL_MS)
     }
-    let diagPolls = 0
     const id = setInterval(() => {
       if (cancelled) return
       if (phase === 'atmosphere' && !reportedAtmRef.current) {
         const lut = (refs.atmosphereContext as any)?.lutNode
-        // Diagnostic (~1/s): surface LUT progress so a stuck atmosphere phase
-        // can be told apart from a slow one. The LUTs are fetched baked
-        // textures now — currentVersion stuck at null means the .bin fetch
-        // never resolved (network/404), not a GPU stall. Remove once stable.
-        if (diagPolls++ % 10 === 0) {
-          console.log(
-            `[atmosphere-probe] lut=${lut != null} currentVersion=${lut?.currentVersion ?? 'null'} updating=${lut?.updating}`
-          )
-        }
         const atmosphereReady =
           lut != null && lut.currentVersion != null && lut.updating === false
         stablePolls = atmosphereReady ? stablePolls + 1 : 0
@@ -397,11 +367,6 @@ const ResizeSync: FC = () => {
       // displays would render at 2.25x the pixels (perf regression).
       setDpr([1, 2])
       setSize(window.innerWidth, window.innerHeight)
-      // TEMP diagnostic — remove once the Electron fullscreen resize is verified.
-      // eslint-disable-next-line no-console
-      console.log(
-        `[resize-sync] ${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio}`
-      )
     }
     const raf = requestAnimationFrame(apply)
     window.addEventListener('resize', apply)
@@ -427,17 +392,15 @@ const App: FC = () => {
     name: 'Karmøy'
   })
 
-  const handleReadinessRefs = useCallback((r: ContentReadinessRefs) => {
-    // eslint-disable-next-line no-console
-    console.log('[boot] readiness refs received — Content is mounted')
-    setRefs(r)
-  }, [])
+  const handleReadinessRefs = useCallback(
+    (r: ContentReadinessRefs) => setRefs(r),
+    []
+  )
 
-  // TEMP diagnostic: mirror readiness into the tab title. Browser chrome
-  // repaints independently of the tab's refresh driver, so on the stalled
-  // Firefox the title flips to ✓ the moment the app is actually ready even
-  // while the tab's own pixels are stale — a user-visible readiness signal
-  // that needs no console.
+  // Mirror readiness into the tab title. Browser chrome repaints
+  // independently of the tab's refresh driver, so on a Firefox whose driver
+  // stalls (see StalledFrameDriver) the title flips to ✓ the moment the app
+  // is actually ready even while the tab's own pixels are stale.
   useEffect(() => {
     if (phase === 'ready') {
       document.title = '✓ Humatopia World Twin'
@@ -452,49 +415,6 @@ const App: FC = () => {
   // resize. Memoizing the construction promise makes every configure resolve
   // to the same instance.
   const rendererPromiseRef = useRef<Promise<Renderer> | null>(null)
-
-  // TEMP boot-trace: Firefox sometimes never services requestAnimationFrame
-  // for this tab (rafTicks=0 while timers, fetch, and WebGPU init all run) —
-  // which freezes the app entirely: the render loop, the readiness probes,
-  // and even ResizeObserver notification delivery are all refresh-driver
-  // work. This samples the rAF tick counter at 2s/6s and again on the first
-  // user interaction (Firefox wakes a throttled refresh driver on
-  // interaction), together with visibility/focus so a hidden-tab throttle is
-  // distinguishable from a genuinely stalled driver.
-  useEffect(() => {
-    let rafTicks = 0
-    let raf = 0
-    const tick = (): void => {
-      rafTicks++
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    const report = (label: string): void => {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[boot] ${label}: rafTicks=${rafTicks} ` +
-          `visibility=${document.visibilityState} hasFocus=${document.hasFocus()} ` +
-          `polyfill c/o/d=${MeasureResizeObserver.constructed}/${MeasureResizeObserver.observed}/${MeasureResizeObserver.delivered}`
-      )
-    }
-    const t1 = setTimeout(() => report('2s'), 2000)
-    const t2 = setTimeout(() => report('6s'), 6000)
-    const onInteract = (): void => {
-      // Sample twice: at the interaction, and 500ms later — if the driver
-      // woke, the delta shows it.
-      report('interaction')
-      setTimeout(() => report('interaction+500ms'), 500)
-    }
-    window.addEventListener('pointerdown', onInteract, { once: true })
-    window.addEventListener('keydown', onInteract, { once: true })
-    return () => {
-      clearTimeout(t1)
-      clearTimeout(t2)
-      cancelAnimationFrame(raf)
-      window.removeEventListener('pointerdown', onInteract)
-      window.removeEventListener('keydown', onInteract)
-    }
-  }, [])
 
   const handleLocationChange = useCallback(
     (longitude: number, latitude: number, name: string) =>
@@ -905,22 +825,12 @@ const App: FC = () => {
         // Firefox: guarantee the initial size notification R3F's renderer
         // creation gates on — see MeasureResizeObserver above.
         resize={{ polyfill: MeasureResizeObserver }}
-        // TEMP boot-trace: fires once the async gl factory has resolved and
-        // the R3F store is up — but BEFORE (and independent of) the children,
-        // which R3F wraps in a single internal Suspense (present without the
-        // Content render marker ⇒ a child hook is suspending forever).
-        onCreated={() => {
-          // eslint-disable-next-line no-console
-          console.log('[boot] canvas created (gl resolved, store ready)')
-        }}
         // NOT an async closure itself: R3F re-invokes this factory whenever a
         // measured-size change re-runs its configure pass — the memoized
         // promise below makes every invocation resolve to the ONE renderer
         // (see rendererPromiseRef). The construction body runs exactly once.
         gl={props => {
           rendererPromiseRef.current ??= (async () => {
-            // eslint-disable-next-line no-console
-            console.log('[boot] gl: constructing WebGPURenderer')
             const renderer = new WebGPURenderer({
               ...(props as any),
               // No canvas MSAA. The final present is a fullscreen post-processing
@@ -936,29 +846,15 @@ const App: FC = () => {
               antialias: false,
               logarithmicDepthBuffer: true
             })
-            // Watchdog (diagnostic only, gates nothing): renderer.init() awaits
-            // requestAdapter/requestDevice/context.configure — if one of those
-            // never settles, nothing downstream ever runs and the console stays
-            // silent. Fire a marker so the stall is visible and attributable.
-            const initWatchdog = setTimeout(() => {
-              console.warn(
-                '[boot] renderer.init() still pending after 10s — the WebGPU ' +
-                  'adapter/device request or canvas configure has stalled'
-              )
-            }, 10_000)
             try {
               await renderer.init()
             } catch (error) {
               // Fatal and unambiguous, same class as device.lost below: surface
               // the static unsupported overlay instead of a silent forever-splash.
-              console.error('[boot] renderer.init() failed:', error)
+              console.error('[webgpu] renderer.init() failed:', error)
               showUnsupported()
               throw error
-            } finally {
-              clearTimeout(initWatchdog)
             }
-            // eslint-disable-next-line no-console
-            console.log('[boot] gl: renderer.init() resolved')
             renderer.highPrecision = true
             renderer.outputColorSpace = SRGBColorSpace
             renderer.toneMapping = NoToneMapping
@@ -979,53 +875,6 @@ const App: FC = () => {
                 )
                 showUnsupported()
               })
-              // TEMP diagnostic: log uncaptured WebGPU errors as PLAIN STRINGS so
-              // console exports carry the full text (Firefox's export flattens
-              // error objects — the storybook capture lost the WGSL validation
-              // message this way). Firefox rejects one of our compute shaders
-              // (wave sim) that Chrome accepts; this pins down which and why.
-              device.addEventListener('uncapturederror', event => {
-                const error = (event as GPUUncapturedErrorEvent).error
-                console.error(`[webgpu] uncaptured: ${error?.message ?? error}`)
-              })
-              // TEMP diagnostic: which optional WGSL language extensions this
-              // browser implements. Prime suspect for the Firefox wave-sim
-              // failure: unrestricted_pointer_parameters — every IFFT compute
-              // shader passes ptr<storage,...> function parameters, which core
-              // WGSL forbids without that extension.
-              // eslint-disable-next-line no-console
-              console.log(
-                `[boot] wgsl language features: ${
-                  [...(navigator.gpu?.wgslLanguageFeatures ?? [])].join(', ') ||
-                  '(none reported)'
-                }`
-              )
-              // TEMP diagnostic: Firefox prints WGSL compilation errors as
-              // console objects that its "export console" flattens to useless
-              // summaries. Wrap createShaderModule to await compilation info and
-              // re-log every error as a PLAIN STRING with the offending source
-              // lines, so one export carries the exact construct Naga rejects.
-              const createShaderModule = device.createShaderModule.bind(device)
-              ;(device as any).createShaderModule = (
-                descriptor: GPUShaderModuleDescriptor
-              ) => {
-                const module = createShaderModule(descriptor)
-                void module.getCompilationInfo().then(info => {
-                  for (const message of info.messages) {
-                    if (message.type !== 'error') continue
-                    const lines = (descriptor.code ?? '').split('\n')
-                    const first = Math.max(0, message.lineNum - 3)
-                    const context = lines
-                      .slice(first, message.lineNum + 2)
-                      .map((line, i) => `${first + i + 1}: ${line}`)
-                      .join('\n')
-                    console.error(
-                      `[wgsl] ${message.message} (line ${message.lineNum}:${message.linePos})\n${context}`
-                    )
-                  }
-                })
-                return module
-              }
             }
             return renderer as unknown as Renderer
           })()
@@ -1327,10 +1176,6 @@ const Splash: FC<{ visible: boolean; phase: Phase }> = ({ visible, phase }) => {
 }
 
 void detectWebGPU().then(available => {
-  // eslint-disable-next-line no-console
-  console.log(
-    `[boot] webgpu adapter probe: ${available ? 'ok' : 'unavailable'}`
-  )
   if (!available) {
     showUnsupported()
     return
