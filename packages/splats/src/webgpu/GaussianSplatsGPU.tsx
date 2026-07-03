@@ -66,12 +66,6 @@ export interface GaussianSplatsGPUProps extends GroupProps {
    * pixels as scene geometry (occlusion mask) instead of painting sky over them.
    */
   depthWrite?: boolean
-  /**
-   * Scale coverage by the per-splat LOD cross-fade (smooth dissolve across LOD/budget
-   * changes). Defaults to on when `lod` is set. Turn OFF with `depthWrite` if the
-   * fade's low-alpha splats writing depth flickers a deferred occlusion mask.
-   */
-  lodFade?: boolean
 }
 
 /**
@@ -94,7 +88,6 @@ export const GaussianSplatsGPU = forwardRef<
     renderOrder = 2,
     logarithmicDepthBuffer = false,
     depthWrite = false,
-    lodFade,
     ...props
   },
   ref
@@ -127,13 +120,13 @@ export const GaussianSplatsGPU = forwardRef<
     }
     let material!: GaussianSplatNodeMaterial
     const useLod = lod != null
-    // LOD cross-fade defaults on when LOD is active; a scene with a deferred depth
-    // mask can force it off (see the prop doc).
-    const useFade = lodFade ?? useLod
+    // The LOD path REQUIRES the per-splat alpha buffer (the fragment must bind it so
+    // Three creates it — the pipeline can't allocate it), so LOD always drives the
+    // cross-fade. `fadeStep` (mesh option) tunes fade speed; there is no lod-without-fade.
     const mesh = new GaussianSplatMesh(loaded, {
       createMaterial: geometry => {
         material = new GaussianSplatNodeMaterial(geometry, {
-          lodFade: useFade,
+          lodFade: useLod,
           logarithmicDepthBuffer,
           depthWrite
         })

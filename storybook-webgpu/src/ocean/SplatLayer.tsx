@@ -33,7 +33,6 @@ export const SplatLayer: FC<{
     yawDeg,
     intensity,
     budget,
-    lodFade,
     maxSplats,
     debug
   } = useControls(
@@ -67,10 +66,6 @@ export const SplatLayer: FC<{
           '250k': 250_000
         }
       },
-      // LOD cross-fade. Default OFF here because the twin writes splat depth for the
-      // approach-A occlusion mask, and a fading splat's low-alpha depth writes can
-      // flicker that mask; turn on if the LOD pop is more objectionable than that.
-      lodFade: false,
       // Decimation cap on LOAD (decode + octree-build cost scale with count). 0 =
       // full. Reloads on change. (spz-js can't partial-decode, so the full decode
       // still runs; this caps what's kept.) The LOD budget bounds what's DRAWN.
@@ -173,7 +168,6 @@ export const SplatLayer: FC<{
       scale={scale}
       intensity={intensity}
       lod={{ budget }}
-      lodFade={lodFade}
       logarithmicDepthBuffer
       depthWrite
     />,
