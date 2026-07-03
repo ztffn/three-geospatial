@@ -56,6 +56,25 @@ const LUT_URLS = {
 
 type BakedLUTName = keyof typeof LUT_URLS
 
+// Expected float16-RGBA texel count per LUT (width·height·[depth]·4). Used to
+// reject a truncated, wrong-format, or SPA-fallback-HTML response served with
+// status 200 — otherwise a wrong-length array uploads to the GPU as garbled
+// sky with no error.
+const EXPECTED_LENGTH: Record<BakedLUTName, number> = {
+  transmittance: TRANSMITTANCE_TEXTURE_WIDTH * TRANSMITTANCE_TEXTURE_HEIGHT * 4,
+  irradiance: IRRADIANCE_TEXTURE_WIDTH * IRRADIANCE_TEXTURE_HEIGHT * 4,
+  scattering:
+    SCATTERING_TEXTURE_WIDTH *
+    SCATTERING_TEXTURE_HEIGHT *
+    SCATTERING_TEXTURE_DEPTH *
+    4,
+  higherOrderScattering:
+    SCATTERING_TEXTURE_WIDTH *
+    SCATTERING_TEXTURE_HEIGHT *
+    SCATTERING_TEXTURE_DEPTH *
+    4
+}
+
 // Kick the downloads off at module-evaluation time — before the renderer
 // initializes or React mounts — so the network transfer overlaps renderer init
 // and pipeline compiles instead of serialising after them.
@@ -66,7 +85,13 @@ const fetchLUT = async (name: BakedLUTName): Promise<Uint16Array> => {
   }
   // Raw little-endian float16 RGBA texels, exactly as PrecomputedTexturesLoader
   // parses them (parseFloat16Array reinterprets the same bytes).
-  return new Uint16Array(await response.arrayBuffer())
+  const data = new Uint16Array(await response.arrayBuffer())
+  if (data.length !== EXPECTED_LENGTH[name]) {
+    throw new Error(
+      `${LUT_URLS[name].pathname}: expected ${EXPECTED_LENGTH[name]} float16 texels, got ${data.length} (truncated or wrong-format response)`
+    )
+  }
+  return data
 }
 
 const fetchStart = performance.now()

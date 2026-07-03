@@ -1,3 +1,10 @@
+// Slideshow authoring store: the read-modify-write layer over the JSON
+// site-content manifest and the media object store. Exposes runtime read
+// helpers (getRuntimeManifest/getScenarioSlideshows) and the admin CRUD
+// mutations (create/patch/delete decks and slides, reorder). Every mutation is
+// serialized through a manifest lock so concurrent edits can't clobber, and the
+// normalized manifest is cached in memory (invalidated on write).
+
 import path from 'node:path'
 
 import {
@@ -24,7 +31,7 @@ import {
 const AUTHORING_STORE = 'twin-authoring'
 const MEDIA_STORE = 'twin-media'
 const MANIFEST_KEY = 'manifest.json'
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 const IMAGE_TYPES = new Set([
   'image/jpeg',
@@ -85,10 +92,18 @@ function normalizeManifest(
   }
 }
 
+// In-memory cache of the normalized manifest. Safe because every mutation
+// rebuilds the manifest immutably (spread/map, never in-place), so the cached
+// object is never mutated; writeManifest replaces it wholesale.
+let cachedManifest: SiteContentManifest | null = null
+
 async function readManifest(): Promise<SiteContentManifest> {
-  return normalizeManifest(
+  if (cachedManifest != null) return cachedManifest
+  const loaded = normalizeManifest(
     await getJson<SiteContentManifest>(AUTHORING_STORE, MANIFEST_KEY)
   )
+  cachedManifest = loaded
+  return loaded
 }
 
 async function writeManifest(
@@ -99,7 +114,22 @@ async function writeManifest(
     updatedAt: nowIso()
   })
   await putJson(AUTHORING_STORE, MANIFEST_KEY, normalized)
+  cachedManifest = normalized
   return normalized
+}
+
+// Serializes manifest read-modify-write. Each mutation awaits the previous one
+// (chaining regardless of success/failure) so two overlapping requests can't
+// both read the same base manifest and clobber each other's write.
+let manifestMutation: Promise<unknown> = Promise.resolve()
+
+function withManifestLock<T>(run: () => Promise<T>): Promise<T> {
+  const next = manifestMutation.then(run, run)
+  manifestMutation = next.then(
+    () => undefined,
+    () => undefined
+  )
+  return next
 }
 
 function publicMediaUrl(objectKey: string): string {
@@ -174,6 +204,9 @@ function reordered<T extends { id: string; order: number }>(
   items: T[],
   input: OrderInput
 ): T[] {
+  if (!Array.isArray(input?.ids)) {
+    throw new AuthoringHttpError(400, 'ids must be an array')
+  }
   const known = new Set(items.map(item => item.id))
   const incoming = input.ids.filter(itemId => known.has(itemId))
   const missing = items
@@ -202,68 +235,78 @@ export async function getScenarioSlideshows(
 export async function createDeck(
   input: CreateDeckInput
 ): Promise<SlideshowDeck> {
-  const scenarioId = cleanLabel(input.scenarioId, '')
-  if (scenarioId.length === 0) {
-    throw new AuthoringHttpError(400, 'scenarioId is required')
-  }
-  const manifest = await readManifest()
-  const at = nowIso()
-  const scenarioDecks = manifest.slideshows.filter(
-    deck => deck.scenarioId === scenarioId
-  )
-  const deck: SlideshowDeck = {
-    id: id('deck'),
-    scenarioId,
-    label: cleanLabel(input.label, 'Untitled slideshow'),
-    enabled: true,
-    order: scenarioDecks.length,
-    slides: [],
-    createdAt: at,
-    updatedAt: at
-  }
-  await writeManifest({
-    ...manifest,
-    slideshows: [...manifest.slideshows, deck]
+  return withManifestLock(async () => {
+    const scenarioId = cleanLabel(input.scenarioId, '')
+    if (scenarioId.length === 0) {
+      throw new AuthoringHttpError(400, 'scenarioId is required')
+    }
+    const manifest = await readManifest()
+    const at = nowIso()
+    const scenarioDecks = manifest.slideshows.filter(
+      deck => deck.scenarioId === scenarioId
+    )
+    const deck: SlideshowDeck = {
+      id: id('deck'),
+      scenarioId,
+      label: cleanLabel(input.label, 'Untitled slideshow'),
+      enabled: true,
+      order: scenarioDecks.length,
+      slides: [],
+      createdAt: at,
+      updatedAt: at
+    }
+    await writeManifest({
+      ...manifest,
+      slideshows: [...manifest.slideshows, deck]
+    })
+    return deck
   })
-  return deck
 }
 
 export async function patchDeck(
   deckId: string,
   input: PatchDeckInput
 ): Promise<SlideshowDeck> {
-  const manifest = await readManifest()
-  let updated: SlideshowDeck | null = null
-  const slideshows = manifest.slideshows.map(deck => {
-    if (deck.id !== deckId) return deck
-    updated = {
-      ...deck,
-      ...(input.label != null
-        ? { label: cleanLabel(input.label, deck.label) }
-        : {}),
-      ...(typeof input.enabled === 'boolean' ? { enabled: input.enabled } : {}),
-      updatedAt: nowIso()
+  return withManifestLock(async () => {
+    const manifest = await readManifest()
+    let updated: SlideshowDeck | null = null
+    const slideshows = manifest.slideshows.map(deck => {
+      if (deck.id !== deckId) return deck
+      updated = {
+        ...deck,
+        ...(input.label != null
+          ? { label: cleanLabel(input.label, deck.label) }
+          : {}),
+        ...(typeof input.enabled === 'boolean'
+          ? { enabled: input.enabled }
+          : {}),
+        updatedAt: nowIso()
+      }
+      return updated
+    })
+    if (updated == null) {
+      throw new AuthoringHttpError(404, 'slideshow not found')
     }
+    await writeManifest({ ...manifest, slideshows })
     return updated
   })
-  if (updated == null) throw new AuthoringHttpError(404, 'slideshow not found')
-  await writeManifest({ ...manifest, slideshows })
-  return updated
 }
 
 export async function deleteDeck(deckId: string): Promise<void> {
-  const manifest = await readManifest()
-  const deck = deckOrThrow(manifest, deckId)
-  await Promise.all(
-    deck.slides.map(async slide => {
-      await deleteObject(MEDIA_STORE, slide.objectKey)
-    })
-  )
-  await writeManifest({
-    ...manifest,
-    slideshows: normalizeOrders(
-      manifest.slideshows.filter(candidate => candidate.id !== deckId)
+  return withManifestLock(async () => {
+    const manifest = await readManifest()
+    const deck = deckOrThrow(manifest, deckId)
+    await Promise.all(
+      deck.slides.map(async slide => {
+        await deleteObject(MEDIA_STORE, slide.objectKey)
+      })
     )
+    await writeManifest({
+      ...manifest,
+      slideshows: normalizeOrders(
+        manifest.slideshows.filter(candidate => candidate.id !== deckId)
+      )
+    })
   })
 }
 
@@ -271,19 +314,21 @@ export async function reorderScenarioDecks(
   scenarioId: string,
   input: OrderInput
 ): Promise<RuntimeSlideshowDeck[]> {
-  const manifest = await readManifest()
-  const scenarioDecks = manifest.slideshows.filter(
-    deck => deck.scenarioId === scenarioId
-  )
-  const ordered = reordered(scenarioDecks, input)
-  const slideshows = manifest.slideshows.map(deck => {
-    const replacement = ordered.find(candidate => candidate.id === deck.id)
-    return replacement ?? deck
+  return withManifestLock(async () => {
+    const manifest = await readManifest()
+    const scenarioDecks = manifest.slideshows.filter(
+      deck => deck.scenarioId === scenarioId
+    )
+    const ordered = reordered(scenarioDecks, input)
+    const slideshows = manifest.slideshows.map(deck => {
+      const replacement = ordered.find(candidate => candidate.id === deck.id)
+      return replacement ?? deck
+    })
+    const written = await writeManifest({ ...manifest, slideshows })
+    return toRuntimeDecks(written, true).filter(
+      deck => deck.scenarioId === scenarioId
+    )
   })
-  const written = await writeManifest({ ...manifest, slideshows })
-  return toRuntimeDecks(written, true).filter(
-    deck => deck.scenarioId === scenarioId
-  )
 }
 
 export async function addSlide(
@@ -291,46 +336,48 @@ export async function addSlide(
   file: File,
   title?: string
 ): Promise<SlideshowSlide> {
-  const mediaType = mediaTypeFor(file.type)
-  if (file.size > MAX_UPLOAD_BYTES) {
-    throw new AuthoringHttpError(400, 'file exceeds 50MB limit')
-  }
-  const manifest = await readManifest()
-  const deck = deckOrThrow(manifest, deckId)
-  const slideId = id('slide')
-  const objectKey = `slideshows/${deckId}/${slideId}${extensionFor(file.type)}`
-  if (!isSafeObjectKey(objectKey)) {
-    throw new AuthoringHttpError(500, 'generated unsafe object key')
-  }
-  const slide: SlideshowSlide = {
-    id: slideId,
-    type: mediaType,
-    objectKey,
-    mimeType: file.type,
-    title: cleanOptionalTitle(title) ?? cleanOptionalTitle(file.name),
-    order: deck.slides.length,
-    createdAt: nowIso()
-  }
-  await putObject({
-    store: MEDIA_STORE,
-    key: objectKey,
-    data: file,
-    contentType: file.type,
-    metadata: { originalName: file.name, contentType: file.type }
+  return withManifestLock(async () => {
+    const mediaType = mediaTypeFor(file.type)
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new AuthoringHttpError(400, 'file exceeds 50MB limit')
+    }
+    const manifest = await readManifest()
+    const deck = deckOrThrow(manifest, deckId)
+    const slideId = id('slide')
+    const objectKey = `slideshows/${deckId}/${slideId}${extensionFor(file.type)}`
+    if (!isSafeObjectKey(objectKey)) {
+      throw new AuthoringHttpError(500, 'generated unsafe object key')
+    }
+    const slide: SlideshowSlide = {
+      id: slideId,
+      type: mediaType,
+      objectKey,
+      mimeType: file.type,
+      title: cleanOptionalTitle(title) ?? cleanOptionalTitle(file.name),
+      order: deck.slides.length,
+      createdAt: nowIso()
+    }
+    await putObject({
+      store: MEDIA_STORE,
+      key: objectKey,
+      data: file,
+      contentType: file.type,
+      metadata: { originalName: file.name, contentType: file.type }
+    })
+    await writeManifest({
+      ...manifest,
+      slideshows: manifest.slideshows.map(candidate =>
+        candidate.id === deckId
+          ? {
+              ...candidate,
+              slides: [...candidate.slides, slide],
+              updatedAt: nowIso()
+            }
+          : candidate
+      )
+    })
+    return slide
   })
-  await writeManifest({
-    ...manifest,
-    slideshows: manifest.slideshows.map(candidate =>
-      candidate.id === deckId
-        ? {
-            ...candidate,
-            slides: [...candidate.slides, slide],
-            updatedAt: nowIso()
-          }
-        : candidate
-    )
-  })
-  return slide
 }
 
 export async function patchSlide(
@@ -338,46 +385,56 @@ export async function patchSlide(
   slideId: string,
   input: PatchSlideInput
 ): Promise<SlideshowSlide> {
-  const manifest = await readManifest()
-  let updated: SlideshowSlide | null = null
-  const slideshows = manifest.slideshows.map(deck => {
-    if (deck.id !== deckId) return deck
-    const slides = deck.slides.map(slide => {
-      if (slide.id !== slideId) return slide
-      updated = { ...slide, title: cleanOptionalTitle(input.title) }
-      return updated
+  return withManifestLock(async () => {
+    const manifest = await readManifest()
+    let updated: SlideshowSlide | null = null
+    const slideshows = manifest.slideshows.map(deck => {
+      if (deck.id !== deckId) return deck
+      const slides = deck.slides.map(slide => {
+        if (slide.id !== slideId) return slide
+        // Only overwrite title when the field is present, so a PATCH that
+        // omits it leaves the stored title intact (idempotent). An explicit
+        // empty/blank title still clears it (cleanOptionalTitle → undefined).
+        updated =
+          input.title !== undefined
+            ? { ...slide, title: cleanOptionalTitle(input.title) }
+            : { ...slide }
+        return updated
+      })
+      return { ...deck, slides, updatedAt: nowIso() }
     })
-    return { ...deck, slides, updatedAt: nowIso() }
+    if (updated == null) throw new AuthoringHttpError(404, 'slide not found')
+    await writeManifest({ ...manifest, slideshows })
+    return updated
   })
-  if (updated == null) throw new AuthoringHttpError(404, 'slide not found')
-  await writeManifest({ ...manifest, slideshows })
-  return updated
 }
 
 export async function deleteSlide(
   deckId: string,
   slideId: string
 ): Promise<void> {
-  const manifest = await readManifest()
-  const deck = deckOrThrow(manifest, deckId)
-  const slide = deck.slides.find(candidate => candidate.id === slideId)
-  if (slide == null) throw new AuthoringHttpError(404, 'slide not found')
-  await deleteObject(MEDIA_STORE, slide.objectKey)
-  await writeManifest({
-    ...manifest,
-    slideshows: manifest.slideshows.map(candidate =>
-      candidate.id === deckId
-        ? {
-            ...candidate,
-            slides: normalizeOrders(
-              candidate.slides.filter(
-                candidateSlide => candidateSlide.id !== slideId
-              )
-            ),
-            updatedAt: nowIso()
-          }
-        : candidate
-    )
+  return withManifestLock(async () => {
+    const manifest = await readManifest()
+    const deck = deckOrThrow(manifest, deckId)
+    const slide = deck.slides.find(candidate => candidate.id === slideId)
+    if (slide == null) throw new AuthoringHttpError(404, 'slide not found')
+    await deleteObject(MEDIA_STORE, slide.objectKey)
+    await writeManifest({
+      ...manifest,
+      slideshows: manifest.slideshows.map(candidate =>
+        candidate.id === deckId
+          ? {
+              ...candidate,
+              slides: normalizeOrders(
+                candidate.slides.filter(
+                  candidateSlide => candidateSlide.id !== slideId
+                )
+              ),
+              updatedAt: nowIso()
+            }
+          : candidate
+      )
+    })
   })
 }
 
@@ -385,22 +442,24 @@ export async function reorderSlides(
   deckId: string,
   input: OrderInput
 ): Promise<RuntimeSlideshowDeck> {
-  const manifest = await readManifest()
-  let updatedDeck: SlideshowDeck | null = null
-  const slideshows = manifest.slideshows.map(deck => {
-    if (deck.id !== deckId) return deck
-    updatedDeck = {
-      ...deck,
-      slides: reordered(deck.slides, input),
-      updatedAt: nowIso()
+  return withManifestLock(async () => {
+    const manifest = await readManifest()
+    let updatedDeck: SlideshowDeck | null = null
+    const slideshows = manifest.slideshows.map(deck => {
+      if (deck.id !== deckId) return deck
+      updatedDeck = {
+        ...deck,
+        slides: reordered(deck.slides, input),
+        updatedAt: nowIso()
+      }
+      return updatedDeck
+    })
+    if (updatedDeck == null) {
+      throw new AuthoringHttpError(404, 'slideshow not found')
     }
-    return updatedDeck
+    await writeManifest({ ...manifest, slideshows })
+    return toRuntimeDeck(updatedDeck)
   })
-  if (updatedDeck == null) {
-    throw new AuthoringHttpError(404, 'slideshow not found')
-  }
-  await writeManifest({ ...manifest, slideshows })
-  return toRuntimeDeck(updatedDeck)
 }
 
 export async function getMedia(objectKey: string): Promise<{

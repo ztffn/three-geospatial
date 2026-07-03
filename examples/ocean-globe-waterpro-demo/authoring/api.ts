@@ -1,3 +1,10 @@
+// HTTP routing for the slideshow authoring API (mounted under /api/authoring by
+// both the prod server and the dev Vite plugin). Owns request parsing, the
+// admin-cookie session (HMAC of TWIN_ADMIN_TOKEN, timing-safe compare) and the
+// requireAdmin gate on every mutation; the actual persistence lives in
+// slideshowStore. GET read routes are public but strip admin-only concerns
+// (disabled/draft decks) for unauthenticated callers.
+
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -10,6 +17,7 @@ import {
   getMedia,
   getRuntimeManifest,
   getScenarioSlideshows,
+  MAX_UPLOAD_BYTES,
   patchDeck,
   patchSlide,
   reorderScenarioDecks,
@@ -162,8 +170,11 @@ function pathParts(pathname: string): string[] {
     .map(part => decodeURIComponent(part))
 }
 
-function includeDisabled(url: URL): boolean {
-  return url.searchParams.get('includeDisabled') === '1'
+// Disabled/draft decks are admin-only. Honor ?includeDisabled=1 only for an
+// authenticated admin session — otherwise an anonymous caller could enumerate
+// unpublished decks (and their media URLs) by appending the flag.
+function includeDisabled(url: URL, req: IncomingMessage): boolean {
+  return url.searchParams.get('includeDisabled') === '1' && hasAdminSession(req)
 }
 
 async function routeAuthoringRequest(
@@ -218,7 +229,7 @@ async function routeAuthoringRequest(
 
   if (reqMethod === 'GET' && parts[0] === 'manifest' && parts.length === 1) {
     sendJson(res, 200, {
-      slideshows: await getRuntimeManifest(includeDisabled(url))
+      slideshows: await getRuntimeManifest(includeDisabled(url, req))
     })
     return
   }
@@ -247,7 +258,10 @@ async function routeAuthoringRequest(
       return
     }
     sendJson(res, 200, {
-      slideshows: await getScenarioSlideshows(parts[1], includeDisabled(url))
+      slideshows: await getScenarioSlideshows(
+        parts[1],
+        includeDisabled(url, req)
+      )
     })
     return
   }
@@ -326,6 +340,14 @@ async function routeAuthoringRequest(
       return
     }
     if (!requireAdmin(req, res)) return
+    // Reject oversized uploads on the declared Content-Length before
+    // request.formData() buffers the whole body into memory. The store-side
+    // file.size check remains a backstop for a missing/understated header.
+    const declaredLength = Number(req.headers['content-length'])
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BYTES) {
+      sendJson(res, 413, { error: 'file exceeds 50MB limit' })
+      return
+    }
     const formData = await readFormData(req)
     const file = formData.get('file')
     if (!(file instanceof File)) {

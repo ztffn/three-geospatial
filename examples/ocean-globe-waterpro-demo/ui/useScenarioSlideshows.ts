@@ -1,3 +1,9 @@
+// Client hook for a scenario's published slideshows: fetches the runtime decks
+// for the active scenario from /api/authoring, refetches on scenario change,
+// and (when an admin session is open) requests the include-disabled view for
+// the authoring panel. Read-only view state; mutations live in
+// SlideshowAuthoring via the CRUD API.
+
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type {

@@ -1,3 +1,9 @@
+// Shared authoring type contract: the on-disk site-content manifest schema
+// (versioned decks + slides), the request-input shapes for the CRUD API, and
+// the runtime deck/slide shapes the client consumes. Imported by both the
+// server (slideshowStore, api) and the client (useScenarioSlideshows,
+// SlideshowAuthoring) so both sides agree on the wire format.
+
 export const AUTHORING_MANIFEST_VERSION = 1
 
 export type SlideshowMediaType = 'image' | 'video'

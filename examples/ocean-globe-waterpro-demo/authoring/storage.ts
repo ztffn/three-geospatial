@@ -1,3 +1,9 @@
+// Filesystem-backed object store for the authoring feature: a put/get/delete
+// (+ JSON variants) keyed by (store, key) under a configurable root
+// (TWIN_STORAGE_ROOT). Guards every key against path traversal (isSafeObjectKey
+// / assertSafePart) so a malicious key can't escape the store root. The
+// slideshow manifest and uploaded media both persist through this layer.
+
 import fs from 'node:fs/promises'
 import path from 'node:path'
 

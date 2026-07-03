@@ -1,3 +1,9 @@
+// Admin authoring UI for scenario slideshows: the panel behind the runtime
+// admin session that lists a scenario's decks and drives the CRUD API
+// (create/rename/enable decks, upload/title/reorder/delete slides). Client-only
+// React; all persistence goes through /api/authoring. Gated by the admin
+// session — rendered only when the operator is authenticated.
+
 import {
   useEffect,
   useMemo,

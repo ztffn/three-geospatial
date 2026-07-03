@@ -481,6 +481,13 @@ const App: FC = () => {
   const [slideshowOpen, setSlideshowOpen] = useState(false)
   const slideshows = useScenarioSlideshows(activeScenario)
 
+  // The active scenario definition, resolved once per change instead of a fresh
+  // linear SCENARIOS.find in each consuming prop on every render.
+  const activeScenarioDef = useMemo(
+    () => SCENARIOS.find(s => s.id === activeScenario) ?? null,
+    [activeScenario]
+  )
+
   useEffect(() => {
     setActiveSlideshowId(null)
     setSlideshowOpen(false)
@@ -940,12 +947,10 @@ const App: FC = () => {
         now={clampedNow}
         selected={selected}
         onScrub={setScrubbed}
-        ais={SCENARIOS.find(s => s.id === activeScenario)?.ais ?? null}
-        bunkering={
-          SCENARIOS.find(s => s.id === activeScenario)?.bunkering ?? null
-        }
-        splat={SCENARIOS.find(s => s.id === activeScenario)?.splat ?? null}
-        process={SCENARIOS.find(s => s.id === activeScenario)?.process ?? null}
+        ais={activeScenarioDef?.ais ?? null}
+        bunkering={activeScenarioDef?.bunkering ?? null}
+        splat={activeScenarioDef?.splat ?? null}
+        process={activeScenarioDef?.process ?? null}
         selectedVessel={selectedVessel}
         onCloseVessel={() => setSelectedId(null)}
         installControls={
