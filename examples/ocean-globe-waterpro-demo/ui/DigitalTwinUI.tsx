@@ -5,14 +5,16 @@
 // time scrubber (bottom). Every panel is a collapsible Card (header click).
 // All data is owned by main.tsx App and passed in. Plain DOM canvas siblings.
 
-import { useState, type FC } from 'react'
+import { useEffect, useState, type FC } from 'react'
 
 import type { MetSample } from './useMetForecast'
 import type { TurbineTelemetry, TurbineStatus } from './turbineModel'
 import type {
   AisReadings,
   BunkeringReadings,
+  ProcessReadings,
   Scenario,
+  SplatReadings,
   Viewpoint
 } from './scenarios'
 import type { VesselPosition } from '../../../netlify/functions/_ais-core'
@@ -620,6 +622,286 @@ const AisCard: FC<{ ais: AisReadings }> = ({ ais }) => (
     <Footnote>AIS · static demo values</Footnote>
   </Card>
 )
+
+// --- gaussian-splat inspector ------------------------------------------------
+// Replaces the turbine inspector in the Realtime Geospatial scenario: a "hi-tech"
+// readout of the loaded 3DGS capture. Monospace tabular figures, a live badge,
+// and a derived parameter count (per-splat: 3 pos + 3 scale + 4 rot + 1 opacity +
+// 3 DC colour + shCoeffs×3 SH = the radiance field's learned parameters).
+const compact = (n: number): string =>
+  n >= 1e9
+    ? `${(n / 1e9).toFixed(2)} B`
+    : n >= 1e6
+      ? `${(n / 1e6).toFixed(2)} M`
+      : n >= 1e3
+        ? `${(n / 1e3).toFixed(1)} k`
+        : `${n}`
+
+const Mono: FC<{ children: React.ReactNode; color?: string }> = ({
+  children,
+  color = TEXT
+}) => (
+  <span
+    style={{ fontFamily: MONO, color, fontVariantNumeric: 'tabular-nums' }}
+  >
+    {children}
+  </span>
+)
+
+const SplatPanel: FC<{ splat: SplatReadings }> = ({ splat }) => {
+  const params = splat.totalSplats * (14 + splat.shCoeffs * 3)
+  return (
+    <Card
+      pos={{ top: 76, left: 16 }}
+      width={248}
+      title="Gaussian Splats"
+      headerRight={
+        <span
+          style={{
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            color: GOOD
+          }}
+        >
+          ● Live
+        </span>
+      }
+    >
+      <Row label="Splats">
+        <Mono color={ACCENT}>{splat.totalSplats.toLocaleString('en-US')}</Mono>
+      </Row>
+      <Row label="Parameters">
+        <Mono>~{compact(params)}</Mono>
+      </Row>
+      <Row label="SH bands">
+        <Mono>
+          deg {splat.shDegree}
+        </Mono>{' '}
+        <span style={{ color: MUTED }}>· {splat.shCoeffs} coeffs</span>
+      </Row>
+      <Row label="Format">
+        <Mono>{splat.format}</Mono>{' '}
+        <span style={{ color: MUTED }}>· {compact(splat.compressedMB * 1e6)}B</span>
+      </Row>
+      <Row label="Capture">
+        <span style={{ color: MUTED, fontSize: 11 }}>{splat.source}</span>
+      </Row>
+      <Footnote>{splat.sceneName}</Footnote>
+    </Card>
+  )
+}
+
+// --- process-stack inspector -------------------------------------------------
+// Replaces the turbine inspector at the Waste Handling site: a live-styled
+// readout of the Kiln/Carbox/Arx biomass→wax plant. Headlines the zero-CO₂
+// closed loop and the multi-product output (wax + O₂ + biochar).
+const SplatPanelStageStrip: FC<{ stages: string[] }> = ({ stages }) => (
+  <div
+    style={{
+      display: 'flex',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      gap: 4,
+      fontFamily: MONO,
+      fontSize: 9.5,
+      letterSpacing: '0.04em',
+      color: MUTED,
+      marginBottom: 4
+    }}
+  >
+    {stages.map((s, i) => (
+      <span key={s} style={{ display: 'inline-flex', gap: 4 }}>
+        <span style={{ color: i === stages.length - 1 ? ACCENT : TEXT }}>
+          {s}
+        </span>
+        {i < stages.length - 1 && <span style={{ color: ACCENT }}>›</span>}
+      </span>
+    ))}
+  </div>
+)
+
+const ProcessPanel: FC<{ proc: ProcessReadings }> = ({ proc }) => (
+  <Card
+    pos={{ top: 76, left: 16 }}
+    width={248}
+    title="Process Stack"
+    headerRight={
+      <span
+        style={{
+          fontFamily: SANS,
+          fontSize: 10,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+          color: GOOD
+        }}
+      >
+        ● Live
+      </span>
+    }
+  >
+    <SplatPanelStageStrip
+      stages={['BIOMASS', 'KILN', 'CARBOX', 'ARX', 'WAX']}
+    />
+    <Row label="Feedstock">
+      <Mono>{proc.biomassTPerDay}</Mono>{' '}
+      <span style={{ color: MUTED }}>t/day</span>
+    </Row>
+    <Row label="Caera wax">
+      <Mono color={ACCENT}>{proc.waxKgPerDay.toLocaleString('en-US')}</Mono>{' '}
+      <span style={{ color: MUTED }}>kg/day · {proc.waxTPerYear} t/yr</span>
+    </Row>
+    <Row label="Wax energy">
+      <Mono>{proc.waxEnergyMWhPerDay}</Mono>{' '}
+      <span style={{ color: MUTED }}>MWh/day</span>
+    </Row>
+    <Row label="Oxygen">
+      <Mono>{proc.oxygenTPerYear.toLocaleString('en-US')}</Mono>{' '}
+      <span style={{ color: MUTED }}>t/yr</span>
+    </Row>
+    <Row label="Biochar">
+      <Mono>{proc.biocharTPerYear.toLocaleString('en-US')}</Mono>{' '}
+      <span style={{ color: MUTED }}>t/yr</span>
+    </Row>
+    <Row label="Carbon → products">
+      <Mono color={GOOD}>{proc.carbonToProductsPct}%</Mono>
+    </Row>
+    <Row label="CO₂ vented">
+      <Mono color={GOOD}>{proc.co2VentedTPerYear} t/yr</Mono>{' '}
+      <span style={{ color: GOOD, fontSize: 10 }}>· ZERO</span>
+    </Row>
+    <div
+      style={{
+        marginTop: 6,
+        fontFamily: MONO,
+        fontSize: 9.5,
+        color: MUTED,
+        fontVariantNumeric: 'tabular-nums'
+      }}
+    >
+      Kiln {proc.kilnTempC}° · Carbox {proc.carboxTempC}° · F-T {proc.ftTempC}°
+    </div>
+    <Footnote>{proc.stackName} · biomass→wax · closed-loop</Footnote>
+  </Card>
+)
+
+// Minimal inline-SVG sparkline for the telemetry cards. Fixed to the card inner
+// width (216 = 248 − 2×16 padding) so no aspect scaling is needed; themed with
+// the card tokens. Area fill + line + a dot at the latest sample.
+const Sparkline: FC<{ points: number[]; color?: string }> = ({
+  points,
+  color = ACCENT
+}) => {
+  const w = 216
+  const h = 30
+  const pad = 2
+  if (points.length < 2) {
+    return null
+  }
+  const min = Math.min(...points)
+  const max = Math.max(...points)
+  const span = max - min || 1
+  const x = (i: number): number =>
+    pad + (i / (points.length - 1)) * (w - 2 * pad)
+  const y = (v: number): number => pad + (1 - (v - min) / span) * (h - 2 * pad)
+  const line = points.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`)
+  const last = points.length - 1
+  return (
+    <svg
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ display: 'block', margin: '1px 0 6px', maxWidth: '100%' }}
+    >
+      <polygon
+        points={`${pad},${h - pad} ${line.join(' ')} ${w - pad},${h - pad}`}
+        fill={color}
+        opacity={0.12}
+      />
+      <polyline
+        points={line.join(' ')}
+        fill="none"
+        stroke={color}
+        strokeWidth={1.25}
+      />
+      <circle cx={x(last)} cy={y(points[last])} r={2} fill={color} />
+    </svg>
+  )
+}
+
+// --- Arx F-T reactor telemetry (top-right; replaces weather at the plant) -----
+// Live readout of the Arx Fischer-Tropsch reactor's operating point, sourced from
+// the simulation engine's simulate_arx (huma-simulation-engine). The live MCP
+// needs auth + a backend, so this random-walks (smooth incommensurate sines)
+// around the sim's steady-state values for a running-telemetry feel.
+const FtTelemetryCard: FC<{ proc: ProcessReadings }> = ({ proc }) => {
+  const [t, setT] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setT(x => x + 1), 1500)
+    return () => clearInterval(id)
+  }, [])
+  // Two incommensurate sines per channel → organic, bounded wobble (no RNG),
+  // evaluated over the last N ticks so each channel is a live rolling series.
+  const N = 32
+  const wobAt = (tt: number, amp: number, phase: number): number =>
+    amp * (Math.sin(tt * 0.7 + phase) * 0.6 + Math.sin(tt * 1.9 + phase * 2) * 0.4)
+  const series = (base: number, amp: number, phase: number): number[] =>
+    Array.from({ length: N }, (_, k) => base + wobAt(t - (N - 1) + k, amp, phase))
+  const convSeries = series(proc.ftConversionPct, 0.6, 0)
+  const waxSeries = series(proc.ftWaxRateKgH, 3.5, 2)
+  const conv = convSeries[N - 1]
+  const wax = waxSeries[N - 1]
+  const ratio = proc.ftH2CoRatio + wobAt(t, 0.04, 1)
+  const heat = proc.ftHeatDutyKw + wobAt(t, 7, 3)
+  return (
+    <Card
+      pos={{ top: 60, right: 16 }}
+      width={248}
+      title="Arx F-T Reactor"
+      headerRight={
+        <span
+          style={{
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            color: GOOD
+          }}
+        >
+          ● Running
+        </span>
+      }
+    >
+      <Row label="CO conversion">
+        <Mono color={ACCENT}>{conv.toFixed(1)}%</Mono>{' '}
+        <span style={{ color: MUTED }}>per pass</span>
+      </Row>
+      <Sparkline points={convSeries} />
+      <Row label="Reactor temp">
+        <Mono>{proc.ftTempC}</Mono> <span style={{ color: MUTED }}>°C</span>
+      </Row>
+      <Row label="H₂:CO feed">
+        <Mono>{ratio.toFixed(2)}</Mono>
+        <span style={{ color: MUTED }}>:1</span>
+      </Row>
+      <Row label="Chain growth α">
+        <Mono>{proc.ftChainGrowthAlpha.toFixed(2)}</Mono>{' '}
+        <span style={{ color: MUTED }}>ASF · wax</span>
+      </Row>
+      <Row label="Wax rate">
+        <Mono color={ACCENT}>{wax.toFixed(0)}</Mono>{' '}
+        <span style={{ color: MUTED }}>kg/h</span>
+      </Row>
+      <Sparkline points={waxSeries} color={GOOD} />
+      <Row label="Heat duty">
+        <Mono>{heat.toFixed(0)}</Mono>{' '}
+        <span style={{ color: MUTED }}>kW · exotherm</span>
+      </Row>
+      <Footnote>Arx F-T · {proc.ftCatalyst} · live sim</Footnote>
+    </Card>
+  )
+}
 
 // --- bunkering inspector -----------------------------------------------------
 // Generic labelled fill bar (fuel / battery): label + value readout above a
@@ -1622,6 +1904,10 @@ export const DigitalTwinUI: FC<{
   ais?: AisReadings | null
   // Two-vessel metrics for the bunkering scenario; takes the inspector slot.
   bunkering?: BunkeringReadings | null
+  // Gaussian-splat capture stats; takes the inspector slot (geospatial scenario).
+  splat?: SplatReadings | null
+  // Process-stack telemetry; takes the inspector slot (waste-handling scenario).
+  process?: ProcessReadings | null
   // Clicked shadow-fleet vessel (globe markers) → full callout. null = closed.
   selectedVessel?: SelectedVessel | null
   onCloseVessel?: () => void
@@ -1647,6 +1933,8 @@ export const DigitalTwinUI: FC<{
   scenarioControls,
   ais,
   bunkering,
+  splat,
+  process,
   selectedVessel,
   onCloseVessel,
   aisLayers,
@@ -1669,11 +1957,17 @@ export const DigitalTwinUI: FC<{
       />
     ) : installControls != null ? (
       <InstallationPanel {...installControls} />
+    ) : splat != null ? (
+      <SplatPanel splat={splat} />
+    ) : process != null ? (
+      <ProcessPanel proc={process} />
     ) : (
       <TurbineInspector telemetry={telemetry} count={turbineCount} />
     )}
     {aisLayers != null && aisLayers.overview ? (
       <AisLayersCard {...aisLayers} />
+    ) : process != null ? (
+      <FtTelemetryCard proc={process} />
     ) : (
       <ConditionsCard
         locationName={locationName}

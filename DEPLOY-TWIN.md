@@ -64,7 +64,10 @@ bundle — terrain comes via Ion asset 2275207 — but the script guard requires
 2. **New runtime assets 404 in prod.** Dev sirv serves ALL of
    `storybook-webgpu/assets/`; the production build copies only the explicit
    `staticAssets` list in `examples/ocean-globe-waterpro-demo/vite.config.ts`.
-   Any new GLB/texture/font referenced at runtime MUST be added there.
+   Any new GLB/texture/font referenced at runtime MUST be added there. Assets too
+   big to ship via `git archive` (gitignored/LFS-excluded binaries — e.g. the
+   136 MB SPZ splat) can't go through `staticAssets` at all; host them on the
+   public R2 bucket instead (see [Large / public runtime assets](#large--public-runtime-assets-r2--too-big-for-gitstaticassets)).
 3. **Stale browser `index.html` → black screen + 404 on old bundle.** Fixed
    server-side (`index.html` is `no-cache`, hashed assets immutable) — but any
    tab loaded BEFORE that fix needs one hard reload.
@@ -85,6 +88,47 @@ bundle — terrain comes via Ion asset 2275207 — but the script guard requires
    read them, no matter what `.env` held. Tell-tale: `TWIN_IMAGE` interpolates
    but `docker compose config` shows the creds empty. The deploy now re-syncs the
    compose file from the archive every run.
+
+## Large / public runtime assets (R2 — too big for git/staticAssets)
+
+The deploy ships `git archive HEAD`, so gitignored/LFS-excluded binaries never
+reach the build — `staticAssets` can't help. Such assets (e.g. the 136 MB
+Realtime-Geospatial SPZ splat, `storybook-webgpu/assets/*.spz`, gitignored) are
+served from a **public** R2 bucket and referenced by an absolute URL the client
+fetches at runtime.
+
+- **Bucket `humatopia-public`** — a public-only Cloudflare R2 bucket, SEPARATE from
+  the private `humatopia-prod` (which holds user data and must NEVER be public).
+  Served via custom domain **`assets.humatopia.ai`** (Cloudflare edge — the bytes
+  never touch the VPS). Bucket CORS allows `https://twin.humatopia.ai` + localhost.
+- **No credentials on the twin.** The twin references only the public URL
+  (`spzUrl='https://assets.humatopia.ai/<key>'` in `GlobeWaterproOcean-Story.tsx`).
+  No presigning, no R2 keys, no proxy route on the VPS — keep it that way; that is
+  the whole point of using a public bucket for public showcase data.
+
+Upload a new public asset (S3 creds are account-scoped, in `humatopia-frontend/.env.local`):
+
+```sh
+cd ~/Projects/huma/humatopia-frontend
+node --env-file=.env.local scripts/r2-asset-ops.mjs upload /abs/file.spz <key> --bucket humatopia-public
+```
+
+Then point the client at `https://assets.humatopia.ai/<key>`, commit, redeploy.
+
+Account-level ops (create bucket, bind/enable custom domain, set CORS) need
+`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` from `huma-infra/.env.local` — the
+`SOS_*` S3 keys CANNOT toggle public access. Use the CF token transiently in-shell;
+never deploy it. **GOTCHA:** binding a custom domain via the API
+(`POST .../r2/buckets/{b}/custom_domains`, even with `"enabled":true`) creates it
+`enabled:false` → every request 401s ("Unauthorized", `server: cloudflare`). Enable
+with `PUT .../r2/buckets/{b}/domains/custom/{domain}` `{"enabled":true}` (NOT
+`/custom_domains/{domain}`, which 404s with code 10015); confirm via
+`GET .../domains/custom` (it shows the `enabled` field). Verify the asset:
+
+```sh
+curl -s -o /dev/null -D - -H "Origin: https://twin.humatopia.ai" -H "Range: bytes=0-0" \
+  https://assets.humatopia.ai/<key>   # expect 206 + access-control-allow-origin
+```
 
 ## Verify (after every deploy)
 

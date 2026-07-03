@@ -17,6 +17,7 @@
     "astronomy-engine": "^2.1.19",
     "react-merge-refs": "^3.0.2",
     "sirv": "^2.0.4",
+    "spz-js": "^1.2.5",
     "tiny-invariant": "^1.3.3",
     "type-fest": "^5.5.0",
     "url-join": "^5.0.0"

@@ -9,6 +9,7 @@
 
 import { Html, OrbitControls } from '@react-three/drei'
 import {
+  createPortal,
   extend,
   useFrame,
   useThree,
@@ -124,6 +125,7 @@ import { TwinFishSchools } from './TwinFishSchool'
 import { TurbineCables, type CableBakeSnapshot } from './TurbineCables'
 import { CABLE_BAKE } from './cable-bake'
 import { CloudLayer } from './CloudLayer'
+import { SplatLayer } from './SplatLayer'
 import {
   CLOUD_PRESETS,
   CLOUD_PRESET_NAMES,
@@ -204,6 +206,17 @@ export const locationPresets = {
   // Waste-handling site on/near Karmøy island (site_compressed_new.glb). Captured
   // ~where the camera was; height/placement tuned in-scene via the leva folder.
   'Waste Handling': { longitude: 5.300927, latitude: 59.402448, height: 20 },
+  // Real gaussian-splat capture (SuperSplat 'Superior Marshall Wildfire' drone
+  // sample). Same anchor as 'Waste Handling' — CRUCIALLY height 20 (sea level),
+  // because the ocean surface is placed at target + up·seaLevelOffset, so a
+  // non-sea-level anchor height lifts the whole ocean and floods the camera. The
+  // site's land elevation + horizontal offset live on the splat placement (the
+  // 'Splats' leva folder east/north/height), not here.
+  'Realtime Geospatial': {
+    longitude: 5.300927,
+    latitude: 59.402448,
+    height: 20,
+  },
 } satisfies Record<
   string,
   { longitude: number; latitude: number; height: number }
@@ -2035,6 +2048,11 @@ const SCENE_RADIANCE_SCALE = 0.28
 export interface ContentReadinessRefs {
   atmosphereContext: AtmosphereContext
   getOceanManager: () => any | null
+  // True once the load-time compileAsync prewarm has warmed the heavy material
+  // pipelines. The host gates reveal on this in addition to the chunk-build test,
+  // so the splash only fades after the first visible frame is already warm (no
+  // synchronous compile hitch at reveal). See PERFORMANCE-FINDINGS.md item A.
+  isPrewarmed: () => boolean
 }
 
 export const Content: FC<{
@@ -2216,6 +2234,12 @@ export const Content: FC<{
   const orbitControlsRef = useRef<any>(null)
   orbitControlsRef.current = useThree(({ controls }) => controls)
   const [oceanManager, setOceanManager] = useState<any>(null)
+  // Set once the load-time compileAsync prewarm has warmed the heavy material
+  // pipelines under the splash. Until then, the beauty post-render is held (see
+  // the prewarm effect + the gated render loop below) so the first geometried-
+  // chunk draw can't compile the WaterPro ocean material synchronously and stall
+  // the chunk build. See PERFORMANCE-FINDINGS.md item A.
+  const [prewarmDone, setPrewarmDone] = useState(false)
   // Hero turbine engine position, reported by the farm; the camera orbits it.
   const [heroFocus, setHeroFocus] = useState<Vector3 | null>(null)
   const [oceanUniforms, setOceanUniforms] =
@@ -2223,6 +2247,10 @@ export const Content: FC<{
   const [vertexUniforms, setVertexUniforms] =
     useState<VertexUniformsBag | null>(null)
   const overlayScene = useMemo(() => new Scene(), [])
+  // Dedicated scene for the gaussian splats so they render in their own pass and
+  // composite AFTER the atmosphere (approach A) — premultiplied splats blended in
+  // the main pass darken their soft edges against the black clear color (halo).
+  const splatScene = useMemo(() => new Scene(), [])
   const context = useMemo(() => new AtmosphereContext(), [])
   context.camera = camera
   useAtmosphereContextNode(context)
@@ -2240,13 +2268,18 @@ export const Content: FC<{
   // through React state.
   const oceanManagerRef = useRef<any>(null)
   oceanManagerRef.current = oceanManager
+  // Live mirror of prewarmDone so the once-reported readiness refs can expose it
+  // through a stable getter without re-reporting.
+  const prewarmDoneRef = useRef(false)
+  prewarmDoneRef.current = prewarmDone
   const readinessReportedRef = useRef(false)
   useEffect(() => {
     if (readinessReportedRef.current || onReadinessRefs == null) return
     readinessReportedRef.current = true
     onReadinessRefs({
       atmosphereContext: context,
-      getOceanManager: () => oceanManagerRef.current
+      getOceanManager: () => oceanManagerRef.current,
+      isPrewarmed: () => prewarmDoneRef.current
     })
   }, [context, onReadinessRefs])
 
@@ -2599,11 +2632,16 @@ export const Content: FC<{
     }
     const depthBelow = surfaceY - uwScratch.p.y
     // The planar depth test (height above the target's tangent plane) is only
-    // valid near the surface. Far out — e.g. planetary zoom — orbiting below
-    // that infinite plane reads as "deep underwater" and fades the post to
-    // black. Gate it by true altitude (generous vs any real diving view).
+    // valid NEAR the surface, so reject both extremes of altitude. High — e.g.
+    // planetary zoom — orbiting below that infinite plane reads as "deep
+    // underwater" and fades the post to black. Implausibly LOW is the load-time
+    // artifact: before the camera rig settles, a transient/default camera pose
+    // sits near earth-centre (camAltitude ≈ -6.4e6 m), which would also read as
+    // submerged and flash the underwater fade-to-black as the splash lifts.
+    // Real dives stay within a few tens of metres of the surface, so the ±500 m
+    // band never clips an intended underwater view.
     const camAltitude = camera.position.length() - target.length()
-    if (camAltitude > 500) {
+    if (camAltitude > 500 || camAltitude < -500) {
       uwScratch.submerged = false
     } else if (uwScratch.submerged) {
       if (depthBelow < 0.05) uwScratch.submerged = false
@@ -2913,7 +2951,13 @@ export const Content: FC<{
   // Auto-routed subsea inter-array cables — every turbine string runs to a hub
   // (Ship 1, the substation vessel). Baked once; see TurbineCables.
   const cableControls = useControls('Cables', {
-    enabled: { value: true },
+    // Disabled by default: the TurbineCables bake (terrain raycasts + Verlet
+    // solve) re-bakes on every terrain tile-load while coverage improves, and a
+    // committed snapshot only loads when its byte-exact signature matches the
+    // live scene — too brittle for the main path. Pending a refactor into a
+    // detachable scene-dressing plugin (see PERFORMANCE-FINDINGS.md). Flip on to
+    // author/inspect cables in the meantime.
+    enabled: { value: false },
     // Fallback floor only — where terrain raycasts have coverage, the
     // cables drape onto the sampled tile surface instead.
     seabedDepth: { value: 35, min: -100, max: 200, step: 1, label: 'Seabed depth (m)' },
@@ -3512,8 +3556,23 @@ export const Content: FC<{
       projectionMatrix(camera),
       inverseProjectionMatrix(camera)
     )
+    // Approach A: composite the gaussian splats over the atmosphere-tinted scene
+    // (premultiplied, rendered in their own pass) so their soft edges blend over
+    // the lit sky here instead of the black scene-pass clear color (no halo), and
+    // a depth test against the main scene depth keeps terrain/models in front
+    // occluding them. Both depths are log-encoded by the same renderer → compared
+    // directly. When the splat is disabled/empty the pass is transparent and this
+    // composite is a no-op (splatVisible irrelevant where alpha = 0).
+    const splatPassNode = pass(splatScene, camera, { samples: 0 })
+    const splatColorNode = splatPassNode.getTextureNode('output')
+    const splatDepthNode = splatPassNode.getTextureNode('depth')
+    const splatVisible = splatDepthNode.r.lessThanEqual(depthNode.r).toFloat()
+    const aerialWithSplat = aerialNode
+      .mul(splatColorNode.a.mul(splatVisible).oneMinus())
+      .add(splatColorNode.rgb.mul(splatVisible))
+
     const underwaterNode = underwaterPostNode({
-      inputNode: aerialNode,
+      inputNode: aerialWithSplat,
       oceanPos: viewToOceanUniform.mul(vec4(uwPosView, 1)).xyz,
       dist: uwPosView.length(),
       time: underwaterTimeUniform,
@@ -3545,7 +3604,11 @@ export const Content: FC<{
     result.outputNode = lensControls.enabled
       ? lensDrops.apply(convertToTexture(composite))
       : composite
-    return { postProcessing: result, skyNode }
+    // passNode / splatPassNode / overlayPassNode are surfaced so the load-time
+    // prewarm effect can call each pass node's own compileAsync (which binds the
+    // pass render target + MRT) and warm the inner-scene material pipelines under
+    // the splash, off the first visible frame. See the prewarm effect below.
+    return { postProcessing: result, skyNode, passNode, splatPassNode, overlayPassNode }
   }, [
     atmosphereControls.exposure,
     atmosphereControls.moonIntensity,
@@ -3556,6 +3619,7 @@ export const Content: FC<{
     camera,
     context,
     overlayScene,
+    splatScene,
     renderer,
     scene,
     underwaterUniforms,
@@ -3849,7 +3913,95 @@ export const Content: FC<{
     ).applyMatrix4(matrixECIToECEF)
   })
 
+  // ── Load-time pipeline prewarm (compileAsync) ─────────────────────────────
+  // The first ocean-phase beauty draw would otherwise compile the WaterPro ocean
+  // material (plus terrain/turbine/ship materials and the post graph) in one
+  // synchronous multi-second block on the render thread — which then can't drain
+  // the chunk-builder's per-frame worker results, serialising the ~3.6 s build.
+  // Instead, once the first chunk carries real geometry, hold the beauty render
+  // (below) and warm each pass node's material pipelines via compileAsync, which
+  // uses the async GPU pipeline path so the build keeps draining while the driver
+  // compiles. The pass node's own compileAsync binds its render target + MRT, so
+  // the warmed pipeline key matches the live draw. Terrain (FINDINGS item B),
+  // turbines and ships are warmed too when they are already present in the scene.
+  // postProcessingData is read through a ref so a leva-driven rebuild mid-prewarm
+  // can't cancel the in-flight warm and strand the gate. Runs in Storybook too
+  // (harmless: a sub-second hold at first load), gated only by real ocean state.
+  const postProcessingDataRef = useRef(postProcessingData)
+  postProcessingDataRef.current = postProcessingData
+  const prewarmStartedRef = useRef(false)
+  useEffect(() => {
+    if (prewarmStartedRef.current) return
+    if (disableOcean || oceanManager == null) return
+    prewarmStartedRef.current = true
+    let cancelled = false
+
+    const hasChunkGeometry = (): boolean => {
+      const chunks = oceanManager.chunks_
+      if (chunks == null) return false
+      for (const k in chunks) {
+        if (chunks[k]?.chunk?.mesh_?.geometry?.attributes?.position != null) {
+          return true
+        }
+      }
+      return false
+    }
+
+    const run = async (): Promise<void> => {
+      // Poll real state (no timer) for the first chunk to carry geometry, so the
+      // compile warms the exact vertex-layout pipeline the live draw will use.
+      await new Promise<void>(resolve => {
+        const tick = (): void => {
+          if (cancelled || hasChunkGeometry()) resolve()
+          else requestAnimationFrame(tick)
+        }
+        tick()
+      })
+      if (cancelled) return
+
+      const t0 = performance.now()
+      const data = postProcessingDataRef.current as any
+      try {
+        await data.passNode.compileAsync(renderer)
+        if (splatScene.children.length > 0) {
+          await data.splatPassNode.compileAsync(renderer)
+        }
+        if (overlayScene.children.length > 0) {
+          await data.overlayPassNode.compileAsync(renderer)
+        }
+        // Absorb the residual outer post-graph (aerial + tone-map quad) compile
+        // with one render, now that the inner-pass materials are already warm.
+        data.postProcessing.render()
+      } catch (err) {
+        console.error('[prewarm] compileAsync failed', err)
+      } finally {
+        // Always open the gate, even on error, so a failed warm can't strand the
+        // scene behind a frozen (black) canvas.
+        if (!cancelled) {
+          setPrewarmDone(true)
+          console.log(
+            `[prewarm] pipelines warmed in ${Math.round(performance.now() - t0)}ms`
+          )
+        }
+      }
+    }
+    void run()
+
+    return () => {
+      cancelled = true
+    }
+  }, [disableOcean, oceanManager, renderer, splatScene, overlayScene])
+
   useFrame(() => {
+    // Hold the beauty post-render during the load-time compileAsync prewarm so
+    // the first geometried-chunk draw can't compile the heavy materials
+    // synchronously before the async warm lands (which would stall the chunk
+    // build). The splash covers the held canvas; the depth pre-pass is paused in
+    // lock-step (see the skipDepthPrepass gate) so nothing renders during the
+    // compileAsync await windows. Once the prewarm resolves, both resume. Outside
+    // the ocean phase (atmosphere-only, or Storybook before the ocean mounts)
+    // this is a no-op.
+    if (!disableOcean && oceanManager != null && !prewarmDone) return
     postProcessingData.postProcessing.render()
   }, 1)
 
@@ -3860,15 +4012,19 @@ export const Content: FC<{
   return (
     <>
       <atmosphereLight />
-      {cloudControls.enabled && (
+      {/* Gated behind the ocean stage: the volumetric cloud pipeline is one of
+          the heaviest first-frame WGSL compiles, and mounting it during the
+          atmosphere phase contends with the LUT precompute. */}
+      {!disableOcean && cloudControls.enabled && (
         <CloudLayer field={cloudField} altitude={cloudControls.altitude} />
       )}
       {/* Detachable precipitation plugin — remove this element to drop the whole
           rain/snow effect. Engine lives in storybook-webgpu/src/weather. */}
       {/* Mounted whenever enabled (not gated on rain intensity): there are always
           suspended particles underwater, even in clear weather. Above water with
-          no rain the visible budget collapses to ~nothing. */}
-      {precipControls.enabled && (
+          no rain the visible budget collapses to ~nothing. Behind the ocean
+          stage so its instanced-particle pipeline compile doesn't race the LUT. */}
+      {!disableOcean && precipControls.enabled && (
         <Precipitation
           scene={overlayScene}
           intensity={precipIntensity}
@@ -3961,31 +4117,56 @@ export const Content: FC<{
       {/* Wind-turbine farm centred on the fly-to target (staggered grid of
           cloned GLBs). Layer 0 (default) so each participates in the depth
           pre-pass for shoreline-foam gating.
-          Loaded eagerly: the compressed GLBs are small (~440 KB / ~3.8 MB,
-          Draco-decoded off-thread), so they're ready by reveal without starving
-          the atmosphere-LUT compute. NOTE: if you add a LARGE model here again,
-          re-gate it behind `{!disableOcean && (...)}` (as the ocean is) so its
-          download/parse doesn't compete with the stage-1 LUT pipeline — an
-          uncompressed 43 MB hero here once stalled that compute for ~80 s. */}
-      <TurbineFarm
-        target={target}
-        scale={turbineControls.scale}
-        heightOffset={turbineControls.heightOffset}
-        layoutHeadingDeg={turbineControls.windDir}
-        yawHeadingDeg={windHeading ?? turbineControls.windDir}
-        yawOffsetDeg={turbineControls.yawOffset}
-        spin={turbineControls.spin}
-        spinSpeed={turbineControls.spinSpeed}
-        count={farmCount ?? turbineControls.count}
-        crosswindSpacing={turbineControls.crosswindD * ROTOR_DIAMETER_M}
-        downwindSpacing={turbineControls.downwindD * ROTOR_DIAMETER_M}
-        stagger={turbineControls.stagger}
-        rotorRpm={turbineRpm}
-        wingsEnabled={wingsEnabled}
-        heroCover={heroCover ?? turbineControls.cover}
-        onHeroFocus={setHeroFocus}
-        cables={cables}
-      />
+          Gated behind the ocean stage: the GLBs are small (~440 KB / ~3.8 MB,
+          Draco-decoded off-thread), but their instanced PBR material pipelines
+          still compile on first draw and would race the stage-1 atmosphere-LUT
+          precompute. Mounting in the ocean phase keeps the atmosphere phase's
+          scene minimal so the LUT drains fast; the farm reports `heroFocus`
+          once mounted (the camera reframes onto it while the splash is still
+          up). An uncompressed 43 MB hero here once stalled the LUT for ~80 s. */}
+      {!disableOcean && (
+        <TurbineFarm
+          target={target}
+          scale={turbineControls.scale}
+          heightOffset={turbineControls.heightOffset}
+          layoutHeadingDeg={turbineControls.windDir}
+          yawHeadingDeg={windHeading ?? turbineControls.windDir}
+          yawOffsetDeg={turbineControls.yawOffset}
+          spin={turbineControls.spin}
+          spinSpeed={turbineControls.spinSpeed}
+          count={farmCount ?? turbineControls.count}
+          crosswindSpacing={turbineControls.crosswindD * ROTOR_DIAMETER_M}
+          downwindSpacing={turbineControls.downwindD * ROTOR_DIAMETER_M}
+          stagger={turbineControls.stagger}
+          rotorRpm={turbineRpm}
+          wingsEnabled={wingsEnabled}
+          heroCover={heroCover ?? turbineControls.cover}
+          onHeroFocus={setHeroFocus}
+          cables={cables}
+        />
+      )}
+      {/* Georeferenced gaussian-splat layer at the active site. Gated behind the
+          atmosphere stage (like the turbines/ocean/ships) so its build + WGSL
+          pipeline compile can't compete with the stage-1 LUT compute. Lives in
+          the same scene as the terrain, so pass(scene,camera) depth-composites
+          it against the 3D tiles. Leva 'Splats' folder toggles/tunes. */}
+      {!disableOcean && (
+        <SplatLayer
+          target={target}
+          splatScene={splatScene}
+          // In the 'Realtime Geospatial' scenario, load the real SPZ capture
+          // from the public R2 asset bucket (assets.humatopia.ai → humatopia-public;
+          // bucket CORS allows the twin origin + localhost). Served from
+          // Cloudflare's edge so the 136 MB never touches the VPS. Other scenarios
+          // keep the procedural sphere placeholder; gating the URL gates the fetch
+          // so it only loads when that scenario is active.
+          spzUrl={
+            locationControls.preset === 'Realtime Geospatial'
+              ? 'https://assets.humatopia.ai/realtime-geospatial.spz'
+              : undefined
+          }
+        />
+      )}
       {/* Karmøy ship. Gated behind the ocean stage (so its ~7.7 MB
           download/parse doesn't compete with the stage-1 atmosphere-LUT
           compute) and isolated in its own Suspense so loading can't blank the
@@ -4073,6 +4254,15 @@ export const Content: FC<{
         seabedDepth={cableControls.seabedDepth}
         ready={!disableOcean}
       />
+      {/* NOT gated behind the ocean stage. The first terrain tile's
+          MeshLambertNodeMaterial entering the scene forces a one-time recompile
+          of the post `pass` pipeline; during that recompile the pass depth is
+          briefly invalid and the aerial-perspective draws no sky, blacking the
+          whole frame for ~1s. Mounting in the atmosphere phase puts that
+          recompile UNDER the splash (tiles still arrive ~1s after mount, well
+          before reveal, so the LUT precompute isn't starved). Do not re-gate
+          this behind `!disableOcean` without also pre-warming the tile material
+          or the post pipeline, or the fade-to-black returns at reveal. */}
       <TilesRenderer key={terrainAssetId}>
         <TilesPlugin
           plugin={CesiumIonAuthPlugin}
@@ -4096,7 +4286,15 @@ export const Content: FC<{
           envCubeTexture={(envNode as any).renderTarget.texture}
           numLayers={oceanDebugParams.numLayers}
           useDiagnosticMaterial={oceanDebugParams.useDiagnosticMaterial}
-          skipDepthPrepass={oceanDebugParams.skipDepthPrepass}
+          skipDepthPrepass={
+            oceanDebugParams.skipDepthPrepass ||
+            // Pause the depth pre-pass during the load-time prewarm so its
+            // per-frame scene render can't manipulate the renderer's render
+            // target inside a compileAsync await window. Resumes at prewarmDone
+            // (its cheap depth pipelines compile then). Nothing reads the depth
+            // texture meanwhile — the beauty render is held too.
+            (!disableOcean && oceanManager != null && !prewarmDone)
+          }
           depthPrepassStage={oceanDebugParams.depthPrepassStage}
           cloudReflect={cloudEffectsEnabled ? cloudField.reflect : undefined}
           cloudShadow={cloudEffectsEnabled ? cloudField.shadow : undefined}

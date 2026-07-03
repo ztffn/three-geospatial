@@ -1,0 +1,70 @@
+// The renderer-agnostic core (data model, PLY loader, sorter, glTF extension,
+// tiles plugin) is shared across both the WebGL and WebGPU paths.
+export {
+  computeSplatBounds,
+  shDegreeToCoefficientCount,
+  validateGaussianSplatData
+} from '../GaussianSplatData'
+export type { GaussianSplatData } from '../GaussianSplatData'
+export {
+  CPUSplatSorter,
+  SortTrigger
+} from '../GaussianSplatSorter'
+export type {
+  GaussianSplatSorter,
+  GpuGaussianSplatSorter
+} from '../GaussianSplatSorter'
+export { WorkerSplatSorter } from '../WorkerSplatSorter'
+export { GaussianSplatGeometry } from '../GaussianSplatGeometry'
+export { GaussianSplatMesh } from '../GaussianSplatMesh'
+export type {
+  GaussianSplatMeshOptions,
+  SplatLodMeshOptions,
+  SplatLodPipelineLike,
+  SplatMaterial
+} from '../GaussianSplatMesh'
+export {
+  SplatOctree,
+  computeSplatImportance,
+  octreeToFlat,
+  octreeFromFlat
+} from '../SplatOctree'
+export type {
+  SplatOctreeLeaf,
+  SplatOctreeOptions,
+  SplatOctreeData,
+  SplatOctreeFlat
+} from '../SplatOctree'
+export { SplatLodSelector } from '../SplatLodSelector'
+export type { SplatLodParams, SplatLeafLodResult } from '../SplatLodSelector'
+export { GaussianSplatsPlugin } from '../GaussianSplatsPlugin'
+export type { GaussianSplatsPluginOptions } from '../GaussianSplatsPlugin'
+export {
+  KhrGaussianSplattingExtension,
+  KHR_GAUSSIAN_SPLATTING,
+  KHR_GAUSSIAN_SPLATTING_COMPRESSION_SPZ
+} from '../KhrGaussianSplattingExtension'
+export { PLYSplatLoader, parsePLYSplat } from '../PLYSplatLoader'
+export { loadSpzSplatData } from '../SpzSplatLoader'
+export type { SpzSplatLoadOptions } from '../SpzSplatLoader'
+
+// WebGPU/TSL render path: the EWA projection runs in a full TSL `vertexNode`
+// (see docs/splats-design-spec.md §11.1). Pass it to `GaussianSplatMesh` via the
+// `createMaterial` option to render splats under the Three.js WebGPU renderer.
+export { GaussianSplatNodeMaterial } from './GaussianSplatNodeMaterial'
+
+// GPU-resident radix sort (PlayCanvas multipass port). `GpuSplatSorter` drops
+// into `GaussianSplatMesh` via the `sorter` option to sort multi-million-splat
+// clouds entirely on the GPU — no CPU worker, no per-sort index upload.
+export { GpuSplatSorter } from './GpuSplatSorter'
+export { WebGpuRadixSort } from './WebGpuRadixSort'
+
+// Fully-GPU octree-LOD pipeline (per-splat alpha cross-fade → stream compaction →
+// sort → indirect draw). Pass `(o, p, c) => new SplatLodPipeline(o, p, c)` as the
+// `lod.createPipeline` factory and `lodFade: true` on the node material.
+export { SplatLodPipeline } from './SplatLodPipeline'
+
+// React Three Fiber component for the WebGPU path (SPZ/PLY + GPU sort + octree LOD).
+// The WebGL-only `<GaussianSplats>` lives in the `r3f` entry.
+export { GaussianSplatsGPU } from './GaussianSplatsGPU'
+export type { GaussianSplatsGPUProps } from './GaussianSplatsGPU'

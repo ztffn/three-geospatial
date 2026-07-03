@@ -443,6 +443,18 @@ export default defineConfig({
         repoRoot,
         'packages/atmosphere/src'
       ),
+      '@takram/three-geospatial-splats/webgpu': path.resolve(
+        repoRoot,
+        'packages/splats/src/webgpu'
+      ),
+      '@takram/three-geospatial-splats/r3f': path.resolve(
+        repoRoot,
+        'packages/splats/src/r3f'
+      ),
+      '@takram/three-geospatial-splats': path.resolve(
+        repoRoot,
+        'packages/splats/src'
+      ),
       '@takram/three-geospatial/webgpu': path.resolve(
         repoRoot,
         'packages/core/src/webgpu'

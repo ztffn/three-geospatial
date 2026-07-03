@@ -80,7 +80,7 @@
     }
   },
   "release": {
-    "projects": ["core", "effects", "atmosphere", "clouds"],
+    "projects": ["core", "effects", "atmosphere", "clouds", "splats"],
     "projectsRelationship": "independent"
   },
   "analytics": false
