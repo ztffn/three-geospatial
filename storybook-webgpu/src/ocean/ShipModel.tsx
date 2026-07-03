@@ -17,7 +17,7 @@ import {
   Quaternion,
   Vector3,
   type Group,
-  type Material,
+  type Material
 } from 'three'
 import { MeshBasicNodeMaterial, type UniformNode } from 'three/webgpu'
 
@@ -26,7 +26,7 @@ import { useGLTF } from '../hooks/useGLTF'
 import { enuBasis } from './enu'
 import {
   WATER_OCCLUDER_KEY,
-  type VertexUniformsBag,
+  type VertexUniformsBag
 } from './OceanChunksWaterpro'
 
 // Shared 'Ship motion' leva values driving every ShipModel's buoyancy rig +
@@ -63,7 +63,7 @@ export const SHIP_DEFS: ShipDef[] = [
     heightOffset: 26.9,
     eastOffset: 0,
     northOffset: 0,
-    yawDeg: -104,
+    yawDeg: -104
   },
   {
     folder: 'Ship 2',
@@ -72,7 +72,7 @@ export const SHIP_DEFS: ShipDef[] = [
     heightOffset: 28.3,
     eastOffset: -10,
     northOffset: -20,
-    yawDeg: 94,
+    yawDeg: 94
   },
   // Patrol ship outside Bodø (own scenario; anchored at the Bodø preset).
   {
@@ -81,7 +81,7 @@ export const SHIP_DEFS: ShipDef[] = [
     scale: 1,
     heightOffset: 29.8,
     eastOffset: 0,
-    northOffset: 0,
+    northOffset: 0
   },
   // Offshore platform in the Norwegian Sea (own scenario; static — no
   // buoyancy, the caller passes motion disabled). scale/waterline carried over
@@ -92,7 +92,7 @@ export const SHIP_DEFS: ShipDef[] = [
     scale: 1,
     heightOffset: 26,
     eastOffset: 0,
-    northOffset: 0,
+    northOffset: 0
   },
   // Waste-handling facility on/near Karmøy island (waste-handling scenario;
   // static — no buoyancy). On LAND; offsets/height/yaw captured in-scene via the
@@ -105,7 +105,7 @@ export const SHIP_DEFS: ShipDef[] = [
     heightOffset: 67.4,
     eastOffset: -50,
     northOffset: 40,
-    yawDeg: -30,
+    yawDeg: -30
   },
   // Service vessel moored beside the production platform (platform scenario;
   // buoyant). Carries its own GLB-authored 'WaterOccluder' mesh. Offset east of
@@ -117,7 +117,7 @@ export const SHIP_DEFS: ShipDef[] = [
     heightOffset: 26.9,
     eastOffset: 120,
     northOffset: 0,
-    yawDeg: -104,
+    yawDeg: -104
   },
   // Copy of Ship 1 (ship_supply) moored beside the patrol ship outside Bodø
   // (patrol scenario; buoyant). Same scale/waterline as the Karmøy supply ship
@@ -129,8 +129,8 @@ export const SHIP_DEFS: ShipDef[] = [
     heightOffset: 28.6,
     eastOffset: 40,
     northOffset: -30,
-    yawDeg: 153,
-  },
+    yawDeg: 153
+  }
 ]
 
 // One ship's debug rig: a leva folder (visibility, scale, waterline, east/north
@@ -155,38 +155,42 @@ export function useShip(
   // cable hub. The fly-to button instead reads a live ref (leva captures once).
   worldPos: Vector3
 } {
-  const controls = useControls(def.folder, {
-    visible: { value: true },
-    scale: { value: def.scale, min: 0.01, max: 200, step: 0.01 },
-    heightOffset: {
-      value: def.heightOffset,
-      min: -100,
-      max: 100,
-      step: 0.1,
-      label: 'Waterline (m)',
+  const controls = useControls(
+    `Assets.${def.folder}`,
+    {
+      visible: { value: true },
+      scale: { value: def.scale, min: 0.01, max: 200, step: 0.01 },
+      heightOffset: {
+        value: def.heightOffset,
+        min: -100,
+        max: 100,
+        step: 0.1,
+        label: 'Waterline (m)'
+      },
+      eastOffset: {
+        value: def.eastOffset,
+        min: -5000,
+        max: 5000,
+        step: 5,
+        label: 'East (m)'
+      },
+      northOffset: {
+        value: def.northOffset,
+        min: -5000,
+        max: 5000,
+        step: 5,
+        label: 'North (m)'
+      },
+      yawDeg: {
+        value: def.yawDeg ?? 0,
+        min: -180,
+        max: 180,
+        step: 1,
+        label: 'Yaw (°)'
+      }
     },
-    eastOffset: {
-      value: def.eastOffset,
-      min: -5000,
-      max: 5000,
-      step: 5,
-      label: 'East (m)',
-    },
-    northOffset: {
-      value: def.northOffset,
-      min: -5000,
-      max: 5000,
-      step: 5,
-      label: 'North (m)',
-    },
-    yawDeg: {
-      value: def.yawDeg ?? 0,
-      min: -180,
-      max: 180,
-      step: 1,
-      label: 'Yaw (°)',
-    },
-  })
+    { collapsed: true }
+  )
   const worldPos = useMemo(() => {
     const { east, north, up } = enuBasis(anchor)
     return anchor
@@ -199,21 +203,25 @@ export function useShip(
   // live (the standard "latest value" ref pattern; not read during render).
   const worldRef = useRef(worldPos)
   worldRef.current = worldPos
-  useControls(def.folder, {
-    'Fly to ship': button(() => {
-      const oc = orbitControlsRef.current
-      if (oc?.target == null) return
-      const p = worldRef.current
-      const { east, north, up } = enuBasis(p)
-      oc.object.position
-        .copy(p)
-        .addScaledVector(up, 250)
-        .addScaledVector(east, 350)
-        .addScaledVector(north, -350)
-      oc.target.copy(p)
-      oc.update?.()
-    }),
-  })
+  useControls(
+    `Assets.${def.folder}`,
+    {
+      'Fly to ship': button(() => {
+        const oc = orbitControlsRef.current
+        if (oc?.target == null) return
+        const p = worldRef.current
+        const { east, north, up } = enuBasis(p)
+        oc.object.position
+          .copy(p)
+          .addScaledVector(up, 250)
+          .addScaledVector(east, 350)
+          .addScaledVector(north, -350)
+        oc.target.copy(p)
+        oc.update?.()
+      })
+    },
+    { collapsed: true }
+  )
   return { controls, worldPos }
 }
 
@@ -239,20 +247,26 @@ export const ShipModel: FC<{
   eastOffset: number
   northOffset: number
   yawDeg: number
-  /** Inverse of the ocean-local frame matrix — maps world → wave-field XZ.
-   * Memoized by the caller (it only changes on fly-to / leva edits). */
+  /**
+   * Inverse of the ocean-local frame matrix — maps world → wave-field XZ.
+   * Memoized by the caller (it only changes on fly-to / leva edits).
+   */
   oceanMatrixInverse: Matrix4
   /** WGSL vertex-stage uniform bag — null until the ocean is mounted. */
   vu: VertexUniformsBag | null
   /** Live Gerstner amplitude (shared bag) — null until the ocean is mounted. */
   gerstnerAmplitude: UniformNode<number> | null
   motion: ShipMotionControls
-  /** Whether this model should punch an invisible hull volume into the water
+  /**
+   * Whether this model should punch an invisible hull volume into the water
    * pre-pass. Ships need it; static above-water structures such as production
-   * platforms do not. */
+   * platforms do not.
+   */
   waterOcclusion?: boolean
-  /** Surfaces the buoyancy-animated group (the live deck frame) to the host —
-   * the FPS rig rides it so a player standing on deck moves with the hull. */
+  /**
+   * Surfaces the buoyancy-animated group (the live deck frame) to the host —
+   * the FPS rig rides it so a player standing on deck moves with the hull.
+   */
   onGroup?: (group: Group | null) => void
 }> = ({
   url,
@@ -267,7 +281,7 @@ export const ShipModel: FC<{
   gerstnerAmplitude,
   motion,
   waterOcclusion = true,
-  onGroup,
+  onGroup
 }) => {
   const gltf = useGLTF(url)
   const scene = useMemo(() => gltf.scene.clone(true), [gltf.scene])
@@ -344,7 +358,7 @@ export const ShipModel: FC<{
       axisLong,
       axisShort,
       halfL: Math.max(halfL, 1),
-      halfW: Math.max(halfW, 1),
+      halfW: Math.max(halfW, 1)
     }
   }, [hull, frame, scale])
 
@@ -361,7 +375,7 @@ export const ShipModel: FC<{
       bow: mk(probes.axisLong, probes.halfL),
       stern: mk(probes.axisLong, -probes.halfL),
       stbd: mk(probes.axisShort, probes.halfW),
-      port: mk(probes.axisShort, -probes.halfW),
+      port: mk(probes.axisShort, -probes.halfW)
     }
   }, [frame, probes, oceanMatrixInverse])
 
@@ -408,7 +422,7 @@ export const ShipModel: FC<{
     motion.occLengthFrac,
     motion.occWidthFrac,
     motion.occTopFrac,
-    motion.showOccluders,
+    motion.showOccluders
   ])
 
   // Per-frame buoyancy. Scratch objects + smoothing state persist per ship.
@@ -418,7 +432,7 @@ export const ShipModel: FC<{
   )
   const smoothRef = useRef<{ heave: number; normal: Vector3 }>({
     heave: 0,
-    normal: frame.up.clone(),
+    normal: frame.up.clone()
   })
 
   useFrame((_, delta) => {
@@ -474,14 +488,15 @@ export const ShipModel: FC<{
 // east/north offsets (m) from the cluster base + a per-cube yaw so the raft
 // reads as loose floating cargo rather than a grid. The 'spread' leva slider
 // multiplies these, so one folder expands/contracts the whole raft.
-const WAX_CUBE_LAYOUT: ReadonlyArray<{ de: number; dn: number; yaw: number }> = [
-  { de: 0, dn: 0, yaw: 12 },
-  { de: 2.1, dn: 1.4, yaw: -38 },
-  { de: -1.9, dn: 1.7, yaw: 64 },
-  { de: 1.5, dn: -2.0, yaw: 148 },
-  { de: -2.2, dn: -1.6, yaw: -104 },
-  { de: 0.3, dn: 3.0, yaw: 30 },
-]
+const WAX_CUBE_LAYOUT: ReadonlyArray<{ de: number; dn: number; yaw: number }> =
+  [
+    { de: 0, dn: 0, yaw: 12 },
+    { de: 2.1, dn: 1.4, yaw: -38 },
+    { de: -1.9, dn: 1.7, yaw: 64 },
+    { de: 1.5, dn: -2.0, yaw: 148 },
+    { de: -2.2, dn: -1.6, yaw: -104 },
+    { de: 0.3, dn: 3.0, yaw: 30 }
+  ]
 
 // A raft of small wax-block GLBs floating beside a host ship, mounted as
 // ShipModel instances (the floating-GLB buoyancy primitive) at the offsets
@@ -504,28 +519,38 @@ export const WaxCubes: FC<{
   vu,
   gerstnerAmplitude,
   motion,
-  orbitControlsRef,
+  orbitControlsRef
 }) => {
-  const controls = useControls('Wax cubes', {
-    visible: { value: true },
-    scale: { value: 0.35, min: 0.01, max: 5, step: 0.01 },
-    heightOffset: {
-      value: 28.3,
-      min: -100,
-      max: 100,
-      step: 0.1,
-      label: 'Waterline (m)',
+  const controls = useControls(
+    'Assets.Wax cubes',
+    {
+      visible: { value: true },
+      scale: { value: 0.35, min: 0.01, max: 5, step: 0.01 },
+      heightOffset: {
+        value: 28.3,
+        min: -100,
+        max: 100,
+        step: 0.1,
+        label: 'Waterline (m)'
+      },
+      eastOffset: {
+        value: 34,
+        min: -5000,
+        max: 5000,
+        step: 1,
+        label: 'East (m)'
+      },
+      northOffset: {
+        value: -23,
+        min: -5000,
+        max: 5000,
+        step: 1,
+        label: 'North (m)'
+      },
+      spread: { value: 1, min: 0.1, max: 10, step: 0.1, label: 'Spread' }
     },
-    eastOffset: { value: 34, min: -5000, max: 5000, step: 1, label: 'East (m)' },
-    northOffset: {
-      value: -23,
-      min: -5000,
-      max: 5000,
-      step: 1,
-      label: 'North (m)',
-    },
-    spread: { value: 1, min: 0.1, max: 10, step: 0.1, label: 'Spread' },
-  })
+    { collapsed: true }
+  )
   // Light blocks track the surface far faster than a ship hull: override the
   // shared (ship-grade, ~1.5 s) buoyancy response with a short time constant so
   // the cubes hug each wave instead of lagging it and popping over/under.
@@ -542,28 +567,32 @@ export const WaxCubes: FC<{
   }, [anchor, controls.eastOffset, controls.northOffset, controls.heightOffset])
   const baseRef = useRef(basePos)
   baseRef.current = basePos
-  useControls('Wax cubes', {
-    'Fly to wax cubes': button(() => {
-      const oc = orbitControlsRef.current
-      if (oc?.target == null) return
-      const p = baseRef.current
-      const { east, north, up } = enuBasis(p)
-      oc.object.position
-        .copy(p)
-        .addScaledVector(up, 30)
-        .addScaledVector(east, 35)
-        .addScaledVector(north, -35)
-      oc.target.copy(p)
-      oc.update?.()
-    }),
-  })
+  useControls(
+    'Assets.Wax cubes',
+    {
+      'Fly to wax cubes': button(() => {
+        const oc = orbitControlsRef.current
+        if (oc?.target == null) return
+        const p = baseRef.current
+        const { east, north, up } = enuBasis(p)
+        oc.object.position
+          .copy(p)
+          .addScaledVector(up, 30)
+          .addScaledVector(east, 35)
+          .addScaledVector(north, -35)
+        oc.target.copy(p)
+        oc.update?.()
+      })
+    },
+    { collapsed: true }
+  )
   if (!controls.visible) return null
   return (
     <>
       {WAX_CUBE_LAYOUT.map((c, i) => (
         <ShipModel
           key={i}
-          url="public/waxcube-single-compressed.glb"
+          url='public/waxcube-single-compressed.glb'
           anchor={anchor}
           scale={controls.scale}
           heightOffset={controls.heightOffset}

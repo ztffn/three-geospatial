@@ -21,7 +21,7 @@ import {
   TilesRenderer,
   TilesRendererContext
 } from '3d-tiles-renderer/r3f'
-import { button, levaStore, useControls } from 'leva'
+import { button, folder, levaStore, useControls } from 'leva'
 import {
   Suspense,
   useCallback,
@@ -2329,6 +2329,25 @@ export const Content: FC<{
     }
   }, [scene, envNode])
 
+  // Collapse the group folders by default. Each leaf panel sets its own
+  // `collapsed` via its useControls call, but Leva only records folder settings
+  // for EXPLICITLY declared paths — the auto-created parents (Scene, Ocean,
+  // Ocean.Look, …) otherwise default to open. Declaring them here as empty
+  // collapsed folders registers that setting; they carry no controls of their
+  // own (the real panels populate them by path), so opening the Leva panel
+  // shows just these closed group headers.
+  useControls({
+    Scene: folder({}, { collapsed: true }),
+    Sky: folder({}, { collapsed: true }),
+    Ocean: folder({}, { collapsed: true }),
+    'Ocean.Look': folder({}, { collapsed: true }),
+    'Ocean.Waves': folder({}, { collapsed: true }),
+    'Ocean.Foam': folder({}, { collapsed: true }),
+    'Ocean.Setup': folder({}, { collapsed: true }),
+    Assets: folder({}, { collapsed: true }),
+    Weather: folder({}, { collapsed: true })
+  })
+
   // Function-form `useControls` returns [values, set]; we use `setLocation` from
   // the picker handler to programmatically reposition the fly-to target.
   const [locationControls, setLocation] = useControls(
@@ -2801,10 +2820,9 @@ export const Content: FC<{
   )
 
   // Water STYLE selector (colour / light / foam look) — orthogonal to Sea
-  // State (roughness). Post-split these presets carry NO roughness, so the
-  // sea-state-like names are just looks now; only storm/hurricane/tranquil are
-  // hidden (redundant with the ladder's severity). 'choppy' stays because it
-  // is the committed default look (restored — dropping it lost that default).
+  // State (roughness). The sea-state-named looks are hidden here because those
+  // words describe roughness, which the ladder owns: storm/hurricane/tranquil
+  // dropped; 'choppy' was renamed to 'barents' (a pure look) in the package.
   const styleOptions = useMemo<string[]>(
     () =>
       [
@@ -2818,10 +2836,10 @@ export const Content: FC<{
   const presetControls = useControls(
     'Ocean.Look.Style',
     {
-      // Default 'choppy' = the original committed default look (deep teal).
-      // 'custom' is NOT a stored look — it means "use the current sliders",
-      // whose colour defaults are tropical cyan, so it is not a usable default.
-      preset: { value: 'choppy', options: styleOptions }
+      // Default 'barents' = the original committed default look (deep teal,
+      // formerly 'choppy'). 'custom' is NOT a stored look — it means "use the
+      // current sliders" (tropical-cyan defaults), so it is not a usable default.
+      preset: { value: 'barents', options: styleOptions }
     },
     { collapsed: true }
   )

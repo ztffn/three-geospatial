@@ -52,7 +52,7 @@ export interface WaterproPresetWaterFields {
 
 export type WaterproPresetName =
   | 'arctic'
-  | 'choppy'
+  | 'barents'
   | 'foggy'
   | 'hurricane'
   | 'moonlit'
@@ -96,7 +96,10 @@ export const WATERPRO_PRESETS: Record<
     sss: { intensity: 0.5, power: 2.8 },
     defaultSeaState: 'rough'
   },
-  choppy: {
+  // The deep-teal look formerly named 'choppy'. Renamed because 'choppy'
+  // describes a SEA STATE (roughness), which the sea-state ladder now owns —
+  // this is a pure look. It is the twin's default Water Style.
+  barents: {
     color: {
       shallow: '#153c38',
       deep: '#223f3f',
