@@ -1,3 +1,9 @@
+// The shared Mesh that renders a GaussianSplatData: owns the geometry, a SplatMaterial
+// (WebGL or WebGPU node), and a depth sorter, and drives per-frame re-sorting and
+// projection-uniform updates via update(). Optional octree LOD selects a budgeted
+// subset each frame and feeds an injected GPU LOD pipeline (WebGPU). Renderer-agnostic
+// — the pipeline is injected, so this file keeps no runtime dependency on three/webgpu.
+
 import {
   Frustum,
   Matrix4,
@@ -427,10 +433,17 @@ export class GaussianSplatMesh extends Mesh<
 
     if (result instanceof Promise) {
       this.pendingSort = true
-      void result.then(indices => {
-        apply(indices)
-        this.pendingSort = false
-      })
+      void result
+        .then(indices => {
+          apply(indices)
+          this.pendingSort = false
+        })
+        .catch((error: unknown) => {
+          // Clear the gate so a failed sort doesn't permanently freeze re-sorting
+          // (which would strand a stale back-to-front order → wrong compositing).
+          this.pendingSort = false
+          console.error('[GaussianSplatMesh] splat sort failed:', error)
+        })
     } else {
       apply(result)
     }

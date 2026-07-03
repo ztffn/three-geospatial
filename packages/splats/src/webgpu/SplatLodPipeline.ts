@@ -180,6 +180,18 @@ export class SplatLodPipeline {
 
   private leafTargetDirty = false
   private pendingLeafTargetLod: Uint32Array | null = null
+  // Set by dispose(); guards a late update() (e.g. an R3F frame queued between
+  // mesh.dispose() and unmount) from touching destroyed GPU buffers.
+  private disposed = false
+  // Reused uniform staging, so the per-frame hot path allocates no ArrayBuffer.
+  // Ramp: [count, lodLevels] (u32) + [fadeStep, eps] (f32). Keys: count (u32) + cam
+  // (f32 ×3). Two views over one 16-byte buffer each (declared before the views).
+  private readonly rampUniformBuffer = new ArrayBuffer(16)
+  private readonly rampUniformU32 = new Uint32Array(this.rampUniformBuffer, 0, 2)
+  private readonly rampUniformF32 = new Float32Array(this.rampUniformBuffer, 8, 2)
+  private readonly keyUniformBuffer = new ArrayBuffer(16)
+  private readonly keyUniformU32 = new Uint32Array(this.keyUniformBuffer, 0, 1)
+  private readonly keyUniformF32 = new Float32Array(this.keyUniformBuffer, 4, 3)
 
   /**
    * @param octree The spatial octree with per-leaf LOD counts (built at load).
@@ -449,6 +461,9 @@ export class SplatLodPipeline {
     camZ: number,
     fadeStep: number
   ): boolean {
+    if (this.disposed) {
+      return false
+    }
     const rendererLike = renderer as WebGpuRendererLike
     if (!this.initDevice(rendererLike)) {
       return false
@@ -485,16 +500,19 @@ export class SplatLodPipeline {
       this.leafTargetDirty = false
     }
 
-    // Ramp uniform: count + lodLevels (u32), fadeStep + eps (f32).
-    const rampBuf = new ArrayBuffer(16)
-    new Uint32Array(rampBuf, 0, 2).set([this.count, this.lodLevels])
-    new Float32Array(rampBuf, 8, 2).set([fadeStep, ALIVE_EPSILON])
-    device.queue.writeBuffer(this.rampUniform!, 0, rampBuf)
+    // Ramp uniform: count + lodLevels (u32), fadeStep + eps (f32). Written into the
+    // reused staging buffer (no per-frame allocation).
+    this.rampUniformU32[0] = this.count
+    this.rampUniformU32[1] = this.lodLevels
+    this.rampUniformF32[0] = fadeStep
+    this.rampUniformF32[1] = ALIVE_EPSILON
+    device.queue.writeBuffer(this.rampUniform!, 0, this.rampUniformBuffer)
     // Keys uniform: count (u32) + camera (f32 ×3).
-    const keyBuf = new ArrayBuffer(16)
-    new Uint32Array(keyBuf, 0, 1)[0] = this.count
-    new Float32Array(keyBuf, 4, 3).set([camX, camY, camZ])
-    device.queue.writeBuffer(this.keysUniform!, 0, keyBuf)
+    this.keyUniformU32[0] = this.count
+    this.keyUniformF32[0] = camX
+    this.keyUniformF32[1] = camY
+    this.keyUniformF32[2] = camZ
+    device.queue.writeBuffer(this.keysUniform!, 0, this.keyUniformBuffer)
 
     const wg = Math.ceil(this.count / RAMP_WORKGROUP_SIZE)
     const encoder = device.createCommandEncoder()
@@ -527,6 +545,7 @@ export class SplatLodPipeline {
   }
 
   dispose(): void {
+    this.disposed = true
     this.radix?.dispose()
     this.prefixSum?.dispose()
     this.splatLeaf?.destroy()

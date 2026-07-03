@@ -90,10 +90,12 @@ const Content: FC = () => {
     debug: { value: 'flipYZ', options: ['flipYZ', 'raw', 'isotropic'] },
     // No AgX tonemapping here (unlike the twin), so 1 = true 0..1 capture colour.
     intensity: { value: 1, min: 0, max: 4, step: 0.01 },
-    // Screen-space LOD cull (px). Collapses splats whose projected stddev is below
-    // this → zero fragments → bounds transparent overdraw (the 4M GPU bottleneck).
-    // Crank up to trade far-field density for fps; 0 draws every splat.
-    lodSize: { value: 1, min: 0, max: 8, step: 0.1 },
+    // Screen-space LOD cull (px): collapses splats whose projected stddev is below
+    // this → zero fragments → bounds transparent overdraw. Default 0 (off) because
+    // the octree LOD budget is now the real LOD mechanism; this is a HARD cull (no
+    // fade → pops), so with LOD on it would double-thin and pop the budgeted far
+    // field. Useful mainly with LOD OFF, to bound full-cloud overdraw.
+    lodSize: { value: 0, min: 0, max: 8, step: 0.1 },
     // Octree-LOD render budget: max splats DRAWN per frame. The LOD selector
     // coarsens the farthest octree leaves to fit this, bounding overdraw. Live (no
     // reload). `maxSplats` caps what's LOADED; `budget` caps what's drawn.

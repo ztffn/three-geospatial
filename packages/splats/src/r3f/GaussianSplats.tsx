@@ -1,3 +1,9 @@
+// React Three Fiber component for the WebGL splat path: loads a PLY URL (or accepts
+// pre-parsed data), builds a GaussianSplatMesh, and drives mesh.update() each frame.
+// The WebGL counterpart to the WebGPU-only <GaussianSplatsGPU> (webgpu entry point).
+// Kept in the r3f entry so this component-only file hot-reloads without pulling the
+// core package, avoiding the circular-dep / fast-refresh issues the split prevents.
+
 import { useFrame, useThree, type ThreeElements } from '@react-three/fiber'
 import {
   forwardRef,

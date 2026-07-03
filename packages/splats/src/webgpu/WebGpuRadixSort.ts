@@ -4,16 +4,16 @@
 // the workgroup-shared atomic arrays these kernels need, so this runs PlayCanvas's
 // WGSL verbatim on the renderer's shared GPUDevice. Sorts key→index pairs on-GPU.
 
+import { GpuPrefixSum } from './GpuPrefixSum'
+
 // 4-bit radix: 16 buckets/pass, 256 threads (16x16), 8 elements/thread = 2048
 // elements/workgroup. 32-bit keys → 8 passes. These match PlayCanvas's constants;
 // the per-pass values (current bit, first/last-pass flags) that PlayCanvas bakes
-// as shader constants are uniforms here so one pipeline serves every pass.
-const THREADS_PER_WORKGROUP = 256
+// as shader constants are uniforms here so one pipeline serves every pass. The
+// hierarchical block-sum scan is shared with the LOD compaction via GpuPrefixSum.
 const ELEMENTS_PER_WORKGROUP = 2048
 const BUCKET_COUNT = 16
 const BITS_PER_PASS = 4
-// Prefix-sum (Blelloch) workgroup processes 2 items/thread = 512 items.
-const PS_ITEMS_PER_WORKGROUP = 2 * THREADS_PER_WORKGROUP
 
 // Histogram pass: per-workgroup 16-bucket digit histogram via workgroup atomics,
 // written to block_sums[digit * workgroupCount + workgroupId].
@@ -161,100 +161,6 @@ fn main(
 }
 `
 
-// Blelloch exclusive scan (up-sweep + down-sweep) over one workgroup's worth of
-// items, emitting each workgroup's total to blockSums for the recursive level.
-const PREFIX_SUM_WGSL = /* wgsl */ `
-struct PrefixSumUniforms {
-  elementCount: u32,
-};
-@group(0) @binding(0) var<storage, read_write> items: array<u32>;
-@group(0) @binding(1) var<storage, read_write> blockSums: array<u32>;
-@group(0) @binding(2) var<uniform> uniforms: PrefixSumUniforms;
-
-const THREADS_PER_WORKGROUP: u32 = 256u;
-const ITEMS_PER_WORKGROUP: u32 = 512u;
-
-var<workgroup> temp: array<u32, 1024>;
-
-@compute @workgroup_size(16, 16, 1)
-fn reduce_downsweep(
-  @builtin(workgroup_id) w_id: vec3<u32>,
-  @builtin(num_workgroups) w_dim: vec3<u32>,
-  @builtin(local_invocation_index) TID: u32,
-) {
-  let WORKGROUP_ID = w_id.x + w_id.y * w_dim.x;
-  let WID = WORKGROUP_ID * THREADS_PER_WORKGROUP;
-  let GID = WID + TID;
-
-  let ELM_TID = TID * 2u;
-  let ELM_GID = GID * 2u;
-
-  temp[ELM_TID] = select(items[ELM_GID], 0u, ELM_GID >= uniforms.elementCount);
-  temp[ELM_TID + 1u] = select(items[ELM_GID + 1u], 0u, ELM_GID + 1u >= uniforms.elementCount);
-
-  var offset: u32 = 1u;
-
-  for (var d: u32 = ITEMS_PER_WORKGROUP >> 1u; d > 0u; d >>= 1u) {
-    workgroupBarrier();
-    if (TID < d) {
-      var ai: u32 = offset * (ELM_TID + 1u) - 1u;
-      var bi: u32 = offset * (ELM_TID + 2u) - 1u;
-      temp[bi] += temp[ai];
-    }
-    offset *= 2u;
-  }
-
-  if (TID == 0u) {
-    let last_offset = ITEMS_PER_WORKGROUP - 1u;
-    blockSums[WORKGROUP_ID] = temp[last_offset];
-    temp[last_offset] = 0u;
-  }
-
-  for (var d: u32 = 1u; d < ITEMS_PER_WORKGROUP; d *= 2u) {
-    offset >>= 1u;
-    workgroupBarrier();
-    if (TID < d) {
-      var ai: u32 = offset * (ELM_TID + 1u) - 1u;
-      var bi: u32 = offset * (ELM_TID + 2u) - 1u;
-      let t: u32 = temp[ai];
-      temp[ai] = temp[bi];
-      temp[bi] += t;
-    }
-  }
-  workgroupBarrier();
-
-  if (ELM_GID < uniforms.elementCount) {
-    items[ELM_GID] = temp[ELM_TID];
-  }
-  if (ELM_GID + 1u < uniforms.elementCount) {
-    items[ELM_GID + 1u] = temp[ELM_TID + 1u];
-  }
-}
-
-@compute @workgroup_size(16, 16, 1)
-fn add_block_sums(
-  @builtin(workgroup_id) w_id: vec3<u32>,
-  @builtin(num_workgroups) w_dim: vec3<u32>,
-  @builtin(local_invocation_index) TID: u32,
-) {
-  let WORKGROUP_ID = w_id.x + w_id.y * w_dim.x;
-  let WID = WORKGROUP_ID * THREADS_PER_WORKGROUP;
-  let GID = WID + TID;
-  let ELM_ID = GID * 2u;
-
-  if (ELM_ID >= uniforms.elementCount) {
-    return;
-  }
-  let blockSum = blockSums[WORKGROUP_ID];
-  items[ELM_ID] += blockSum;
-
-  if (ELM_ID + 1u >= uniforms.elementCount) {
-    return;
-  }
-  items[ELM_ID + 1u] += blockSum;
-}
-`
-
 interface DispatchSize {
   x: number
   y: number
@@ -268,17 +174,6 @@ function calcDispatchSize(workgroupCount: number, max: number): DispatchSize {
   const x = Math.floor(Math.sqrt(workgroupCount))
   const y = Math.ceil(workgroupCount / x)
   return { x, y }
-}
-
-// One recursion level of the hierarchical prefix sum. `scanBindGroup` binds
-// (items, blockSums, uniform); the same binding serves the down-pass add.
-interface PrefixSumLevel {
-  count: number
-  workgroupCount: number
-  dispatch: DispatchSize
-  blockSumBuffer: GPUBuffer
-  uniformBuffer: GPUBuffer
-  bindGroup: GPUBindGroup
 }
 
 /**
@@ -299,11 +194,8 @@ export class WebGpuRadixSort {
 
   private readonly histogramPipeline: GPUComputePipeline
   private readonly reorderPipeline: GPUComputePipeline
-  private readonly scanPipeline: GPUComputePipeline
-  private readonly addBlockPipeline: GPUComputePipeline
   private readonly histogramLayout: GPUBindGroupLayout
   private readonly reorderLayout: GPUBindGroupLayout
-  private readonly prefixSumLayout: GPUBindGroupLayout
 
   private count = 0
   private keysBuffer: GPUBuffer | null = null
@@ -317,7 +209,9 @@ export class WebGpuRadixSort {
   private readonly histogramBindGroups: GPUBindGroup[] = []
   private readonly reorderBindGroups: GPUBindGroup[] = []
   private readonly radixUniformBuffers: GPUBuffer[] = []
-  private prefixSumLevels: PrefixSumLevel[] = []
+  // Hierarchical block-sum scan (shared implementation), rebuilt in `ensure` when the
+  // block-sum buffer / count changes.
+  private prefixSum: GpuPrefixSum | null = null
 
   constructor(device: GPUDevice, numBits = 32, seedGidValues = true) {
     this.device = device
@@ -351,17 +245,8 @@ export class WebGpuRadixSort {
         { binding: 5, visibility: C, buffer: uniform }
       ]
     })
-    this.prefixSumLayout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: C, buffer: storageRW },
-        { binding: 1, visibility: C, buffer: storageRW },
-        { binding: 2, visibility: C, buffer: uniform }
-      ]
-    })
-
     const histogramModule = device.createShaderModule({ code: HISTOGRAM_WGSL })
     const reorderModule = device.createShaderModule({ code: REORDER_WGSL })
-    const prefixSumModule = device.createShaderModule({ code: PREFIX_SUM_WGSL })
 
     this.histogramPipeline = device.createComputePipeline({
       layout: device.createPipelineLayout({
@@ -374,18 +259,6 @@ export class WebGpuRadixSort {
         bindGroupLayouts: [this.reorderLayout]
       }),
       compute: { module: reorderModule, entryPoint: 'main' }
-    })
-    this.scanPipeline = device.createComputePipeline({
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [this.prefixSumLayout]
-      }),
-      compute: { module: prefixSumModule, entryPoint: 'reduce_downsweep' }
-    })
-    this.addBlockPipeline = device.createComputePipeline({
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [this.prefixSumLayout]
-      }),
-      compute: { module: prefixSumModule, entryPoint: 'add_block_sums' }
     })
   }
 
@@ -479,53 +352,13 @@ export class WebGpuRadixSort {
       )
     }
 
-    this.buildPrefixSumLevels(BUCKET_COUNT * workgroupCount)
-  }
-
-  // Recursive Blelloch scan over `itemCount` block-sum entries: each level scans
-  // its items in place and emits per-workgroup totals to a deeper level; the down
-  // pass adds the scanned totals back. Mirrors PlayCanvas's PrefixSumKernel.
-  private buildPrefixSumLevels(itemCount: number): void {
-    const device = this.device
-    const levels: PrefixSumLevel[] = []
-    let items = this.blockSums!
-    let count = itemCount
-
-    for (;;) {
-      const workgroupCount = Math.max(
-        1,
-        Math.ceil(count / PS_ITEMS_PER_WORKGROUP)
-      )
-      const blockSumBuffer = WebGpuRadixSort.storageBuffer(device, workgroupCount)
-      const uniformBuffer = device.createBuffer({
-        size: 16,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-      })
-      device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([count]))
-      const bindGroup = device.createBindGroup({
-        layout: this.prefixSumLayout,
-        entries: [
-          { binding: 0, resource: { buffer: items } },
-          { binding: 1, resource: { buffer: blockSumBuffer } },
-          { binding: 2, resource: { buffer: uniformBuffer } }
-        ]
-      })
-      levels.push({
-        count,
-        workgroupCount,
-        dispatch: calcDispatchSize(workgroupCount, this.maxWorkgroupsPerDim),
-        blockSumBuffer,
-        uniformBuffer,
-        bindGroup
-      })
-      if (workgroupCount <= 1) {
-        break
-      }
-      items = blockSumBuffer
-      count = workgroupCount
-    }
-
-    this.prefixSumLevels = levels
+    // Exclusive scan over the per-digit block sums, shared with the LOD compaction.
+    this.prefixSum?.dispose()
+    this.prefixSum = new GpuPrefixSum(
+      this.device,
+      this.blockSums,
+      BUCKET_COUNT * workgroupCount
+    )
   }
 
   private static pass(
@@ -604,26 +437,8 @@ export class WebGpuRadixSort {
         this.histogramBindGroups[pass],
         this.dispatch
       )
-      // Exclusive scan over block sums (in place), forward then down pass.
-      for (const level of this.prefixSumLevels) {
-        WebGpuRadixSort.pass(
-          encoder,
-          this.scanPipeline,
-          level.bindGroup,
-          level.dispatch
-        )
-      }
-      for (let i = this.prefixSumLevels.length - 1; i >= 0; i--) {
-        const level = this.prefixSumLevels[i]
-        if (level.workgroupCount > 1) {
-          WebGpuRadixSort.pass(
-            encoder,
-            this.addBlockPipeline,
-            level.bindGroup,
-            level.dispatch
-          )
-        }
-      }
+      // Exclusive scan over the per-digit block sums (in place).
+      this.prefixSum!.encodeScan(encoder)
       // Ranked scatter.
       WebGpuRadixSort.pass(
         encoder,
@@ -643,10 +458,8 @@ export class WebGpuRadixSort {
     for (const buffer of this.radixUniformBuffers) {
       buffer.destroy()
     }
-    for (const level of this.prefixSumLevels) {
-      level.blockSumBuffer.destroy()
-      level.uniformBuffer.destroy()
-    }
+    this.prefixSum?.dispose()
+    this.prefixSum = null
     this.keys0 = null
     this.keys1 = null
     this.values0 = null
@@ -655,7 +468,6 @@ export class WebGpuRadixSort {
     this.histogramBindGroups.length = 0
     this.reorderBindGroups.length = 0
     this.radixUniformBuffers.length = 0
-    this.prefixSumLevels = []
     this.keysBuffer = null
     this.count = 0
   }
