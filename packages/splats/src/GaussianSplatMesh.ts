@@ -62,7 +62,8 @@ export interface SplatMaterial extends Material {
     cameraLocal: Vector3,
     camera: Camera,
     dispatchCount: number,
-    setCompactCount: boolean
+    setCompactCount: boolean,
+    force?: boolean
   ) => void
   /**
    * Order storage attribute (instance → splat id) a GPU sorter / LOD pipeline writes
@@ -358,21 +359,25 @@ export class GaussianSplatMesh extends Mesh<
         if (ran && !moved) {
           this.fadeElapsedMs += dtMs
         }
-        // Prepare: dispatched indirectly over the GPU-compacted drawn set
-        // (`setCompactCount = false` leaves the compact-count buffer to the pipeline).
-        // Always called here — also on warm-up, so the compute creates the material's
-        // storage buffers and the indirect dispatch buffer.
-        this.material.updatePrepare?.(
-          renderer,
-          scratchModelView,
-          scratchCameraLocal,
-          camera,
-          this.geometry.count,
-          false
-        )
       }
-      // Settled + static: the last GPU state (order, alpha, indirect args) persists,
-      // so the continuous render keeps drawing the correct frame at no extra cost.
+      // Project EVERY frame so the on-screen splat positions track the camera —
+      // decoupled from the re-select/re-sort trigger (which only fires every ~0.5°;
+      // if the projection were gated with it, the splats would freeze between
+      // triggers and snap as the camera moves). The material's own view-change skip
+      // keeps a settled static camera free; `force = moved` guarantees a re-project
+      // when the drawn set just changed (new selection / budget), even under a static
+      // camera. Also runs during warm-up, so the compute creates the material's
+      // storage + indirect buffers. `setCompactCount = false`: the pipeline owns the
+      // compact-count buffer.
+      this.material.updatePrepare?.(
+        renderer,
+        scratchModelView,
+        scratchCameraLocal,
+        camera,
+        this.geometry.count,
+        false,
+        moved
+      )
       return
     }
 

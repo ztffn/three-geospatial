@@ -56,6 +56,16 @@ export interface GaussianSplatsGPUProps extends GroupProps {
   intensity?: number
   /** Render order of the splat mesh (default 2, after opaque geometry). */
   renderOrder?: number
+  /**
+   * Emit logarithmic depth so the splats depth-test against a scene rendered with
+   * `renderer.logarithmicDepthBuffer` (e.g. a globe/twin). Must match the renderer.
+   */
+  logarithmicDepthBuffer?: boolean
+  /**
+   * Write depth so a deferred atmosphere / aerial-perspective post-pass treats splat
+   * pixels as scene geometry (occlusion mask) instead of painting sky over them.
+   */
+  depthWrite?: boolean
 }
 
 /**
@@ -76,6 +86,8 @@ export const GaussianSplatsGPU = forwardRef<
     sortThresholdDegrees,
     intensity = 1,
     renderOrder = 2,
+    logarithmicDepthBuffer = false,
+    depthWrite = false,
     ...props
   },
   ref
@@ -108,11 +120,16 @@ export const GaussianSplatsGPU = forwardRef<
     }
     let material!: GaussianSplatNodeMaterial
     const useLod = lod != null
+    // The LOD path REQUIRES the per-splat alpha buffer (the fragment must bind it so
+    // Three creates it — the pipeline can't allocate it), so LOD always drives the
+    // cross-fade. `fadeStep` (mesh option) tunes fade speed; there is no lod-without-fade.
     const mesh = new GaussianSplatMesh(loaded, {
       createMaterial: geometry => {
-        // The LOD path scales coverage by the per-splat alpha cross-fade; the
-        // full-cloud path leaves coverage unscaled.
-        material = new GaussianSplatNodeMaterial(geometry, { lodFade: useLod })
+        material = new GaussianSplatNodeMaterial(geometry, {
+          lodFade: useLod,
+          logarithmicDepthBuffer,
+          depthWrite
+        })
         return material
       },
       sorter: new GpuSplatSorter(),
@@ -148,6 +165,13 @@ export const GaussianSplatsGPU = forwardRef<
       state.material.intensity.value = intensity
     }
   }, [state, intensity])
+
+  // Live LOD budget: tune the drawn-splat cap without rebuilding the mesh.
+  useEffect(() => {
+    if (mesh != null && lod?.budget != null) {
+      mesh.setLodBudget(lod.budget)
+    }
+  }, [mesh, lod?.budget])
 
   // ref.current is null until the file finishes loading.
   useImperativeHandle(ref, () => mesh!, [mesh])

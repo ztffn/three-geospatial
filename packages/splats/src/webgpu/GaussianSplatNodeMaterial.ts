@@ -527,22 +527,27 @@ export class GaussianSplatNodeMaterial extends MeshBasicNodeMaterial {
     cameraLocal: Vector3,
     camera: Camera,
     dispatchCount: number,
-    setCompactCount: boolean
+    setCompactCount: boolean,
+    force = false
   ): void {
     if (this.prepareNode == null) {
       return
     }
     const projectionMatrix = camera.projectionMatrix
-    // Full-cloud / CPU-sorter path (setCompactCount): skip the dispatch when neither
-    // the view nor the count changed, so a static camera costs nothing. The LOD path
-    // (setCompactCount = false) always re-dispatches — the mesh gates it via its
-    // settle counter, and the per-splat alpha/order change every fade frame.
-    if (
-      setCompactCount &&
+    // Skip the (re-)projection when the view is unchanged and nothing forced it, so a
+    // settled static camera costs nothing. `force` (LOD path: the drawn set just
+    // changed) overrides the skip so newly selected/re-budgeted splats get projected
+    // even under a static camera. The non-LOD path also requires the dispatch count
+    // to be unchanged (it owns compactCount). Called every frame; during camera
+    // motion the view differs each frame, so the projection tracks smoothly.
+    const viewUnchanged =
       this.preparedOnce &&
-      this.lastDispatchCount === dispatchCount &&
       this.lastModelView.equals(modelView) &&
       this.lastProjection.equals(projectionMatrix)
+    if (
+      !force &&
+      viewUnchanged &&
+      (!setCompactCount || this.lastDispatchCount === dispatchCount)
     ) {
       return
     }
