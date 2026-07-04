@@ -8,10 +8,12 @@
 import path from 'node:path'
 
 import {
+  createMutationLock,
   deleteObject,
   getJson,
   getObject,
   isSafeObjectKey,
+  nowIso,
   putJson,
   putObject
 } from './storage'
@@ -51,10 +53,6 @@ export class AuthoringHttpError extends Error {
     super(message)
     this.name = 'AuthoringHttpError'
   }
-}
-
-function nowIso(): string {
-  return new Date().toISOString()
 }
 
 function id(prefix: string): string {
@@ -118,19 +116,7 @@ async function writeManifest(
   return normalized
 }
 
-// Serializes manifest read-modify-write. Each mutation awaits the previous one
-// (chaining regardless of success/failure) so two overlapping requests can't
-// both read the same base manifest and clobber each other's write.
-let manifestMutation: Promise<unknown> = Promise.resolve()
-
-function withManifestLock<T>(run: () => Promise<T>): Promise<T> {
-  const next = manifestMutation.then(run, run)
-  manifestMutation = next.then(
-    () => undefined,
-    () => undefined
-  )
-  return next
-}
+const withManifestLock = createMutationLock()
 
 function publicMediaUrl(objectKey: string): string {
   return `/api/authoring/media/${encodeURIComponent(objectKey)}`
@@ -141,6 +127,7 @@ function toRuntimeDeck(deck: SlideshowDeck): RuntimeSlideshowDeck {
     id: deck.id,
     scenarioId: deck.scenarioId,
     label: deck.label,
+    enabled: deck.enabled,
     order: deck.order,
     slides: sortByOrder(deck.slides).map(slide => ({
       id: slide.id,

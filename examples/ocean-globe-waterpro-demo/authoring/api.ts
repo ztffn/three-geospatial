@@ -1,9 +1,9 @@
-// HTTP routing for the slideshow authoring API (mounted under /api/authoring by
-// both the prod server and the dev Vite plugin). Owns request parsing, the
-// admin-cookie session (HMAC of TWIN_ADMIN_TOKEN, timing-safe compare) and the
-// requireAdmin gate on every mutation; the actual persistence lives in
-// slideshowStore. GET read routes are public but strip admin-only concerns
-// (disabled/draft decks) for unauthenticated callers.
+// HTTP routing for the authoring API (mounted under /api/authoring by both the
+// prod server and the dev Vite plugin): slideshow deck/slide CRUD + media, and
+// the authored site manifest (GET public, PUT admin). Owns request parsing,
+// the admin-cookie session (HMAC of TWIN_ADMIN_TOKEN, timing-safe compare) and
+// the requireAdmin gate on every mutation; persistence lives in slideshowStore
+// and siteStore. Public GETs strip admin-only concerns (disabled decks).
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -23,6 +23,7 @@ import {
   reorderScenarioDecks,
   reorderSlides
 } from './slideshowStore'
+import { getSiteManifest, MAX_SITE_BYTES, putSite } from './siteStore'
 import type {
   CreateDeckInput,
   OrderInput,
@@ -224,6 +225,41 @@ async function routeAuthoringRequest(
       return
     }
     sendJson(res, 405, { error: 'method not allowed' })
+    return
+  }
+
+  // Authored site manifest. GET is public and returns only what has been
+  // authored (committed seeds stay client-side; the client merges them);
+  // PUT upserts one validated SiteDefinition and is admin-gated.
+  if (parts[0] === 'sites' && parts.length === 1) {
+    if (reqMethod !== 'GET') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return
+    }
+    const manifest = await getSiteManifest()
+    sendJson(res, 200, {
+      sites: manifest?.sites ?? [],
+      updatedAt: manifest?.updatedAt ?? null
+    })
+    return
+  }
+
+  if (parts[0] === 'sites' && parts.length === 2) {
+    if (reqMethod !== 'PUT') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return
+    }
+    if (!requireAdmin(req, res)) return
+    const declaredLength = Number(req.headers['content-length'])
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_SITE_BYTES) {
+      sendJson(res, 413, { error: 'site definition exceeds 2MB limit' })
+      return
+    }
+    const manifest = await putSite(parts[1], await readJson<unknown>(req))
+    sendJson(res, 200, {
+      site: manifest.sites.find(site => site.id === parts[1]),
+      updatedAt: manifest.updatedAt
+    })
     return
   }
 

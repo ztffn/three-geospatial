@@ -28,7 +28,7 @@ import {
   SlideshowDeckLauncher,
   SlideshowModal,
   type SlideshowControlsState
-} from './SlideshowAuthoring'
+} from './SlideshowViewer'
 import type { TurbineStatus, TurbineTelemetry } from './turbineModel'
 import type { MetSample } from './useMetForecast'
 
@@ -1519,7 +1519,10 @@ const ScenarioPanel: FC<ScenarioControlsState> = ({
               })}
             </div>
           )}
-          {active && slideshows != null && (
+          {/* Published decks only — deck management lives on /author. The
+              wrapper is guarded so a deck list with nothing published adds
+              no dead padding (author mode's list includes drafts). */}
+          {active && slideshows != null && slideshows.decks.some(d => d.enabled) && (
             <div
               style={{
                 display: 'flex',

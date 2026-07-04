@@ -2058,6 +2058,33 @@ const TurbineFarm: FC<{
 // AgX tonemap rolloff and reads as flat / washed-out.
 const SCENE_RADIANCE_SCALE = 0.28
 
+// The fly-to command payload the CameraRig consumes (host pages build these;
+// see examples/ocean-globe-waterpro-demo/app/cameraCommands.ts).
+export interface FlyToTarget {
+  longitude: number
+  latitude: number
+  name: string
+  height?: number
+  aimOffsetENU?: [number, number, number]
+  // Target orbit distance for this fly (owned by the fly animation, NOT the
+  // zoom slider — so it can't race the slider-ease into a pre-fly snap).
+  distance?: number
+  headingDeg?: number
+  pitchDeg?: number
+  // Turbine facing (deg) headingDeg was framed at. Set on close-ups that frame
+  // the yawing nacelle/rotor: the camera heading gets the live-yaw delta added
+  // (see flyHeadingDeg) so it circles WITH the model instead of the framed part
+  // rotating away under a fixed compass heading. Omitted → absolute world heading.
+  headingRefYaw?: number
+  // Gentle recenter: ease the orbit centre at the CURRENT distance, no
+  // great-circle pull-out arc (clicking a globe marker — already pulled back).
+  gentle?: boolean
+  // Monotonic fly id from the host: the rig re-flies whenever this changes, so
+  // a viewpoint click re-frames even when target/aim are identical (e.g. two
+  // close-ups sharing an aim, or re-selecting after the wind/heading changed).
+  nonce?: number
+}
+
 // Optional probe hook for standalone-deploy readiness gating (no-op in
 // Storybook). Fires once the atmosphere context + ocean manager refs are
 // available so a host page can poll their compute/build state and decide
@@ -2070,6 +2097,13 @@ export interface ContentReadinessRefs {
   // so the splash only fades after the first visible frame is already warm (no
   // synchronous compile hitch at reveal). See PERFORMANCE-FINDINGS.md item A.
   isPrewarmed: () => boolean
+  // Live orbit-camera pose in ECEF, for the host's viewpoint-capture tooling
+  // (the deploy's author mode). Null while OrbitControls are absent (FPS mode,
+  // pre-mount). Same data the leva 'Dump view' button logs, machine-readable.
+  getCameraPose?: () => {
+    position: [number, number, number]
+    target: [number, number, number]
+  } | null
 }
 
 export const Content: FC<{
@@ -2126,30 +2160,7 @@ export const Content: FC<{
   //     it) stays put while the camera flies to e.g. the ship or underwater.
   //   autoRotate / zoomDistance: override the leva autoOrbit / orbit distance.
   //   wingsEnabled: master on/off for rotor spin (lerps to a halt).
-  flyTo?: {
-    longitude: number
-    latitude: number
-    name: string
-    height?: number
-    aimOffsetENU?: [number, number, number]
-    // Target orbit distance for this fly (owned by the fly animation, NOT the
-    // zoom slider — so it can't race the slider-ease into a pre-fly snap).
-    distance?: number
-    headingDeg?: number
-    pitchDeg?: number
-    // Turbine facing (deg) headingDeg was framed at. Set on close-ups that frame
-    // the yawing nacelle/rotor: the camera heading gets the live-yaw delta added
-    // (see flyHeadingDeg) so it circles WITH the model instead of the framed part
-    // rotating away under a fixed compass heading. Omitted → absolute world heading.
-    headingRefYaw?: number
-    // Gentle recenter: ease the orbit centre at the CURRENT distance, no
-    // great-circle pull-out arc (clicking a globe marker — already pulled back).
-    gentle?: boolean
-    // Monotonic fly id from the host: the rig re-flies whenever this changes, so
-    // a viewpoint click re-frames even when target/aim are identical (e.g. two
-    // close-ups sharing an aim, or re-selecting after the wind/heading changed).
-    nonce?: number
-  } | null
+  flyTo?: FlyToTarget | null
   // 'orbit' (default): OrbitControls + CameraRig fly-tos. 'fps': free-fly
   // first-person rig (WASD + drag look); OrbitControls and the rig are
   // suspended, and the camera teleports to `fpsSpawn`.
@@ -2314,9 +2325,17 @@ export const Content: FC<{
     onReadinessRefs({
       atmosphereContext: context,
       getOceanManager: () => oceanManagerRef.current,
-      isPrewarmed: () => prewarmDoneRef.current
+      isPrewarmed: () => prewarmDoneRef.current,
+      getCameraPose: () => {
+        const target = orbitControlsRef.current?.target
+        if (target == null) return null
+        return {
+          position: camera.position.toArray() as [number, number, number],
+          target: target.toArray() as [number, number, number]
+        }
+      }
     })
-  }, [context, onReadinessRefs])
+  }, [context, onReadinessRefs, camera])
 
   // PBR IBL via the atmosphere's sky environment cube. Load-bearing — without
   // it, MeshStandardNodeMaterial collapses to ~black at low sun angles (NdotL
