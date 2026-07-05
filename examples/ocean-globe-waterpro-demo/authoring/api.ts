@@ -232,14 +232,16 @@ async function routeAuthoringRequest(
   }
 
   // Authored site manifest. GET is public and returns only what has been
-  // authored (committed seeds stay client-side; the client merges them);
-  // PUT upserts one validated SiteDefinition and is admin-gated.
+  // authored (committed seeds stay client-side; the client merges them),
+  // minus any draft (enabled: false) scenarios unless an authenticated admin
+  // session asks for them via ?includeDisabled=1. PUT upserts one validated
+  // SiteDefinition and is admin-gated.
   if (parts[0] === 'sites' && parts.length === 1) {
     if (reqMethod !== 'GET') {
       sendJson(res, 405, { error: 'method not allowed' })
       return
     }
-    const manifest = await getSiteManifest()
+    const manifest = await getSiteManifest(includeDisabled(url, req))
     sendJson(res, 200, {
       sites: manifest?.sites ?? [],
       updatedAt: manifest?.updatedAt ?? null

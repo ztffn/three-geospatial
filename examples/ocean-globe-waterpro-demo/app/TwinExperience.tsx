@@ -174,9 +174,9 @@ export interface AuthorSlotContext {
 const AUTHOR_DOCK_WIDTH = 320
 
 export interface TwinExperienceProps {
-  // Author mode: fetch disabled decks too (honored server-side only for an
-  // authenticated admin session).
-  includeDisabledDecks?: boolean
+  // Author mode: fetch draft slideshows/scenarios too (honored server-side
+  // only for an authenticated admin session).
+  isAuthorMode?: boolean
   // Author mode: content for the docked sidebar. When present, the layout
   // becomes a split workspace — an opaque sidebar the slot fills, and the
   // scene pane holding the canvas plus the ENTIRE visitor overlay. The pane
@@ -188,7 +188,7 @@ export interface TwinExperienceProps {
 }
 
 export const TwinExperience: FC<TwinExperienceProps> = ({
-  includeDisabledDecks = false,
+  isAuthorMode = false,
   authorSlot
 }) => {
   // Active scene location, surfaced from Content's leva 'Location' control so
@@ -237,16 +237,23 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
     null
   )
   const [slideshowOpen, setSlideshowOpen] = useState(false)
-  const slideshows = useScenarioSlideshows(activeScenario, includeDisabledDecks)
+  const slideshows = useScenarioSlideshows(activeScenario, isAuthorMode)
 
   // Runtime scenario catalogue: static (code-owned) entries — extended with
   // authored views where a site's anchor allows — plus author-created
   // scenarios from the site manifest. Static wins on id collision; authored
   // data adds, never replaces (inspector payloads, FPS spawns, settings).
-  const authored = useAuthoredSites()
+  const authored = useAuthoredSites(isAuthorMode)
+  // Full catalogue, including drafts — author mode manages every scenario
+  // from this (authorContext.scenarios.list below). Visitors only ever see
+  // visibleScenarios (the scenario picker in scenarioControls further down).
   const scenarios = useMemo(
     () => composeScenarioCatalogue(SCENARIOS, authored.sites),
     [authored.sites]
+  )
+  const visibleScenarios = useMemo(
+    () => scenarios.filter(s => s.enabled !== false),
+    [scenarios]
   )
 
   // The active scenario definition, resolved once per change instead of a
@@ -816,7 +823,7 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
         }
         scenarioControls={
           {
-            scenarios,
+            scenarios: visibleScenarios,
             activeScenario,
             activeViewpoint,
             onSelect: handleScenarioSelect,

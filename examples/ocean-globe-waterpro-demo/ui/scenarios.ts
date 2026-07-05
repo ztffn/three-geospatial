@@ -145,6 +145,10 @@ export interface Scenario {
   preset?: string
   // Pins time-of-day and/or suppresses live weather for this scenario.
   environment?: ScenarioEnvironment
+  // Publish state for an AUTHORED scenario (always true/omitted for static,
+  // code-owned ones — see SiteScenario.enabled). false = draft: filtered out
+  // for visitors server-side, still visible/manageable in author mode.
+  enabled?: boolean
   // Turbine farm size at this site (default 0 — scenarios are not wind farms).
   turbines?: number
   // Static AIS readings for vessel scenarios; replaces the turbine inspector.

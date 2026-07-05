@@ -113,7 +113,7 @@ const AuthorApp: FC = () => {
   }
   return (
     <TwinExperience
-      includeDisabledDecks
+      isAuthorMode
       authorSlot={ctx => <AuthorSidebar ctx={ctx} session={session} />}
     />
   )

@@ -59,6 +59,7 @@ export function siteScenariosToRuntime(site: SiteDefinition): Scenario[] {
       label: scenario.label,
       turbines: 0,
       environment: scenario.environment ?? undefined,
+      enabled: scenario.enabled ?? true,
       viewpoints: orderedViewpoints(scenario).map(viewpoint =>
         toRuntimeViewpoint(site, viewpoint)
       )
@@ -113,11 +114,29 @@ function authoredEnvironment(
   return undefined
 }
 
+// Authored publish state for a static scenario, from the same extension
+// entry. `undefined` when no site has an opinion (always live); a static
+// scenario stays IN the composed catalogue regardless (an author must still
+// be able to see and re-enable it) — the visitor-facing list is what
+// actually filters on `enabled` (see TwinExperience.tsx).
+function authoredEnabled(
+  staticScenario: Scenario,
+  sites: SiteDefinition[]
+): boolean | undefined {
+  for (const site of sites) {
+    if (!scenarioAcceptsSiteViews(staticScenario, site)) continue
+    const entry = site.scenarios.find(s => s.id === staticScenario.id)
+    if (entry?.enabled != null) return entry.enabled
+  }
+  return undefined
+}
+
 // The full runtime catalogue: static scenarios (each extended with authored
-// views where the anchor allows, and with its environment override applied
-// if a host site has one), then new authored scenarios. Static wins on id
-// collision — authored data adds scenarios/views and can override the
-// environment, never replaces the richer code-owned definitions otherwise.
+// views where the anchor allows, and with its environment/publish overrides
+// applied if a host site has one), then new authored scenarios. Static wins
+// on id collision — authored data adds scenarios/views and can override
+// environment/enabled, never replaces the richer code-owned definitions
+// otherwise.
 export function composeScenarioCatalogue(
   staticScenarios: Scenario[],
   sites: SiteDefinition[]
@@ -130,12 +149,20 @@ export function composeScenarioCatalogue(
       )
     )
     const envOverride = authoredEnvironment(scenario, sites)
-    if (extras.length === 0 && envOverride === undefined) return scenario
+    const enabledOverride = authoredEnabled(scenario, sites)
+    if (
+      extras.length === 0 &&
+      envOverride === undefined &&
+      enabledOverride === undefined
+    ) {
+      return scenario
+    }
     return {
       ...scenario,
       ...(envOverride !== undefined
         ? { environment: envOverride ?? undefined }
         : null),
+      ...(enabledOverride !== undefined ? { enabled: enabledOverride } : null),
       viewpoints: [...scenario.viewpoints, ...extras]
     }
   })

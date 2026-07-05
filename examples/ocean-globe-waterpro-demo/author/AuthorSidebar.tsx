@@ -32,6 +32,7 @@ import {
   fieldStyle,
   iconButtonStyle,
   labelStyle,
+  LIVE,
   MONO,
   MUTED,
   SANS,
@@ -139,7 +140,20 @@ const NavRow: FC<{
   onRename?: (label: string) => void
   onDelete?: () => void
   deleteTitle?: string
-}> = ({ label, active, tag, indent, onSelect, onRename, onDelete, deleteTitle }) => {
+  // Publish toggle, shown as a separate control beside the row (a nested
+  // button inside the row's own select-button isn't valid HTML).
+  liveBadge?: { enabled: boolean; onToggle: () => void }
+}> = ({
+  label,
+  active,
+  tag,
+  indent,
+  onSelect,
+  onRename,
+  onDelete,
+  deleteTitle,
+  liveBadge
+}) => {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(label)
   useEffect(() => {
@@ -230,6 +244,32 @@ const NavRow: FC<{
               {tag}
             </span>
           )}
+        </button>
+      )}
+      {liveBadge != null && (
+        <button
+          type='button'
+          className='au-btn'
+          title={
+            liveBadge.enabled
+              ? 'Live for visitors — click to unpublish'
+              : 'Draft — click to publish'
+          }
+          onClick={liveBadge.onToggle}
+          style={{
+            ...buttonStyle,
+            height: 26,
+            padding: '0 6px',
+            fontSize: 9,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            color: liveBadge.enabled ? LIVE : MUTED,
+            borderColor: liveBadge.enabled
+              ? 'rgba(134, 199, 161, 0.35)'
+              : undefined
+          }}
+        >
+          {liveBadge.enabled ? 'Live' : 'Draft'}
         </button>
       )}
       {onDelete != null && (
@@ -338,6 +378,17 @@ const AuthorSidebarImpl: FC<{
                       }
                     : undefined
                 }
+                liveBadge={{
+                  enabled: scenario.enabled ?? true,
+                  onToggle: () => {
+                    run(
+                      authoring.setEnabled(
+                        scenario.id,
+                        !(scenario.enabled ?? true)
+                      )
+                    )
+                  }
+                }}
                 deleteTitle='Delete scenario and its views'
               />
             )

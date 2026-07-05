@@ -119,6 +119,11 @@ export interface SiteScenario {
   // replaces its code default; `null` explicitly clears back to that
   // default (vs. omitting the field, which just means "never touched").
   environment?: ScenarioEnvironment | null
+  // Publish state — false hides this scenario from visitors (stripped
+  // server-side, not just client-filtered). Omitted/true = live. Only
+  // meaningful for authored scenarios; static (code-owned) ones are always
+  // live.
+  enabled?: boolean
   viewpoints: SiteViewpoint[]
   panelIds?: string[]
   annotationIds?: string[]

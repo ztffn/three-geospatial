@@ -58,6 +58,11 @@ export interface SiteAuthoringState {
   addScenario: (label: string) => void
   renameScenario: (scenarioId: string, label: string) => Promise<void>
   deleteScenario: (scenarioId: string) => Promise<void>
+  // Publish/unpublish an authored scenario (draft scenarios are stripped for
+  // visitors server-side). Only meaningful for authored scenarios — a
+  // pending one has no home to write into yet, and a static one is always
+  // live via its code.
+  setEnabled: (scenarioId: string, enabled: boolean) => Promise<void>
   // Captures the pose as a view of the scenario. For a pending scenario this
   // also assigns its anchor (nearest existing one, or minted at the aim
   // point). Throws a user-facing message when the pose is too far from an
@@ -397,6 +402,30 @@ export function useSiteAuthoring(
     [owningEntry, hostSiteOf, patchScenario, putSite]
   )
 
+  // Same upsert as setEnvironment: a static (built-in) scenario with no
+  // authored entry yet still needs one minted in its host site so the draft
+  // marker has somewhere to live.
+  const setEnabled = useCallback(
+    async (scenarioId: string, enabled: boolean) => {
+      if (owningEntry(scenarioId) != null) {
+        await patchScenario(scenarioId, scenario => ({ ...scenario, enabled }))
+        return
+      }
+      const staticScenario = SCENARIOS.find(s => s.id === scenarioId)
+      if (staticScenario == null) return
+      const host = hostSiteOf(staticScenario)
+      if (host == null) return
+      await putSite({
+        ...host,
+        scenarios: [
+          ...host.scenarios,
+          { id: scenarioId, label: staticScenario.label, viewpoints: [], enabled }
+        ]
+      })
+    },
+    [owningEntry, hostSiteOf, patchScenario, putSite]
+  )
+
   return {
     saving,
     error,
@@ -407,6 +436,7 @@ export function useSiteAuthoring(
     addScenario,
     renameScenario,
     deleteScenario,
+    setEnabled,
     captureViewpoint,
     renameViewpoint,
     deleteViewpoint,

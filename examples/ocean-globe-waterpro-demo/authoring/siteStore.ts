@@ -4,6 +4,7 @@
 // stay client-side and are merged there); writes structurally validate the
 // incoming SiteDefinition and upsert it by id. Admin gating happens in api.ts.
 
+import { STATIC_SCENARIO_IDS } from '../sites/runtime'
 import type {
   SiteAnchor,
   SiteDefinition,
@@ -167,6 +168,9 @@ export function validateSiteDefinition(
         throw bad(`scenario '${id}': environment.ignoreWeather must be a boolean`)
       }
     }
+    if (scenario.enabled != null && typeof scenario.enabled !== 'boolean') {
+      throw bad(`scenario '${id}': enabled must be a boolean`)
+    }
   }
   if (!Array.isArray(site.annotations)) {
     throw bad('site.annotations must be an array')
@@ -180,8 +184,31 @@ export function validateSiteDefinition(
 }
 
 // The authored manifest, or null when nothing has been saved yet.
-export async function getSiteManifest(): Promise<StoredSiteManifest | null> {
-  return await readManifest()
+// `includeDisabled` (admin-gated in api.ts) also returns scenarios with
+// `enabled: false` in full — otherwise, a disabled entry is either stripped
+// entirely (an authored/new scenario: its captured views are genuinely
+// private pre-publish) or reduced to a bare id+enabled stub (a static
+// scenario extension: its own content is already public in the code bundle
+// regardless, but the draft marker itself must still reach visitor requests
+// — composeScenarioCatalogue needs it client-side to hide the scenario).
+export async function getSiteManifest(
+  includeDisabled = false
+): Promise<StoredSiteManifest | null> {
+  const manifest = await readManifest()
+  if (manifest == null || includeDisabled) return manifest
+  return {
+    ...manifest,
+    sites: manifest.sites.map(site => ({
+      ...site,
+      scenarios: site.scenarios.flatMap(scenario => {
+        if (scenario.enabled !== false) return [scenario]
+        if (!STATIC_SCENARIO_IDS.has(scenario.id)) return []
+        return [
+          { id: scenario.id, label: scenario.label, enabled: false, viewpoints: [] }
+        ]
+      })
+    }))
+  }
 }
 
 // Upsert one SiteDefinition by id. The URL id must match the body id so a

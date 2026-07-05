@@ -18,7 +18,11 @@ export interface AuthoredSitesState {
   refresh: () => Promise<void>
 }
 
-export function useAuthoredSites(): AuthoredSitesState {
+// includeDisabled requests the admin view (draft scenarios too); the server
+// only honors it with an authenticated admin session (see api.ts).
+export function useAuthoredSites(
+  includeDisabled = false
+): AuthoredSitesState {
   const [sites, setSites] = useState<SiteDefinition[]>([])
   const [updatedAt, setUpdatedAt] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -26,8 +30,9 @@ export function useAuthoredSites(): AuthoredSitesState {
   const refresh = useCallback(async () => {
     setError(null)
     try {
+      const suffix = includeDisabled ? '?includeDisabled=1' : ''
       const data = await jsonOrThrow<SitesResponse>(
-        await fetch('/api/authoring/sites')
+        await fetch(`/api/authoring/sites${suffix}`)
       )
       setSites(data.sites)
       setUpdatedAt(data.updatedAt)
@@ -37,7 +42,7 @@ export function useAuthoredSites(): AuthoredSitesState {
         err instanceof Error ? err.message : 'failed to load authored sites'
       )
     }
-  }, [])
+  }, [includeDisabled])
 
   useEffect(() => {
     void refresh()
