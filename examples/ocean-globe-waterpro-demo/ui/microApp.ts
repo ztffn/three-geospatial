@@ -14,11 +14,15 @@ export interface ProcessResult {
 }
 
 // Strips import/export statements (keeping only react/react-dom, which are
-// provided as UMD globals) and detects the component to mount.
+// provided as UMD globals) and detects the component to mount. The mounted
+// name is taken from whichever line is `export default` — not guessed
+// afterward by scanning for the first capitalized declaration, which would
+// pick an earlier helper component over the actual entry point.
 export function processImports(code: string): ProcessResult {
   const lines = code.split('\n')
   const processed: string[] = []
   const warnings: string[] = []
+  let defaultExportName: string | null = null
 
   for (const line of lines) {
     const fromMatch = line.match(
@@ -39,14 +43,22 @@ export function processImports(code: string): ProcessResult {
     }
 
     let processedLine = line
-    processedLine = processedLine.replace(
-      /^\s*export\s+default\s+function\s+/,
-      'function '
+    const namedDefaultFn = processedLine.match(
+      /^\s*export\s+default\s+function\s+([A-Za-z_$][\w$]*)/
     )
-    processedLine = processedLine.replace(
-      /^\s*export\s+default\s+/,
-      'const _DefaultExport = '
-    )
+    if (namedDefaultFn != null) {
+      defaultExportName = namedDefaultFn[1]
+      processedLine = processedLine.replace(
+        /^\s*export\s+default\s+function\s+/,
+        'function '
+      )
+    } else if (/^\s*export\s+default\s+/.test(processedLine)) {
+      defaultExportName = '_DefaultExport'
+      processedLine = processedLine.replace(
+        /^\s*export\s+default\s+/,
+        'const _DefaultExport = '
+      )
+    }
     processedLine = processedLine.replace(
       /^\s*export\s+(?=function\s|const\s|let\s|var\s|class\s)/,
       ''
@@ -57,11 +69,13 @@ export function processImports(code: string): ProcessResult {
   const processedCode = processed.join('\n')
   return {
     code: processedCode,
-    componentName: detectComponentName(processedCode),
+    componentName: defaultExportName ?? detectComponentName(processedCode),
     warnings
   }
 }
 
+// Fallback for code with no `export default` at all — best-effort guess at
+// the first declared component.
 function detectComponentName(code: string): string {
   const fnMatch = code.match(/\bfunction\s+([A-Z][A-Za-z0-9_]*)\s*\(/)
   if (fnMatch != null) return fnMatch[1]
@@ -73,16 +87,6 @@ function detectComponentName(code: string): string {
   if (fallback != null) return fallback[1]
   if (code.includes('_DefaultExport')) return '_DefaultExport'
   return 'App'
-}
-
-function isRawHtml(code: string): boolean {
-  const trimmed = code.trimStart().toLowerCase()
-  if (trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html')) {
-    return true
-  }
-  return /^<(style|script|div|section|main|article|aside|header|footer|nav|figure|svg|canvas|iframe|p|h[1-6]\b|ul|ol|table|form)\b/.test(
-    trimmed
-  )
 }
 
 function normalizeRawHtml(code: string): string {
@@ -107,11 +111,8 @@ ${trimmed}
 </html>`
 }
 
-// Bridges keys the parent modal needs (Escape/arrows) out of the iframe via
-// postMessage, since keydown on iframe content never bubbles to the host
-// window. SlideshowModal listens for the 'slide-nav-key' message.
-function injectKeyBridge(html: string): string {
-  const bridge = `<script>
+// Shared by both srcDoc shapes below (raw HTML and the JSX/Babel shell).
+const NAV_KEY_BRIDGE_SCRIPT = `<script>
 var NAV_KEYS = ['ArrowLeft','ArrowRight','Escape'];
 window.addEventListener('keydown', function(e) {
   if (NAV_KEYS.indexOf(e.key) !== -1) {
@@ -119,17 +120,23 @@ window.addEventListener('keydown', function(e) {
   }
 });
 </script>`
+
+// Bridges keys the parent modal needs (Escape/arrows) out of the iframe via
+// postMessage, since keydown on iframe content never bubbles to the host
+// window. SlideshowModal listens for the 'slide-nav-key' message.
+function injectKeyBridge(html: string): string {
   const idx = html.toLowerCase().lastIndexOf('</body>')
   return idx !== -1
-    ? html.slice(0, idx) + bridge + html.slice(idx)
-    : html + bridge
+    ? html.slice(0, idx) + NAV_KEY_BRIDGE_SCRIPT + html.slice(idx)
+    : html + NAV_KEY_BRIDGE_SCRIPT
 }
 
-// Generates a complete document for an iframe `srcDoc`. Raw HTML passes
-// through (with the key bridge injected); anything else is treated as a JSX
-// component and wrapped in a React 18 + Babel-standalone + Tailwind shell.
-export function generateSrcdoc(code: string): string {
-  if (isRawHtml(code)) {
+// Generates a complete document for an iframe `srcDoc`, keyed off the
+// slide's own declared type rather than sniffed from the code — sniffing
+// (e.g. by leading tag) misroutes any valid HTML fragment that doesn't start
+// with a whitelisted tag.
+export function generateSrcdoc(code: string, type: 'html' | 'jsx'): string {
+  if (type === 'html') {
     return injectKeyBridge(normalizeRawHtml(code))
   }
 
@@ -150,13 +157,8 @@ export function generateSrcdoc(code: string): string {
 </head>
 <body>
   <div id="root"></div>
+  ${NAV_KEY_BRIDGE_SCRIPT}
   <script>
-    var NAV_KEYS = ['ArrowLeft','ArrowRight','Escape'];
-    window.addEventListener('keydown', function(e) {
-      if (NAV_KEYS.indexOf(e.key) !== -1) {
-        parent.postMessage({ type: 'slide-nav-key', key: e.key }, '*');
-      }
-    });
     window.onerror = function(msg, _src, _line, _col, err) {
       var root = document.getElementById('root');
       if (root && root.childElementCount === 0) {

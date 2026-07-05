@@ -20,6 +20,7 @@ import {
 import {
   AUTHORING_MANIFEST_VERSION,
   type AddCodeSlideInput,
+  CODE_SLIDE_TYPES,
   type CreateDeckInput,
   type OrderInput,
   type PatchDeckInput,
@@ -158,6 +159,23 @@ function deckOrThrow(
   const deck = manifest.slideshows.find(candidate => candidate.id === deckId)
   if (deck == null) throw new AuthoringHttpError(404, 'slideshow not found')
   return deck
+}
+
+// Shared by addSlide/addCodeSlide/deleteSlide: replace one deck's slides,
+// leaving every other deck untouched.
+async function writeDeckSlides(
+  manifest: SiteContentManifest,
+  deckId: string,
+  slides: SlideshowSlide[]
+): Promise<SiteContentManifest> {
+  return await writeManifest({
+    ...manifest,
+    slideshows: manifest.slideshows.map(candidate =>
+      candidate.id === deckId
+        ? { ...candidate, slides, updatedAt: nowIso() }
+        : candidate
+    )
+  })
 }
 
 function mediaTypeFor(mimeType: string): SlideshowMediaType {
@@ -354,18 +372,7 @@ export async function addSlide(
       contentType: file.type,
       metadata: { originalName: file.name, contentType: file.type }
     })
-    await writeManifest({
-      ...manifest,
-      slideshows: manifest.slideshows.map(candidate =>
-        candidate.id === deckId
-          ? {
-              ...candidate,
-              slides: [...candidate.slides, slide],
-              updatedAt: nowIso()
-            }
-          : candidate
-      )
-    })
+    await writeDeckSlides(manifest, deckId, [...deck.slides, slide])
     return slide
   })
 }
@@ -375,7 +382,7 @@ export async function addCodeSlide(
   input: AddCodeSlideInput
 ): Promise<SlideshowSlide> {
   return withManifestLock(async () => {
-    if (input.type !== 'html' && input.type !== 'jsx') {
+    if (!CODE_SLIDE_TYPES.includes(input.type)) {
       throw new AuthoringHttpError(400, 'type must be html or jsx')
     }
     const code = typeof input.code === 'string' ? input.code.trim() : ''
@@ -395,18 +402,7 @@ export async function addCodeSlide(
       order: deck.slides.length,
       createdAt: nowIso()
     }
-    await writeManifest({
-      ...manifest,
-      slideshows: manifest.slideshows.map(candidate =>
-        candidate.id === deckId
-          ? {
-              ...candidate,
-              slides: [...candidate.slides, slide],
-              updatedAt: nowIso()
-            }
-          : candidate
-      )
-    })
+    await writeDeckSlides(manifest, deckId, [...deck.slides, slide])
     return slide
   })
 }
@@ -450,22 +446,11 @@ export async function deleteSlide(
     const slide = deck.slides.find(candidate => candidate.id === slideId)
     if (slide == null) throw new AuthoringHttpError(404, 'slide not found')
     if (slide.objectKey != null) await deleteObject(MEDIA_STORE, slide.objectKey)
-    await writeManifest({
-      ...manifest,
-      slideshows: manifest.slideshows.map(candidate =>
-        candidate.id === deckId
-          ? {
-              ...candidate,
-              slides: normalizeOrders(
-                candidate.slides.filter(
-                  candidateSlide => candidateSlide.id !== slideId
-                )
-              ),
-              updatedAt: nowIso()
-            }
-          : candidate
-      )
-    })
+    await writeDeckSlides(
+      manifest,
+      deckId,
+      normalizeOrders(deck.slides.filter(candidate => candidate.id !== slideId))
+    )
   })
 }
 

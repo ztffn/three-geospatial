@@ -18,6 +18,7 @@ import {
   getMedia,
   getRuntimeManifest,
   getScenarioSlideshows,
+  MAX_CODE_BYTES,
   MAX_UPLOAD_BYTES,
   patchDeck,
   patchSlide,
@@ -383,6 +384,17 @@ async function routeAuthoringRequest(
     // else is the existing multipart file upload.
     const contentType = req.headers['content-type'] ?? ''
     if (contentType.startsWith('application/json')) {
+      // Same reasoning as the multipart branch below: reject on the declared
+      // Content-Length before buffering the body. addCodeSlide's byte check
+      // remains a backstop for a missing/understated header.
+      const declaredCodeLength = Number(req.headers['content-length'])
+      if (
+        Number.isFinite(declaredCodeLength) &&
+        declaredCodeLength > MAX_CODE_BYTES
+      ) {
+        sendJson(res, 413, { error: 'code exceeds 200KB limit' })
+        return
+      }
       sendJson(res, 200, {
         slide: await addCodeSlide(parts[1], await readJson<AddCodeSlideInput>(req))
       })

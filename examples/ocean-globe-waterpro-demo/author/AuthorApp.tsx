@@ -28,9 +28,14 @@ const AuthorGate: FC<{ session: AuthorSessionState }> = ({ session }) => {
 
   const handleSubmit = (event: FormEvent): void => {
     event.preventDefault()
-    void session.login(token).then(() => {
-      setToken('')
-    })
+    // Only clear the field on success — a failed attempt (e.g. a mistyped
+    // token) should stay editable so the operator can fix it in place.
+    session.login(token).then(
+      () => {
+        setToken('')
+      },
+      () => {}
+    )
   }
 
   return (

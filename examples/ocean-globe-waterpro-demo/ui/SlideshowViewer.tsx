@@ -214,9 +214,19 @@ export const SlideshowModal: FC<{
     []
   )
 
-  if (!controls.open || deck == null) return null
+  const slide = deck?.slides[index]
 
-  const slide = deck.slides[index]
+  // Recomputing the sandboxed document (regex parsing + string assembly) is
+  // wasted work on every render — TwinExperience re-renders this modal every
+  // frame while the camera moves, not just on slide navigation.
+  const srcDoc = useMemo(() => {
+    if (slide == null || (slide.type !== 'html' && slide.type !== 'jsx')) {
+      return null
+    }
+    return generateSrcdoc(slide.code ?? '', slide.type)
+  }, [slide?.id, slide?.code, slide?.type])
+
+  if (!controls.open || deck == null) return null
 
   return (
     <div
@@ -334,7 +344,7 @@ export const SlideshowModal: FC<{
           <iframe
             key={slide.id}
             title={slide.title ?? deck.label}
-            srcDoc={generateSrcdoc(slide.code ?? '')}
+            srcDoc={srcDoc ?? ''}
             sandbox='allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox'
             style={{
               width: '100%',
@@ -344,7 +354,7 @@ export const SlideshowModal: FC<{
               background: '#fff'
             }}
           />
-        ) : (
+        ) : slide.type === 'image' ? (
           <img
             key={slide.id}
             src={slide.src}
@@ -356,6 +366,18 @@ export const SlideshowModal: FC<{
               objectFit: 'contain'
             }}
           />
+        ) : (
+          <div
+            style={{
+              color: MUTED,
+              fontSize: 13,
+              padding: 18,
+              background: PANEL_BG,
+              border: PANEL_BORDER
+            }}
+          >
+            Unsupported slide type: {slide.type}
+          </div>
         )}
       </div>
       <div

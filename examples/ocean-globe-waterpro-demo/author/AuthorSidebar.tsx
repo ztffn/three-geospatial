@@ -644,21 +644,14 @@ const DeckCard: FC<{
     const file = event.currentTarget.files?.[0]
     event.currentTarget.value = ''
     if (file == null) return
-    if (/\.(jsx|tsx)$/i.test(file.name)) {
+    if (/\.(jsx|tsx|html?)$/i.test(file.name)) {
+      const type = /\.(jsx|tsx)$/i.test(file.name) ? 'jsx' : 'html'
       file.text().then(code => {
-        run(admin.addCodeSlide(deck.id, { type: 'jsx', code, title }))
+        run(admin.addCodeSlide(deck.id, { type, code, title }))
       })
-      setTitle('')
-      return
+    } else {
+      run(admin.uploadSlide(deck.id, file, title))
     }
-    if (/\.html?$/i.test(file.name)) {
-      file.text().then(code => {
-        run(admin.addCodeSlide(deck.id, { type: 'html', code, title }))
-      })
-      setTitle('')
-      return
-    }
-    run(admin.uploadSlide(deck.id, file, title))
     setTitle('')
   }
 

@@ -35,6 +35,7 @@ import {
 import { IDLE_CLIP, INSTALL_CLIPS } from '../ui/rigPhases'
 import { SCENARIOS, type Scenario, type Viewpoint } from '../ui/scenarios'
 import { SHADOW_FLEET, SHADOW_FLEET_GROUND_LABEL } from '../ui/shadowFleet'
+import type { SlideshowControlsState } from '../ui/SlideshowViewer'
 import { modelTurbine } from '../ui/turbineModel'
 import { composeScenarioCatalogue } from '../sites/runtime'
 import { useAuthoredSites } from '../ui/useAuthoredScenarios'
@@ -680,6 +681,24 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
     ]
   )
 
+  // Memoized like authorContext above, for the same reason: this feeds
+  // SlideshowModal, which otherwise recomputes its sandboxed srcDoc and
+  // re-subscribes its keyboard/message listeners on every liveZoom frame.
+  const closeSlideshow = useCallback(() => {
+    setSlideshowOpen(false)
+    setActiveSlideshowId(null)
+  }, [])
+  const slideshowControls = useMemo<SlideshowControlsState>(
+    () => ({
+      decks: slideshows.decks,
+      activeDeckId: activeSlideshowId,
+      open: slideshowOpen,
+      onOpenDeck: openDeck,
+      onClose: closeSlideshow
+    }),
+    [slideshows.decks, activeSlideshowId, slideshowOpen, openDeck, closeSlideshow]
+  )
+
   const experience = (
     <>
       <SceneHost onReadinessRefs={handleReadinessRefs}>
@@ -798,19 +817,7 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
               },
               cover: { label: 'Cover', on: coverOn, onChange: setCoverOn }
             },
-            slideshows: {
-              decks: slideshows.decks,
-              activeDeckId: activeSlideshowId,
-              open: slideshowOpen,
-              onOpenDeck: deckId => {
-                setActiveSlideshowId(deckId)
-                setSlideshowOpen(true)
-              },
-              onClose: () => {
-                setSlideshowOpen(false)
-                setActiveSlideshowId(null)
-              }
-            }
+            slideshows: slideshowControls
           } satisfies ScenarioControlsState
         }
       />

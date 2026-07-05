@@ -115,6 +115,9 @@ export function useSiteAuthoring(
     [effectiveSites]
   )
 
+  // Rethrows on failure — callers (patchScenario, captureViewpoint) must not
+  // treat a failed save as a success (e.g. navigating away as if a delete
+  // went through when the PUT actually failed).
   const putSite = useCallback(
     async (site: SiteDefinition) => {
       setSaving(true)
@@ -130,6 +133,7 @@ export function useSiteAuthoring(
         await refresh()
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : 'failed to save')
+        throw err
       } finally {
         setSaving(false)
       }

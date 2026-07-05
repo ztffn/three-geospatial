@@ -175,6 +175,11 @@ export async function putSite(
     if (input.id !== siteId) {
       throw bad(`body id '${input.id}' does not match route id '${siteId}'`)
     }
+    // Backstop for a missing/understated Content-Length on the request that
+    // carried this body — mirrors slideshowStore's addCodeSlide.
+    if (Buffer.byteLength(JSON.stringify(input), 'utf-8') > MAX_SITE_BYTES) {
+      throw bad('site definition exceeds 2MB limit')
+    }
     const manifest = (await readManifest()) ?? emptyManifest()
     const existing = manifest.sites.findIndex(site => site.id === siteId)
     const sites =

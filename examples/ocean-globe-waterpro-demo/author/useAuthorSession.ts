@@ -40,6 +40,8 @@ export function useAuthorSession(): AuthorSessionState {
     }
   }, [])
 
+  // Rethrows on failure so the caller (the login form) can tell a rejected
+  // token apart from a successful one, instead of treating both alike.
   const login = useCallback(async (token: string) => {
     setError(null)
     setChecking(true)
@@ -55,6 +57,7 @@ export function useAuthorSession(): AuthorSessionState {
     } catch (err: unknown) {
       setAuthenticated(false)
       setError(err instanceof Error ? err.message : 'login failed')
+      throw err
     } finally {
       setChecking(false)
     }
