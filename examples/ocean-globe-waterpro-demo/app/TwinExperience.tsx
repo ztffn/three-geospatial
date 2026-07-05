@@ -447,6 +447,16 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
     [sample]
   )
 
+  // A scenario can pin time-of-day and/or force calm weather — e.g. an
+  // indoor site where neither the sun nor local MET apply. Content owns the
+  // actual blend (see the pin-mix ref there): while a pin is active/inactive
+  // and settled, the scrubber/live clock drives the scene with zero lag;
+  // only the moment a scenario engages or releases a pin eases smoothly.
+  // Weather has no such blend, so it's forced to concrete calm values here
+  // rather than `null` — `null` doesn't mean "off", it means "let the
+  // manual Leva panel decide", which is whatever it was last left at.
+  const environment = activeScenarioDef?.environment
+
   // Live AIS positions (BarentsWatch, via the same-origin proxy): the sanctioned
   // shadow fleet (red) and Coast Guard / Navy patrol vessels (blue). Empty until
   // server-side credentials are configured — never fabricated. Fed to Content's
@@ -709,11 +719,14 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
             onLocationChange={handleLocationChange}
             turbineRpm={telemetry.rpm}
             windHeading={telemetry.yawHeading}
-            windSpeed={sample?.windSpeed ?? null}
-            waveHeight={sample?.waveHeight ?? null}
+            windSpeed={environment?.ignoreWeather ? 0 : (sample?.windSpeed ?? null)}
+            waveHeight={environment?.ignoreWeather ? 0 : (sample?.waveHeight ?? null)}
             clockMs={selected}
-            precip={sample?.precipitation ?? null}
-            airTemperature={sample?.airTemperature ?? null}
+            pinnedTimeOfDayHour={environment?.timeOfDayHour ?? null}
+            precip={environment?.ignoreWeather ? 0 : (sample?.precipitation ?? null)}
+            airTemperature={
+              environment?.ignoreWeather ? 20 : (sample?.airTemperature ?? null)
+            }
             flyTo={flyTo}
             cameraMode={cameraMode}
             fpsSpawn={fpsSpawn}
@@ -869,7 +882,6 @@ const BrandMark: FC = () => (
   <div style={{ position: 'fixed', top: 8, left: 8, zIndex: 5 }}>
     <a
       href='/'
-      className='huma-brand'
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -880,8 +892,7 @@ const BrandMark: FC = () => (
         textAlign: 'left',
         textDecoration: 'none',
         outline: 'none',
-        color: '#13294b',
-        transition: 'background-color 150ms cubic-bezier(0.4, 0, 0.2, 1)'
+        color: '#13294b'
       }}
     >
       <div
@@ -933,6 +944,5 @@ const BrandMark: FC = () => (
         </span>
       </div>
     </a>
-    <style>{`.huma-brand:hover { background-color: oklch(0.2686 0 0); }`}</style>
   </div>
 )

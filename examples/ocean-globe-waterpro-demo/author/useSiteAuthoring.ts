@@ -25,7 +25,12 @@ import {
   scenarioSlug,
   STATIC_SCENARIO_IDS
 } from '../sites/runtime'
-import type { SiteDefinition, SiteScenario, SiteViewpoint } from '../sites/types'
+import type {
+  ScenarioEnvironment,
+  SiteDefinition,
+  SiteScenario,
+  SiteViewpoint
+} from '../sites/types'
 import { SCENARIOS, type Scenario } from '../ui/scenarios'
 import { jsonOrThrow } from '../ui/useScenarioSlideshows'
 
@@ -68,6 +73,15 @@ export interface SiteAuthoringState {
     label: string
   ) => Promise<void>
   deleteViewpoint: (scenarioId: string, viewpointId: string) => Promise<void>
+  // Sets (or, passing null, clears) the scenario's time-of-day/weather
+  // override. For a static scenario this authors an extension entry in its
+  // host site (same mechanism as captureViewpoint's static-scenario branch);
+  // a scenario with no home yet (pending, or a static scenario with no host
+  // site) can't take one until it has a first captured view.
+  setEnvironment: (
+    scenarioId: string,
+    environment: ScenarioEnvironment | null
+  ) => Promise<void>
 }
 
 export function useSiteAuthoring(
@@ -351,6 +365,38 @@ export function useSiteAuthoring(
     [patchScenario]
   )
 
+  const setEnvironment = useCallback(
+    async (scenarioId: string, environment: ScenarioEnvironment | null) => {
+      if (owningEntry(scenarioId) != null) {
+        await patchScenario(scenarioId, scenario => ({
+          ...scenario,
+          environment
+        }))
+        return
+      }
+      // No authored entry yet for this scenario — only a static scenario
+      // with a host site can still take one (a pending scenario has no
+      // home to write into until its first capture).
+      const staticScenario = SCENARIOS.find(s => s.id === scenarioId)
+      if (staticScenario == null) return
+      const host = hostSiteOf(staticScenario)
+      if (host == null) return
+      await putSite({
+        ...host,
+        scenarios: [
+          ...host.scenarios,
+          {
+            id: scenarioId,
+            label: staticScenario.label,
+            viewpoints: [],
+            environment
+          }
+        ]
+      })
+    },
+    [owningEntry, hostSiteOf, patchScenario, putSite]
+  )
+
   return {
     saving,
     error,
@@ -363,6 +409,7 @@ export function useSiteAuthoring(
     deleteScenario,
     captureViewpoint,
     renameViewpoint,
-    deleteViewpoint
+    deleteViewpoint,
+    setEnvironment
   }
 }

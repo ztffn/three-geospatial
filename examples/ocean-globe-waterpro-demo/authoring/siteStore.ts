@@ -147,6 +147,26 @@ export function validateSiteDefinition(
         )
       }
     }
+    if (scenario.environment != null) {
+      const env = scenario.environment as {
+        timeOfDayHour?: unknown
+        ignoreWeather?: unknown
+      }
+      if (
+        env.timeOfDayHour != null &&
+        (!isFiniteNumber(env.timeOfDayHour) ||
+          env.timeOfDayHour < 0 ||
+          env.timeOfDayHour > 24)
+      ) {
+        throw bad(`scenario '${id}': environment.timeOfDayHour must be 0-24`)
+      }
+      if (
+        env.ignoreWeather != null &&
+        typeof env.ignoreWeather !== 'boolean'
+      ) {
+        throw bad(`scenario '${id}': environment.ignoreWeather must be a boolean`)
+      }
+    }
   }
   if (!Array.isArray(site.annotations)) {
     throw bad('site.annotations must be an array')

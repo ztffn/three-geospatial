@@ -19,6 +19,7 @@ import type { RuntimeSlideshowDeck } from '../authoring/types'
 import type { AuthorSlotContext } from '../app/TwinExperience'
 import { isStaticScenarioId, siteViewExtensions } from '../sites/runtime'
 import type { SiteDefinition } from '../sites/types'
+import { Card, ChevronIcon as ToggleChevronIcon } from '../ui/DigitalTwinUI'
 import { SCENARIOS } from '../ui/scenarios'
 import {
   ACCENT,
@@ -31,7 +32,6 @@ import {
   fieldStyle,
   iconButtonStyle,
   labelStyle,
-  LIVE,
   MONO,
   MUTED,
   SANS,
@@ -79,27 +79,44 @@ const CrossIcon: FC = () => (
 
 // --- building blocks ----------------------------------------------------------
 
-const Section: FC<{
-  title: string
-  children: ReactNode
-}> = ({ title, children }) => (
-  <section
-    style={{
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 12,
-      padding: 16,
-      borderBottom: BORDER_FAINT
-    }}
-  >
-    <h2 style={{ ...labelStyle, margin: 0 }}>{title}</h2>
-    {children}
-  </section>
-)
-
 const SubLabel: FC<{ children: ReactNode }> = ({ children }) => (
   <span style={{ ...labelStyle, fontSize: 9 }}>{children}</span>
 )
+
+// A lighter-weight collapsible than Card — no glass/blur chrome of its own,
+// since it always nests inside one — for grouping a sub-section's content
+// (Views, Slideshows, a single deck's slides) behind the same toggle chevron.
+const CollapsibleGroup: FC<{
+  title: string
+  defaultOpen?: boolean
+  children: ReactNode
+}> = ({ title, defaultOpen = true, children }) => {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <button
+        type='button'
+        onClick={() => {
+          setOpen(o => !o)
+        }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: 0,
+          background: 'transparent',
+          border: 'none',
+          color: MUTED,
+          cursor: 'pointer'
+        }}
+      >
+        <ToggleChevronIcon open={open} />
+        <SubLabel>{title}</SubLabel>
+      </button>
+      {open && children}
+    </div>
+  )
+}
 
 const ErrorLine: FC<{ message: string | null }> = ({ message }) =>
   message == null ? null : (
@@ -291,7 +308,7 @@ const AuthorSidebarImpl: FC<{
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {/* The same flat catalogue the visitor panel shows, same order. */}
-        <Section title='Scenarios'>
+        <Card title='Scenarios' interactive gap={6}>
           {ctx.scenarios.list.map(scenario => {
             const authored = !isStaticScenarioId(scenario.id)
             return (
@@ -378,7 +395,7 @@ const AuthorSidebarImpl: FC<{
             </button>
           </div>
           <ErrorLine message={authoring.error} />
-        </Section>
+        </Card>
 
         {ctx.activeScenarioId != null && activeLabel != null && (
           <SelectedScenarioSection
@@ -483,8 +500,24 @@ const SelectedScenarioSection: FC<{
     setCaptureError(null)
   }, [scenarioId])
 
+  // The effective environment override (static default + authored override
+  // already merged — see composeScenarioCatalogue) — the same object
+  // TwinExperience reads to drive the scene, so this reflects what's
+  // actually live, not just what this scenario authored on its own.
+  const environment =
+    ctx.scenarios.list.find(s => s.id === scenarioId)?.environment ?? null
+  const pinEnabled = environment?.timeOfDayHour != null
+  const ignoreWeather = environment?.ignoreWeather ?? false
+  const applyEnvironment = (
+    next: Partial<{ timeOfDayHour: number | undefined; ignoreWeather: boolean }>
+  ): void => {
+    const merged = { ...environment, ...next }
+    const cleared = merged.timeOfDayHour == null && !merged.ignoreWeather
+    run(authoring.setEnvironment(scenarioId, cleared ? null : merged))
+  }
+
   return (
-    <Section title='Selected scenario'>
+    <Card title='Selected scenario' interactive gap={12}>
       <div
         style={{
           display: 'flex',
@@ -504,8 +537,77 @@ const SelectedScenarioSection: FC<{
         )}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <SubLabel>Views</SubLabel>
+      <CollapsibleGroup title='Environment' defaultOpen={false}>
+        {isPending ? (
+          <span style={{ fontSize: 10, color: MUTED, marginLeft: 12 }}>
+            Fly somewhere and capture the first view before setting this.
+          </span>
+        ) : (
+          <>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                color: TEXT,
+                cursor: 'pointer'
+              }}
+            >
+              <input
+                type='checkbox'
+                checked={ignoreWeather}
+                onChange={event => {
+                  applyEnvironment({ ignoreWeather: event.currentTarget.checked })
+                }}
+              />
+              Ignore live weather
+            </label>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                color: TEXT,
+                cursor: 'pointer'
+              }}
+            >
+              <input
+                type='checkbox'
+                checked={pinEnabled}
+                onChange={event => {
+                  applyEnvironment({
+                    timeOfDayHour: event.currentTarget.checked ? 12 : undefined
+                  })
+                }}
+              />
+              Pin time of day
+              {pinEnabled && (
+                <input
+                  type='number'
+                  min={0}
+                  max={24}
+                  step={0.5}
+                  value={environment?.timeOfDayHour ?? 12}
+                  onClick={event => {
+                    event.stopPropagation()
+                  }}
+                  onChange={event => {
+                    const hour = event.currentTarget.valueAsNumber
+                    if (Number.isFinite(hour)) applyEnvironment({ timeOfDayHour: hour })
+                  }}
+                  className='au-input'
+                  style={{ ...fieldStyle, width: 56, height: 22, fontSize: 11 }}
+                />
+              )}
+            </label>
+            <ErrorLine message={authoring.error} />
+          </>
+        )}
+      </CollapsibleGroup>
+
+      <CollapsibleGroup title='Views'>
         {staticScenario?.viewpoints.map(viewpoint => (
           <NavRow
             key={viewpoint.id}
@@ -572,13 +674,12 @@ const SelectedScenarioSection: FC<{
           Capture current view
         </button>
         <ErrorLine message={captureError} />
-      </div>
+      </CollapsibleGroup>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <SubLabel>Slideshows</SubLabel>
+      <CollapsibleGroup title='Slideshows'>
         {ctx.slideshows.decks.length === 0 && (
           <span style={{ fontSize: 10, color: MUTED, marginLeft: 12 }}>
-            No decks yet for this scenario.
+            No slideshows yet for this scenario.
           </span>
         )}
         {ctx.slideshows.decks.map(deck => (
@@ -600,7 +701,7 @@ const SelectedScenarioSection: FC<{
             onChange={event => {
               setNewDeckLabel(event.currentTarget.value)
             }}
-            placeholder='New deck name'
+            placeholder='New slideshow name'
             style={{ ...fieldStyle, flex: 1, height: 26, fontSize: 11 }}
           />
           <button
@@ -616,8 +717,8 @@ const SelectedScenarioSection: FC<{
           </button>
         </div>
         <ErrorLine message={admin.error} />
-      </div>
-    </Section>
+      </CollapsibleGroup>
+    </Card>
   )
 }
 
@@ -632,6 +733,7 @@ const DeckCard: FC<{
 }> = ({ deck, scenarioId, decks, admin, onPreview }) => {
   const [label, setLabel] = useState(deck.label)
   const [title, setTitle] = useState('')
+  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     setLabel(deck.label)
@@ -666,6 +768,17 @@ const DeckCard: FC<{
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          type='button'
+          className='au-btn'
+          onClick={() => {
+            setOpen(o => !o)
+          }}
+          title={open ? 'Collapse' : 'Expand'}
+          style={iconButtonStyle}
+        >
+          <ToggleChevronIcon open={open} />
+        </button>
         <input
           className='au-input'
           value={label}
@@ -675,36 +788,22 @@ const DeckCard: FC<{
           onBlur={() => {
             if (label !== deck.label) run(admin.patchDeck(deck.id, { label }))
           }}
-          aria-label='Deck name'
+          aria-label='Slideshow name'
           style={{ ...fieldStyle, flex: 1, fontWeight: 600 }}
         />
-        <button
-          type='button'
-          className='au-btn'
-          title={
-            deck.enabled
-              ? 'Live for visitors — click to unpublish'
-              : 'Draft — click to publish'
-          }
-          onClick={() => {
-            run(admin.patchDeck(deck.id, { enabled: !deck.enabled }))
-          }}
+        <span
           style={{
-            ...buttonStyle,
-            height: 20,
-            padding: '0 6px',
-            fontSize: 9,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: deck.enabled ? LIVE : MUTED,
-            borderColor: deck.enabled ? 'rgba(134, 199, 161, 0.35)' : undefined
+            fontFamily: MONO,
+            fontSize: 10,
+            color: FAINT,
+            flex: '0 0 auto'
           }}
         >
-          {deck.enabled ? 'Live' : 'Draft'}
-        </button>
+          {deck.slides.length}
+        </span>
       </div>
 
-      {deck.slides.length > 0 && (
+      {open && deck.slides.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {deck.slides.map(slide => (
             <div
@@ -778,26 +877,28 @@ const DeckCard: FC<{
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 6 }}>
-        <input
-          className='au-input'
-          value={title}
-          onChange={event => {
-            setTitle(event.currentTarget.value)
-          }}
-          placeholder='Next slide title (optional)'
-          style={{ ...fieldStyle, flex: 1, height: 24, fontSize: 11 }}
-        />
-        <label className='au-btn' style={smallButtonStyle}>
-          Upload
+      {open && (
+        <div style={{ display: 'flex', gap: 6 }}>
           <input
-            type='file'
-            accept='image/jpeg,image/png,image/webp,image/gif,image/avif,video/mp4,.html,.htm,.jsx,.tsx'
-            onChange={handleUpload}
-            style={{ display: 'none' }}
+            className='au-input'
+            value={title}
+            onChange={event => {
+              setTitle(event.currentTarget.value)
+            }}
+            placeholder='Next slide title (optional)'
+            style={{ ...fieldStyle, flex: 1, height: 24, fontSize: 11 }}
           />
-        </label>
-      </div>
+          <label className='au-btn' style={smallButtonStyle}>
+            Upload
+            <input
+              type='file'
+              accept='image/jpeg,image/png,image/webp,image/gif,image/avif,video/mp4,.html,.htm,.jsx,.tsx'
+              onChange={handleUpload}
+              style={{ display: 'none' }}
+            />
+          </label>
+        </div>
+      )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <button

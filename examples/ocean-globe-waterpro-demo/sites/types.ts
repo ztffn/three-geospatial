@@ -97,6 +97,17 @@ export interface SiteTransform {
   scale?: number | [number, number, number]
 }
 
+// Pins time-of-day and/or suppresses live weather for a scenario — for
+// enclosed/indoor sites where neither applies (or would look wrong). Omit a
+// field to keep following the live/scrubbed timeline or live MET for it.
+// The host eases into and out of an override rather than snapping.
+export interface ScenarioEnvironment {
+  // Fixed local hour (0-23, may be fractional) the sun/sky is pinned to.
+  timeOfDayHour?: number
+  // Ignore live MET (wind/wave/precipitation/air temperature) entirely.
+  ignoreWeather?: boolean
+}
+
 export interface SiteScenario {
   id: string
   label: string
@@ -104,6 +115,10 @@ export interface SiteScenario {
   defaultViewpointId?: string
   layerOverrides?: Record<string, { visible?: boolean; opacity?: number }>
   settings?: SiteSettingDefinition[]
+  // Authored environment override. On a static (code-owned) scenario this
+  // replaces its code default; `null` explicitly clears back to that
+  // default (vs. omitting the field, which just means "never touched").
+  environment?: ScenarioEnvironment | null
   viewpoints: SiteViewpoint[]
   panelIds?: string[]
   annotationIds?: string[]

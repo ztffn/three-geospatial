@@ -2140,6 +2140,12 @@ export const Content: FC<{
   // forecast scrubber time. When set, it overrides the leva day/time sliders so
   // the lighting tracks the scrubbed forecast hour. Undefined in Storybook.
   clockMs?: number | null
+  // Pins the depicted local hour (0-23, may be fractional) regardless of
+  // clockMs — e.g. an indoor scenario where time-of-day doesn't apply. The
+  // scene eases into/out of the pin (ATMOSPHERE_CROSSFADE_SECONDS below);
+  // while settled at either end it tracks clockMs (unpinned) or the pinned
+  // hour (pinned) with zero lag. null/undefined → unpinned, tracks clockMs.
+  pinnedTimeOfDayHour?: number | null
   // Precipitation amount (mm for the hour) from the deploy's live MET feed.
   // Drives rain/snow fall density. null/undefined → the leva 'Precipitation'
   // panel governs (Storybook). 0/null draws nothing — never a synthesized shower.
@@ -2234,6 +2240,7 @@ export const Content: FC<{
   windSpeed,
   waveHeight,
   clockMs,
+  pinnedTimeOfDayHour,
   precip,
   airTemperature,
   onTurbineCountChange,
@@ -4077,6 +4084,10 @@ export const Content: FC<{
     lensControls.enabled
   ])
 
+  // Time constant for easing into/out of a pinnedTimeOfDayHour — mirrors the
+  // Sea State ladder's default crossfadeSeconds.
+  const ATMOSPHERE_CROSSFADE_SECONDS = 3
+
   const atmosphereDate = useMemo(() => {
     // Deploy: the scrubber supplies a real UTC instant — depict the sun/moon at
     // exactly that time. Storybook: derive from the leva day/time sliders.
@@ -4094,6 +4105,15 @@ export const Content: FC<{
     atmosphereControls.timeOfDay,
     atmosphereControls.year
   ])
+
+  // Blends the depicted instant toward pinnedTimeOfDayHour (e.g. an indoor
+  // scenario) and releases back to atmosphereDate when it's cleared — see
+  // the useFrame below. pinMix is a 0/1 target so it converges and STAYS
+  // converged; pinnedMs is only refreshed while actively pinned, so it holds
+  // its last value through the release blend instead of collapsing back to
+  // "live" the instant the pin clears (which would skip the release ease).
+  const pinMixRef = useRef(pinnedTimeOfDayHour != null ? 1 : 0)
+  const pinnedMsRef = useRef<number | null>(null)
 
   // (lodScale slider removed — it's a WGSL-vertex-stage uniform local to
   // OceanChunksWaterpro, not in the shared WaterproOceanUniforms bag.)
@@ -4420,19 +4440,48 @@ export const Content: FC<{
     }
   }, [context])
 
-  // Per-frame: sun/moon direction from atmosphereDate, then post-processing.
-  useFrame(() => {
+  // Per-frame: blend toward the time-of-day pin (if any), then sun/moon
+  // direction from the result. When unpinned (the common case) this tracks
+  // atmosphereDate — i.e. clockMs/the scrubber — exactly, every frame, with
+  // no lag: pinnedMsRef stays null until a pin actually engages, and the mix
+  // multiplies it out. Only the engage/release transition itself eases.
+  useFrame((_, dt) => {
     camera.updateMatrixWorld()
+
+    const liveMs = atmosphereDate.getTime()
+    if (pinnedTimeOfDayHour != null) {
+      const pinned = new Date(liveMs)
+      pinned.setHours(
+        Math.floor(pinnedTimeOfDayHour),
+        (pinnedTimeOfDayHour % 1) * 60,
+        0,
+        0
+      )
+      pinnedMsRef.current = pinned.getTime()
+    }
+    pinMixRef.current = MathUtils.damp(
+      pinMixRef.current,
+      pinnedTimeOfDayHour != null ? 1 : 0,
+      1 / ATMOSPHERE_CROSSFADE_SECONDS,
+      dt
+    )
+    const mix = pinMixRef.current
+    const depictedMs =
+      mix < 1e-3 || pinnedMsRef.current == null
+        ? liveMs
+        : MathUtils.lerp(liveMs, pinnedMsRef.current, mix)
+    const depictedDate = new Date(depictedMs)
+
     const matrixECIToECEF = getECIToECEFRotationMatrix(
-      atmosphereDate,
+      depictedDate,
       context.matrixECIToECEF.value
     )
     getSunDirectionECI(
-      atmosphereDate,
+      depictedDate,
       context.sunDirectionECEF.value
     ).applyMatrix4(matrixECIToECEF)
     getMoonDirectionECI(
-      atmosphereDate,
+      depictedDate,
       context.moonDirectionECEF.value
     ).applyMatrix4(matrixECIToECEF)
   })

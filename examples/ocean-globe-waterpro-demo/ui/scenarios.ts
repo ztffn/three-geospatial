@@ -4,6 +4,10 @@
 // setting toggles (ids into the host's registry, e.g. rotor spin). Coordinates
 // for the non-Karmøy scenarios are PROVISIONAL placeholders; replace per site.
 
+import type { ScenarioEnvironment } from '../sites/types'
+
+export type { ScenarioEnvironment }
+
 export interface Viewpoint {
   id: string
   label: string
@@ -139,6 +143,8 @@ export interface Scenario {
   // Scene location-preset name anchoring this scenario. Keeps the location
   // (and everything pinned to it) stable across this scenario's viewpoints.
   preset?: string
+  // Pins time-of-day and/or suppresses live weather for this scenario.
+  environment?: ScenarioEnvironment
   // Turbine farm size at this site (default 0 — scenarios are not wind farms).
   turbines?: number
   // Static AIS readings for vessel scenarios; replaces the turbine inspector.
@@ -296,6 +302,9 @@ export const SCENARIOS: Scenario[] = [
     id: 'waste-handling',
     label: 'Waste Handling',
     preset: 'Waste Handling',
+    // Indoor/enclosed process site — live time-of-day and weather don't
+    // apply; pin to midday and ignore MET.
+    environment: { timeOfDayHour: 12, ignoreWeather: true },
     // Kiln/Carbox/Arx biomass→wax stack telemetry (full 10-kiln facility).
     process: {
       stackName: 'Kiln · Carbox · Arx',

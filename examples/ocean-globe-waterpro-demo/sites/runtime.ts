@@ -8,7 +8,12 @@
 
 import { SCENARIOS, type Scenario, type Viewpoint } from '../ui/scenarios'
 import { SITE_PRESETS } from './static-sites'
-import type { SiteDefinition, SiteScenario, SiteViewpoint } from './types'
+import type {
+  ScenarioEnvironment,
+  SiteDefinition,
+  SiteScenario,
+  SiteViewpoint
+} from './types'
 
 // The one owner of the code-owned/authored distinction: a scenario is
 // code-owned iff its id is in the static catalogue. Consumed by the runtime
@@ -53,6 +58,7 @@ export function siteScenariosToRuntime(site: SiteDefinition): Scenario[] {
       id: scenario.id,
       label: scenario.label,
       turbines: 0,
+      environment: scenario.environment ?? undefined,
       viewpoints: orderedViewpoints(scenario).map(viewpoint =>
         toRuntimeViewpoint(site, viewpoint)
       )
@@ -91,10 +97,27 @@ export function siteViewExtensions(
   )
 }
 
+// Authored environment override for a static scenario, from its host site's
+// same-id extension entry. `undefined` when no site has an opinion (the code
+// default applies); `null` when the author explicitly cleared it back to
+// that default; otherwise the override object.
+function authoredEnvironment(
+  staticScenario: Scenario,
+  sites: SiteDefinition[]
+): ScenarioEnvironment | null | undefined {
+  for (const site of sites) {
+    if (!scenarioAcceptsSiteViews(staticScenario, site)) continue
+    const entry = site.scenarios.find(s => s.id === staticScenario.id)
+    if (entry != null && 'environment' in entry) return entry.environment
+  }
+  return undefined
+}
+
 // The full runtime catalogue: static scenarios (each extended with authored
-// views where the anchor allows), then new authored scenarios. Static wins on
-// id collision — authored data adds scenarios and views, never replaces the
-// richer code-owned definitions.
+// views where the anchor allows, and with its environment override applied
+// if a host site has one), then new authored scenarios. Static wins on id
+// collision — authored data adds scenarios/views and can override the
+// environment, never replaces the richer code-owned definitions otherwise.
 export function composeScenarioCatalogue(
   staticScenarios: Scenario[],
   sites: SiteDefinition[]
@@ -106,9 +129,15 @@ export function composeScenarioCatalogue(
         toRuntimeViewpoint(site, viewpoint)
       )
     )
-    return extras.length === 0
-      ? scenario
-      : { ...scenario, viewpoints: [...scenario.viewpoints, ...extras] }
+    const envOverride = authoredEnvironment(scenario, sites)
+    if (extras.length === 0 && envOverride === undefined) return scenario
+    return {
+      ...scenario,
+      ...(envOverride !== undefined
+        ? { environment: envOverride ?? undefined }
+        : null),
+      viewpoints: [...scenario.viewpoints, ...extras]
+    }
   })
   return [
     ...extended,

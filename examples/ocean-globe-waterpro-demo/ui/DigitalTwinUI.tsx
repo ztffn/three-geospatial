@@ -45,18 +45,21 @@ const MONO =
 const SANS =
   "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
 
+// `pos` places the card as a fixed-position HUD element floating over the
+// scene (the visitor overlay). Omit it to render as a static block instead —
+// e.g. docked inline in the author sidebar's flex column.
 const cardStyle = (
-  pos: {
+  pos?: {
     top?: number
     bottom?: number
     left?: number | string
     right?: number
   },
-  width: number | string
+  width: number | string = '100%'
 ): React.CSSProperties => ({
-  position: 'fixed',
-  ...pos,
+  ...(pos != null ? { position: 'fixed' as const, ...pos } : null),
   width,
+  boxSizing: 'border-box',
   padding: '14px 16px',
   background: PANEL_BG,
   border: PANEL_BORDER,
@@ -139,7 +142,7 @@ const conditionText = (code: string | null): string => {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-const ChevronIcon: FC<{ open: boolean }> = ({ open }) => (
+export const ChevronIcon: FC<{ open: boolean }> = ({ open }) => (
   <svg
     width='9'
     height='9'
@@ -161,18 +164,20 @@ const ChevronIcon: FC<{ open: boolean }> = ({ open }) => (
   </svg>
 )
 
-// Collapsible glass card shared by every panel. The header row is a button:
-// clicking it folds the card down to just the header. Non-interactive cards
-// (data displays) keep pointer events off their body so the globe stays
-// draggable through them — only the header takes clicks.
-const Card: FC<{
-  pos: {
+// Collapsible glass card shared by every panel — visitor HUD panels (floated
+// via `pos`) and the author sidebar's sections (docked, `pos` omitted) alike.
+// The header row is a button: clicking it folds the card down to just the
+// header. Non-interactive cards (data displays) keep pointer events off
+// their body so the globe stays draggable through them — only the header
+// takes clicks.
+export const Card: FC<{
+  pos?: {
     top?: number
     bottom?: number
     left?: number | string
     right?: number
   }
-  width: number | string
+  width?: number | string
   title: string
   // Text-only header content (rendered inside the header button).
   headerRight?: React.ReactNode
