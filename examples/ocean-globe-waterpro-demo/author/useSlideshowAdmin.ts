@@ -24,6 +24,10 @@ export interface SlideshowAdminState {
     direction: -1 | 1
   ) => Promise<void>
   uploadSlide: (deckId: string, file: File, title?: string) => Promise<void>
+  addCodeSlide: (
+    deckId: string,
+    input: { type: 'html' | 'jsx'; code: string; title?: string }
+  ) => Promise<void>
   patchSlide: (
     deckId: string,
     slideId: string,
@@ -144,6 +148,26 @@ export function useSlideshowAdmin(
     [mutate]
   )
 
+  const addCodeSlide = useCallback(
+    async (
+      deckId: string,
+      input: { type: 'html' | 'jsx'; code: string; title?: string }
+    ) => {
+      await mutate(
+        async () =>
+          await fetch(
+            `/api/authoring/slideshows/${encodeURIComponent(deckId)}/slides`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(input)
+            }
+          )
+      )
+    },
+    [mutate]
+  )
+
   const patchSlide = useCallback(
     async (deckId: string, slideId: string, patch: { title?: string }) => {
       await mutate(
@@ -207,6 +231,7 @@ export function useSlideshowAdmin(
     deleteDeck,
     moveDeck,
     uploadSlide,
+    addCodeSlide,
     patchSlide,
     deleteSlide,
     moveSlide

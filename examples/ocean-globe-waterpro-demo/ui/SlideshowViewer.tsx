@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState, type FC } from 'react'
 
 import type { RuntimeSlideshowDeck } from '../authoring/types'
+import { generateSrcdoc } from './microApp'
 
 const PANEL_BG = 'rgba(10, 18, 30, 0.72)'
 const MODAL_BG = 'rgba(3, 8, 14, 0.86)'
@@ -180,18 +181,29 @@ export const SlideshowModal: FC<{
 
   useEffect(() => {
     if (!controls.open || deck == null) return
-    const handler = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') controls.onClose()
-      if (event.key === 'ArrowLeft') {
+    const navigate = (key: string): void => {
+      if (key === 'Escape') controls.onClose()
+      if (key === 'ArrowLeft') {
         setIndex(i => wrapped(i - 1, deck.slides.length))
       }
-      if (event.key === 'ArrowRight') {
+      if (key === 'ArrowRight') {
         setIndex(i => wrapped(i + 1, deck.slides.length))
       }
     }
+    const handler = (event: KeyboardEvent): void => {
+      navigate(event.key)
+    }
+    // 'html'/'jsx' slides render inside a sandboxed iframe, whose keydown
+    // events never bubble to this window — the iframe's own script bridges
+    // Escape/arrow keys out via postMessage instead (see ui/microApp.ts).
+    const messageHandler = (event: MessageEvent): void => {
+      if (event.data?.type === 'slide-nav-key') navigate(event.data.key)
+    }
     window.addEventListener('keydown', handler)
+    window.addEventListener('message', messageHandler)
     return () => {
       window.removeEventListener('keydown', handler)
+      window.removeEventListener('message', messageHandler)
     }
   }, [controls, deck])
 
@@ -316,6 +328,20 @@ export const SlideshowModal: FC<{
               height: '100%',
               maxHeight: 'calc(100vh - 162px)',
               objectFit: 'contain'
+            }}
+          />
+        ) : slide.type === 'html' || slide.type === 'jsx' ? (
+          <iframe
+            key={slide.id}
+            title={slide.title ?? deck.label}
+            srcDoc={generateSrcdoc(slide.code ?? '')}
+            sandbox='allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox'
+            style={{
+              width: '100%',
+              height: '100%',
+              maxHeight: 'calc(100vh - 162px)',
+              border: 'none',
+              background: '#fff'
             }}
           />
         ) : (

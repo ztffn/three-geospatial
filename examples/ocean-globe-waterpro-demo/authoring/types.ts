@@ -8,7 +8,19 @@ import type { SiteDefinition } from '../sites/types'
 
 export const AUTHORING_MANIFEST_VERSION = 1
 
-export type SlideshowMediaType = 'image' | 'video'
+export type SlideshowMediaType = 'image' | 'video' | 'html' | 'jsx'
+
+// 'html' and 'jsx' slides carry no uploaded file — the author pastes/uploads
+// source text and it round-trips as `code`, sandboxed at render time (see
+// ui/microApp.ts). 'image'/'video' slides carry no `code` — they reference an
+// uploaded object instead.
+export const CODE_SLIDE_TYPES: SlideshowMediaType[] = ['html', 'jsx']
+
+export interface AddCodeSlideInput {
+  type: 'html' | 'jsx'
+  code: string
+  title?: string
+}
 
 export interface SiteContentManifest {
   version: typeof AUTHORING_MANIFEST_VERSION
@@ -30,8 +42,11 @@ export interface SlideshowDeck {
 export interface SlideshowSlide {
   id: string
   type: SlideshowMediaType
-  objectKey: string
-  mimeType: string
+  // Present for 'image'/'video' slides; absent for 'html'/'jsx' slides.
+  objectKey?: string
+  mimeType?: string
+  // Present for 'html'/'jsx' slides; absent for 'image'/'video' slides.
+  code?: string
   title?: string
   order: number
   createdAt: string
@@ -51,7 +66,10 @@ export interface RuntimeSlideshowDeck {
 export interface RuntimeSlideshowSlide {
   id: string
   type: SlideshowMediaType
-  src: string
+  // Present for 'image'/'video' slides.
+  src?: string
+  // Present for 'html'/'jsx' slides.
+  code?: string
   title?: string
   order: number
 }

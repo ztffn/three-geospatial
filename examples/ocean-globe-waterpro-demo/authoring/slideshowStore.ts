@@ -19,6 +19,7 @@ import {
 } from './storage'
 import {
   AUTHORING_MANIFEST_VERSION,
+  type AddCodeSlideInput,
   type CreateDeckInput,
   type OrderInput,
   type PatchDeckInput,
@@ -34,6 +35,7 @@ const AUTHORING_STORE = 'twin-authoring'
 const MEDIA_STORE = 'twin-media'
 const MANIFEST_KEY = 'manifest.json'
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+export const MAX_CODE_BYTES = 200 * 1024
 
 const IMAGE_TYPES = new Set([
   'image/jpeg',
@@ -132,7 +134,8 @@ function toRuntimeDeck(deck: SlideshowDeck): RuntimeSlideshowDeck {
     slides: sortByOrder(deck.slides).map(slide => ({
       id: slide.id,
       type: slide.type,
-      src: publicMediaUrl(slide.objectKey),
+      src: slide.objectKey != null ? publicMediaUrl(slide.objectKey) : undefined,
+      code: slide.code,
       title: slide.title,
       order: slide.order
     }))
@@ -285,7 +288,7 @@ export async function deleteDeck(deckId: string): Promise<void> {
     const deck = deckOrThrow(manifest, deckId)
     await Promise.all(
       deck.slides.map(async slide => {
-        await deleteObject(MEDIA_STORE, slide.objectKey)
+        if (slide.objectKey != null) await deleteObject(MEDIA_STORE, slide.objectKey)
       })
     )
     await writeManifest({
@@ -367,6 +370,47 @@ export async function addSlide(
   })
 }
 
+export async function addCodeSlide(
+  deckId: string,
+  input: AddCodeSlideInput
+): Promise<SlideshowSlide> {
+  return withManifestLock(async () => {
+    if (input.type !== 'html' && input.type !== 'jsx') {
+      throw new AuthoringHttpError(400, 'type must be html or jsx')
+    }
+    const code = typeof input.code === 'string' ? input.code.trim() : ''
+    if (code.length === 0) {
+      throw new AuthoringHttpError(400, 'code is required')
+    }
+    if (Buffer.byteLength(code, 'utf-8') > MAX_CODE_BYTES) {
+      throw new AuthoringHttpError(400, 'code exceeds 200KB limit')
+    }
+    const manifest = await readManifest()
+    const deck = deckOrThrow(manifest, deckId)
+    const slide: SlideshowSlide = {
+      id: id('slide'),
+      type: input.type,
+      code,
+      title: cleanOptionalTitle(input.title),
+      order: deck.slides.length,
+      createdAt: nowIso()
+    }
+    await writeManifest({
+      ...manifest,
+      slideshows: manifest.slideshows.map(candidate =>
+        candidate.id === deckId
+          ? {
+              ...candidate,
+              slides: [...candidate.slides, slide],
+              updatedAt: nowIso()
+            }
+          : candidate
+      )
+    })
+    return slide
+  })
+}
+
 export async function patchSlide(
   deckId: string,
   slideId: string,
@@ -405,7 +449,7 @@ export async function deleteSlide(
     const deck = deckOrThrow(manifest, deckId)
     const slide = deck.slides.find(candidate => candidate.id === slideId)
     if (slide == null) throw new AuthoringHttpError(404, 'slide not found')
-    await deleteObject(MEDIA_STORE, slide.objectKey)
+    if (slide.objectKey != null) await deleteObject(MEDIA_STORE, slide.objectKey)
     await writeManifest({
       ...manifest,
       slideshows: manifest.slideshows.map(candidate =>

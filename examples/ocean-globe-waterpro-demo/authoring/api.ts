@@ -9,6 +9,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import {
+  addCodeSlide,
   addSlide,
   AuthoringHttpError,
   createDeck,
@@ -25,6 +26,7 @@ import {
 } from './slideshowStore'
 import { getSiteManifest, MAX_SITE_BYTES, putSite } from './siteStore'
 import type {
+  AddCodeSlideInput,
   CreateDeckInput,
   OrderInput,
   PatchDeckInput,
@@ -376,6 +378,16 @@ async function routeAuthoringRequest(
       return
     }
     if (!requireAdmin(req, res)) return
+    // 'html'/'jsx' slides carry no file — the author posts JSON with a `code`
+    // string, stored inline in the manifest (see addCodeSlide). Everything
+    // else is the existing multipart file upload.
+    const contentType = req.headers['content-type'] ?? ''
+    if (contentType.startsWith('application/json')) {
+      sendJson(res, 200, {
+        slide: await addCodeSlide(parts[1], await readJson<AddCodeSlideInput>(req))
+      })
+      return
+    }
     // Reject oversized uploads on the declared Content-Length before
     // request.formData() buffers the whole body into memory. The store-side
     // file.size check remains a backstop for a missing/understated header.

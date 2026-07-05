@@ -637,10 +637,27 @@ const DeckCard: FC<{
     setLabel(deck.label)
   }, [deck.label])
 
+  // .html/.jsx/.tsx files carry no upload — their text content becomes the
+  // slide's inline `code` (see addCodeSlide). Everything else is the
+  // existing media upload.
   const handleUpload = (event: ChangeEvent<HTMLInputElement>): void => {
     const file = event.currentTarget.files?.[0]
     event.currentTarget.value = ''
     if (file == null) return
+    if (/\.(jsx|tsx)$/i.test(file.name)) {
+      file.text().then(code => {
+        run(admin.addCodeSlide(deck.id, { type: 'jsx', code, title }))
+      })
+      setTitle('')
+      return
+    }
+    if (/\.html?$/i.test(file.name)) {
+      file.text().then(code => {
+        run(admin.addCodeSlide(deck.id, { type: 'html', code, title }))
+      })
+      setTitle('')
+      return
+    }
     run(admin.uploadSlide(deck.id, file, title))
     setTitle('')
   }
@@ -706,12 +723,16 @@ const DeckCard: FC<{
                   fontFamily: MONO,
                   fontSize: 9,
                   color: FAINT,
-                  width: 26,
+                  width: 30,
                   flex: '0 0 auto',
                   textTransform: 'uppercase'
                 }}
               >
-                {slide.type === 'video' ? 'vid' : 'img'}
+                {slide.type === 'video'
+                  ? 'vid'
+                  : slide.type === 'image'
+                    ? 'img'
+                    : slide.type}
               </span>
               <input
                 className='au-input'
@@ -778,7 +799,7 @@ const DeckCard: FC<{
           Upload
           <input
             type='file'
-            accept='image/jpeg,image/png,image/webp,image/gif,image/avif,video/mp4'
+            accept='image/jpeg,image/png,image/webp,image/gif,image/avif,video/mp4,.html,.htm,.jsx,.tsx'
             onChange={handleUpload}
             style={{ display: 'none' }}
           />
