@@ -1,14 +1,15 @@
-// HTTP routing for the slideshow authoring API (mounted under /api/authoring by
-// both the prod server and the dev Vite plugin). Owns request parsing, the
-// admin-cookie session (HMAC of TWIN_ADMIN_TOKEN, timing-safe compare) and the
-// requireAdmin gate on every mutation; the actual persistence lives in
-// slideshowStore. GET read routes are public but strip admin-only concerns
-// (disabled/draft decks) for unauthenticated callers.
+// HTTP routing for the authoring API (mounted under /api/authoring by both the
+// prod server and the dev Vite plugin): slideshow deck/slide CRUD + media, and
+// the authored site manifest (GET public, PUT admin). Owns request parsing,
+// the admin-cookie session (HMAC of TWIN_ADMIN_TOKEN, timing-safe compare) and
+// the requireAdmin gate on every mutation; persistence lives in slideshowStore
+// and siteStore. Public GETs strip admin-only concerns (disabled decks).
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import {
+  addCodeSlide,
   addSlide,
   AuthoringHttpError,
   createDeck,
@@ -17,13 +18,16 @@ import {
   getMedia,
   getRuntimeManifest,
   getScenarioSlideshows,
+  MAX_CODE_BYTES,
   MAX_UPLOAD_BYTES,
   patchDeck,
   patchSlide,
   reorderScenarioDecks,
   reorderSlides
 } from './slideshowStore'
+import { getSiteManifest, MAX_SITE_BYTES, putSite } from './siteStore'
 import type {
+  AddCodeSlideInput,
   CreateDeckInput,
   OrderInput,
   PatchDeckInput,
@@ -227,6 +231,41 @@ async function routeAuthoringRequest(
     return
   }
 
+  // Authored site manifest. GET is public and returns only what has been
+  // authored (committed seeds stay client-side; the client merges them);
+  // PUT upserts one validated SiteDefinition and is admin-gated.
+  if (parts[0] === 'sites' && parts.length === 1) {
+    if (reqMethod !== 'GET') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return
+    }
+    const manifest = await getSiteManifest()
+    sendJson(res, 200, {
+      sites: manifest?.sites ?? [],
+      updatedAt: manifest?.updatedAt ?? null
+    })
+    return
+  }
+
+  if (parts[0] === 'sites' && parts.length === 2) {
+    if (reqMethod !== 'PUT') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return
+    }
+    if (!requireAdmin(req, res)) return
+    const declaredLength = Number(req.headers['content-length'])
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_SITE_BYTES) {
+      sendJson(res, 413, { error: 'site definition exceeds 2MB limit' })
+      return
+    }
+    const manifest = await putSite(parts[1], await readJson<unknown>(req))
+    sendJson(res, 200, {
+      site: manifest.sites.find(site => site.id === parts[1]),
+      updatedAt: manifest.updatedAt
+    })
+    return
+  }
+
   if (reqMethod === 'GET' && parts[0] === 'manifest' && parts.length === 1) {
     sendJson(res, 200, {
       slideshows: await getRuntimeManifest(includeDisabled(url, req))
@@ -340,6 +379,27 @@ async function routeAuthoringRequest(
       return
     }
     if (!requireAdmin(req, res)) return
+    // 'html'/'jsx' slides carry no file — the author posts JSON with a `code`
+    // string, stored inline in the manifest (see addCodeSlide). Everything
+    // else is the existing multipart file upload.
+    const contentType = req.headers['content-type'] ?? ''
+    if (contentType.startsWith('application/json')) {
+      // Same reasoning as the multipart branch below: reject on the declared
+      // Content-Length before buffering the body. addCodeSlide's byte check
+      // remains a backstop for a missing/understated header.
+      const declaredCodeLength = Number(req.headers['content-length'])
+      if (
+        Number.isFinite(declaredCodeLength) &&
+        declaredCodeLength > MAX_CODE_BYTES
+      ) {
+        sendJson(res, 413, { error: 'code exceeds 200KB limit' })
+        return
+      }
+      sendJson(res, 200, {
+        slide: await addCodeSlide(parts[1], await readJson<AddCodeSlideInput>(req))
+      })
+      return
+    }
     // Reject oversized uploads on the declared Content-Length before
     // request.formData() buffers the whole body into memory. The store-side
     // file.size check remains a backstop for a missing/understated header.

@@ -1,11 +1,32 @@
 // Filesystem-backed object store for the authoring feature: a put/get/delete
 // (+ JSON variants) keyed by (store, key) under a configurable root
-// (TWIN_STORAGE_ROOT). Guards every key against path traversal (isSafeObjectKey
+// (TWIN_STORAGE_ROOT), plus the shared manifest-store primitives (mutation
+// lock, timestamps). Guards every key against path traversal (isSafeObjectKey
 // / assertSafePart) so a malicious key can't escape the store root. The
-// slideshow manifest and uploaded media both persist through this layer.
+// slideshow and site manifests and uploaded media persist through this layer.
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+
+export function nowIso(): string {
+  return new Date().toISOString()
+}
+
+// Serializes read-modify-write over one manifest. Each mutation awaits the
+// previous one (chaining regardless of success/failure) so two overlapping
+// requests can't both read the same base manifest and clobber each other's
+// write. One lock per manifest — create one per store module.
+export function createMutationLock(): <T>(run: () => Promise<T>) => Promise<T> {
+  let chain: Promise<unknown> = Promise.resolve()
+  return run => {
+    const next = chain.then(run, run)
+    chain = next.then(
+      () => undefined,
+      () => undefined
+    )
+    return next
+  }
+}
 
 export interface ObjectMetadata {
   contentType?: string

@@ -351,3 +351,6 @@ storybook-webgpu/assets/turbine-engineglb.glb
 # Claude Code runtime lock
 .claude/scheduled_tasks.lock
 storybook-webgpu/assets/*.spz
+
+# Twin authoring runtime data (dev storage root — manifests + uploaded media)
+.local/
