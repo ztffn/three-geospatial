@@ -167,6 +167,8 @@ web_modules/
 
 # Output of 'npm pack'
 *.tgz
+# ...except vendored package tarballs (must ship in git archive for the VPS deploy build)
+!vendor/*.tgz
 
 # Yarn Integrity file
 .yarn-integrity

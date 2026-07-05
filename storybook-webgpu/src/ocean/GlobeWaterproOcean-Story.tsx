@@ -74,6 +74,8 @@ import {
 } from 'three/webgpu'
 import type { Node, UniformNode } from 'three/webgpu'
 
+import type { RigDocument } from '@huma/path-creator/core'
+import type { TimelinePlayer } from '@huma/path-creator/timeline'
 import {
   getECIToECEFRotationMatrix,
   getMoonDirectionECI,
@@ -129,6 +131,7 @@ import type { StoryFC } from '../components/createStory'
 import { WebGPUCanvas } from '../components/WebGPUCanvas'
 import { useAtmosphereContextNode } from '../hooks/useAtmosphereContextNode'
 import { useGLTF } from '../hooks/useGLTF'
+import { PathRigDriver, type PathRigEditing } from '../pathrig/PathRigDriver'
 import { PRECIP_DEFAULTS } from '../weather/createPrecipitationSystem'
 import { createLensDrops, LENS_DROPS_DEFAULTS } from '../weather/lensDropsNode'
 import { Precipitation } from '../weather/Precipitation'
@@ -2231,6 +2234,23 @@ export const Content: FC<{
   // Fired when a one-shot rig clip finishes, so the deploy can advance the
   // install sequence. Additive; Storybook omits.
   onRigClipFinished?: (clip: string) => void
+  // Author-mode path-rig preview (@huma/path-creator): a rig document anchored
+  // at the active site plus the host's shared transport player. cameraFollow
+  // hands the camera to the rig's virtual camera — OrbitControls/CameraRig are
+  // suspended like in FPS mode. `editing` mounts the anchor-gizmo edit layer
+  // (see PathRigDriver). Additive; Storybook omits.
+  pathRig?: {
+    rig: RigDocument
+    player: TimelinePlayer
+    cameraFollow: boolean
+    // Show authoring guides (rail + dolly marker) — author mode; false for a
+    // clean visitor cinematic.
+    showGuides?: boolean
+    // True while an editor gizmo is being dragged — suspends OrbitControls so
+    // the camera can't fight the pivot.
+    transforming?: boolean
+    editing?: PathRigEditing | null
+  } | null
 }> = ({
   onReadinessRefs,
   disableOcean = false,
@@ -2266,8 +2286,13 @@ export const Content: FC<{
   farmCount,
   rigClip = 'operating_spin',
   rigTimeScale = 1,
-  onRigClipFinished
+  onRigClipFinished,
+  pathRig
 }) => {
+  // The path-rig's virtual camera owns the scene camera: a third camera
+  // writer, mutually exclusive with CameraRig (unmounted) and FPS (wins).
+  const pathRigCameraActive =
+    pathRig?.cameraFollow === true && cameraMode !== 'fps'
   const renderer = useThree<Renderer>(({ gl }) => gl as any)
   const scene = useThree(({ scene }) => scene)
   const camera = useThree(({ camera }) => camera)
@@ -4656,17 +4681,24 @@ export const Content: FC<{
         // Wheel/pinch dolly is undamped in OrbitControls (hard stop). The
         // CameraRig handles scroll zoom through its damped distance ease instead.
         enableZoom={false}
-        enabled={cameraMode !== 'fps'}
+        enabled={
+          cameraMode !== 'fps' &&
+          !pathRigCameraActive &&
+          pathRig?.transforming !== true
+        }
         minDistance={cameraControls.minDistance}
         maxDistance={cameraControls.maxDistance}
         autoRotate={
-          cameraMode !== 'fps' && (autoRotate ?? cameraControls.autoOrbit)
+          cameraMode !== 'fps' &&
+          !pathRigCameraActive &&
+          (autoRotate ?? cameraControls.autoOrbit)
         }
         autoRotateSpeed={cameraControls.orbitSpeed}
       />
-      {/* Unmounted entirely in FPS mode so its placement/fly logic can't fight
-          the free-fly rig; remounting re-frames the site on return to orbit. */}
-      {cameraMode !== 'fps' && (
+      {/* Unmounted entirely in FPS mode (and while the path-rig vcam owns the
+          camera) so its placement/fly logic can't fight the active writer;
+          remounting re-frames the site on return to orbit. */}
+      {cameraMode !== 'fps' && !pathRigCameraActive && (
         <CameraRig
           target={target}
           focus={heroFocus}
@@ -4686,6 +4718,19 @@ export const Content: FC<{
         spawn={fpsSpawnPlaced}
         platforms={fpsPlatforms}
       />
+      {/* Author-mode dolly/timeline preview, anchored to the active site.
+          Gated behind the ocean stage like the other GLB/mesh actors so its
+          material pipelines can't race the stage-1 atmosphere-LUT compute. */}
+      {!disableOcean && pathRig != null && (
+        <PathRigDriver
+          rig={pathRig.rig}
+          player={pathRig.player}
+          anchor={target}
+          cameraFollow={pathRigCameraActive}
+          showGuides={pathRig.showGuides ?? true}
+          editing={pathRig.editing}
+        />
+      )}
       {shadowFleetVessels != null && shadowFleetVessels.length > 0 && (
         <VesselMarkers
           vessels={shadowFleetVessels}

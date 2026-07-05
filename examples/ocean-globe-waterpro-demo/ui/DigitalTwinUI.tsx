@@ -1195,6 +1195,121 @@ const TimeScrubber: FC<{
   )
 }
 
+// --- timeline show (cinematic) -----------------------------------------------
+// A visitor-facing dolly-cam show, selected per-scenario like a slideshow.
+// While active the dolly camera drives the view, the weather forecast is
+// hidden, and this scrubber replaces the forecast scrubber — the same slider,
+// now driving the timeline clock. `player` is the scene's live clock, polled
+// here (not React state) so the thumb tracks playback.
+export interface TimelineShowState {
+  // The active scenario has a rig show to launch.
+  available: boolean
+  active: boolean
+  duration: number
+  player: { time: number; playing: boolean }
+  onEnter: () => void
+  onExit: () => void
+  onSeek: (seconds: number) => void
+  onTogglePlay: () => void
+}
+
+const TimelineScrubber: FC<{ show: TimelineShowState }> = ({ show }) => {
+  const [, setPollTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPollTick(t => t + 1)
+    }, 100)
+    return () => {
+      clearInterval(id)
+    }
+  }, [])
+  const time = Math.min(show.player.time, show.duration)
+  const playing = show.player.playing
+  return (
+    <Card
+      pos={{ bottom: 20, left: '50%' }}
+      width='min(620px, 86vw)'
+      title='Cinematic'
+      interactive
+      style={{ transform: 'translateX(-50%)' }}
+      headerRight={
+        <span
+          style={{
+            fontFamily: MONO,
+            fontSize: 12,
+            fontVariantNumeric: 'tabular-nums',
+            color: TEXT
+          }}
+        >
+          {time.toFixed(1)} / {show.duration.toFixed(1)} s
+        </span>
+      }
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button
+          type='button'
+          onClick={show.onTogglePlay}
+          style={{
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            color: TEXT,
+            background: 'transparent',
+            border: PANEL_BORDER,
+            borderRadius: 0,
+            padding: '3px 8px',
+            cursor: 'pointer',
+            flexShrink: 0
+          }}
+        >
+          {playing ? 'Pause' : 'Play'}
+        </button>
+        <input
+          className='dt-scrub'
+          type='range'
+          min={0}
+          max={show.duration}
+          step={0.1}
+          value={time}
+          onChange={e => {
+            show.onSeek(Number(e.target.value))
+          }}
+          style={{ flex: 1, display: 'block' }}
+        />
+        <button
+          type='button'
+          onClick={show.onExit}
+          style={{
+            fontFamily: SANS,
+            fontSize: 10,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            color: TEXT,
+            background: 'transparent',
+            border: PANEL_BORDER,
+            borderRadius: 0,
+            padding: '3px 8px',
+            cursor: 'pointer',
+            flexShrink: 0
+          }}
+        >
+          Exit
+        </button>
+      </div>
+      <style>{`
+        .dt-scrub { -webkit-appearance: none; appearance: none; height: 4px;
+          background: rgba(255,255,255,0.18); border-radius: 0; outline: none; }
+        .dt-scrub::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
+          width: 12px; height: 16px; border-radius: 0; background: ${TEXT};
+          cursor: pointer; border: none; }
+        .dt-scrub::-moz-range-thumb { width: 12px; height: 16px; border-radius: 0;
+          background: ${TEXT}; cursor: pointer; border: none; }
+      `}</style>
+    </Card>
+  )
+}
+
 // --- camera controls panel ---------------------------------------------------
 export type CameraMode = 'orbit' | 'fps'
 
@@ -1218,6 +1333,12 @@ const PinIcon: FC = () => (
       strokeLinejoin='round'
     />
     <circle cx='12' cy='10' r='2.2' fill='currentColor' />
+  </svg>
+)
+
+const PlayIcon: FC = () => (
+  <svg width='10' height='10' viewBox='0 0 24 24' fill='currentColor' aria-hidden>
+    <path d='M7 5v14l12-7z' />
   </svg>
 )
 
@@ -1426,6 +1547,10 @@ export interface ScenarioControlsState {
   // Registry the scenarios' `settings` ids resolve against (host-owned state).
   settings?: Record<string, ScenarioSettingControl>
   slideshows?: SlideshowControlsState
+  // Dolly-cam cinematic for the active scenario (launched from its row, like a
+  // slideshow). Only the launcher lives here; the scrubber is the top-level
+  // `timeline` prop below.
+  timeline?: TimelineShowState
 }
 
 // Accordion: exactly one scenario (the active one) shows its viewpoint chips
@@ -1438,7 +1563,8 @@ const ScenarioPanel: FC<ScenarioControlsState> = ({
   activeViewpoint,
   onSelect,
   settings,
-  slideshows
+  slideshows,
+  timeline
 }) => (
   <Card
     pos={{ bottom: 16, right: 16 }}
@@ -1535,6 +1661,26 @@ const ScenarioPanel: FC<ScenarioControlsState> = ({
               }}
             >
               <SlideshowDeckLauncher controls={slideshows} />
+            </div>
+          )}
+          {/* Cinematic launcher: run the scenario's dolly-cam show. */}
+          {active && timeline != null && timeline.available && (
+            <div style={{ display: 'flex', padding: '4px 0 2px 12px' }}>
+              <button
+                type='button'
+                onClick={timeline.active ? timeline.onExit : timeline.onEnter}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '4px 8px',
+                  fontSize: 10,
+                  ...pillStyle(timeline.active)
+                }}
+              >
+                <PlayIcon />
+                {timeline.active ? 'Exit cinematic' : 'Play cinematic'}
+              </button>
             </div>
           )}
         </div>
@@ -2030,11 +2176,18 @@ export const DigitalTwinUI: FC<{
   aisLayers,
   installControls
 }) => {
+  // A cinematic (dolly-cam show) is running: the dolly camera owns the view,
+  // so the weather-forecast context (conditions/AIS/FT card + inspector) and
+  // the forecast scrubber are hidden — the scrubber slot becomes the timeline.
+  const cinematic = scenarioControls?.timeline
+  const cinematicActive = cinematic?.active === true
+
   // The top-left inspector slot shows, in priority: the clicked shadow-fleet
   // vessel callout → the scenario's AIS card → the bunkering two-vessel panel →
   // the installation panel (rig scenario) → the turbine inspector.
   return (
     <>
+      {/* Live metrics inspector — stays visible during a cinematic. */}
       {selectedVessel != null && onCloseVessel != null ? (
         <VesselCallout vessel={selectedVessel} onClose={onCloseVessel} />
       ) : ais != null ? (
@@ -2054,11 +2207,13 @@ export const DigitalTwinUI: FC<{
       ) : (
         <TurbineInspector telemetry={telemetry} count={turbineCount} />
       )}
+      {/* Second slot: live metrics (AIS layers / FT telemetry) stay; only the
+          weather ConditionsCard is dropped in a cinematic. */}
       {aisLayers != null && aisLayers.overview ? (
         <AisLayersCard {...aisLayers} />
       ) : process != null ? (
         <FtTelemetryCard proc={process} />
-      ) : (
+      ) : cinematicActive ? null : (
         <ConditionsCard
           locationName={locationName}
           sample={sample}
@@ -2066,19 +2221,28 @@ export const DigitalTwinUI: FC<{
           error={error}
         />
       )}
-      {cameraControls != null && <ControlsPanel {...cameraControls} />}
+      {/* Camera controls hidden during a cinematic — the camera is on rails
+          (and a mode switch would break the shot). */}
+      {cameraControls != null && !cinematicActive && (
+        <ControlsPanel {...cameraControls} />
+      )}
       {scenarioControls != null && <ScenarioPanel {...scenarioControls} />}
       {scenarioControls?.slideshows != null && (
         <SlideshowModal controls={scenarioControls.slideshows} />
       )}
-      {rangeStart != null && rangeEnd != null && (
-        <TimeScrubber
-          rangeStart={rangeStart}
-          rangeEnd={rangeEnd}
-          now={now}
-          selected={selected}
-          onChange={onScrub}
-        />
+      {cinematicActive && cinematic != null ? (
+        <TimelineScrubber show={cinematic} />
+      ) : (
+        rangeStart != null &&
+        rangeEnd != null && (
+          <TimeScrubber
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            now={now}
+            selected={selected}
+            onChange={onScrub}
+          />
+        )
       )}
     </>
   )

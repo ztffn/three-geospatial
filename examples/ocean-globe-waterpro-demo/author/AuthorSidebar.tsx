@@ -769,7 +769,261 @@ const SelectedScenarioSection: FC<{
         </div>
         <ErrorLine message={admin.error} />
       </CollapsibleGroup>
+
+      {ctx.rig != null && <RigTransportGroup rig={ctx.rig} />}
     </Card>
+  )
+}
+
+// --- dolly / timeline transport + path editing ----------------------------------
+
+const rigCheckboxLabelStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  fontSize: 11,
+  color: TEXT,
+  cursor: 'pointer'
+} as const
+
+// Transport + path / target / dolly-camera editing for the scenario's rig
+// (seed or server-authored). The player is the scene's live clock, mutated in
+// its frame loop — the readout/slider poll it at 5 Hz instead of subscribing.
+// Path anchors and targets are selected IN-SCENE (click a handle/target, drag
+// its gizmo — the package's own PathEditor/PointTargets); the buttons here act
+// on that selection. Every edit persists on drag-end / click.
+const RigTransportGroup: FC<{
+  rig: NonNullable<AuthorSlotContext['rig']>
+}> = ({ rig }) => {
+  const [, setPollTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPollTick(t => t + 1)
+    }, 200)
+    return () => {
+      clearInterval(id)
+    }
+  }, [])
+  const time = Math.min(rig.player.time, rig.duration)
+  const playing = rig.player.playing
+  const selectedTarget = rig.targets.find(t => t.id === rig.selectedTarget)
+
+  return (
+    <CollapsibleGroup title='Dolly / Timeline'>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button
+          type='button'
+          className='au-btn'
+          onClick={playing ? rig.pause : rig.play}
+          style={smallButtonStyle}
+        >
+          {playing ? 'Pause' : 'Play'}
+        </button>
+        <button
+          type='button'
+          className='au-btn'
+          onClick={rig.stop}
+          style={smallButtonStyle}
+        >
+          Stop
+        </button>
+        <span style={{ fontFamily: MONO, fontSize: 10, color: MUTED }}>
+          {time.toFixed(1)} / {rig.duration.toFixed(1)} s
+        </span>
+      </div>
+      <input
+        type='range'
+        min={0}
+        max={rig.duration}
+        step={0.1}
+        value={time}
+        onChange={event => {
+          rig.seek(event.currentTarget.valueAsNumber)
+        }}
+        style={{ width: '100%', accentColor: ACCENT }}
+      />
+      <label style={rigCheckboxLabelStyle}>
+        <input
+          type='checkbox'
+          checked={rig.cameraFollow}
+          onChange={event => {
+            rig.setCameraFollow(event.currentTarget.checked)
+          }}
+        />
+        Preview through dolly cam
+      </label>
+
+      {/* Dolly camera: aim + lens. Live whether or not Edit path is on. */}
+      <label style={rigCheckboxLabelStyle}>
+        Aim at
+        <select
+          value={rig.aimTargetId ?? ''}
+          onChange={event => {
+            const value = event.currentTarget.value
+            rig.setAimTarget(value === '' ? null : value)
+          }}
+          className='au-input'
+          style={{ ...fieldStyle, flex: 1, height: 22, fontSize: 11 }}
+        >
+          <option value=''>Free (path direction)</option>
+          {rig.targets.map(target => (
+            <option key={target.id} value={target.id}>
+              {target.name ?? target.id}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label style={rigCheckboxLabelStyle}>
+        Lens (fov)
+        <input
+          type='range'
+          min={20}
+          max={90}
+          step={1}
+          value={rig.fov}
+          onChange={event => {
+            rig.setFov(event.currentTarget.valueAsNumber)
+          }}
+          style={{ flex: 1, accentColor: ACCENT }}
+        />
+        <span style={{ fontFamily: MONO, fontSize: 10, color: FAINT }}>
+          {Math.round(rig.fov)}°
+        </span>
+      </label>
+      <label style={rigCheckboxLabelStyle}>
+        Show length
+        <input
+          type='number'
+          min={1}
+          max={600}
+          step={1}
+          defaultValue={Math.round(rig.duration)}
+          key={Math.round(rig.duration)}
+          onBlur={event => {
+            const seconds = event.currentTarget.valueAsNumber
+            if (Number.isFinite(seconds) && seconds > 0) {
+              rig.setDuration(seconds)
+            }
+          }}
+          className='au-input'
+          style={{ ...fieldStyle, width: 56, height: 22, fontSize: 11 }}
+        />
+        s
+      </label>
+
+      <label style={rigCheckboxLabelStyle}>
+        <input
+          type='checkbox'
+          checked={rig.editing}
+          onChange={event => {
+            rig.setEditing(event.currentTarget.checked)
+          }}
+        />
+        Edit path & targets
+      </label>
+      {rig.editing && (
+        <>
+          <span style={{ fontSize: 10, color: MUTED, marginLeft: 12 }}>
+            Click an anchor (white) or target (green) in the scene, then drag
+            the move gizmo. Changes save as you make them.
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              type='button'
+              className='au-btn'
+              title='Add an anchor at the end of the path'
+              onClick={rig.addAnchor}
+              style={smallButtonStyle}
+            >
+              Add
+            </button>
+            <button
+              type='button'
+              className='au-btn'
+              disabled={rig.selectedAnchorPoint == null}
+              title='Insert an anchor after the selected one'
+              onClick={rig.insertAnchor}
+              style={smallButtonStyle}
+            >
+              Insert
+            </button>
+            <button
+              type='button'
+              className='au-btn'
+              disabled={rig.selectedAnchorPoint == null || rig.anchorCount <= 2}
+              title='Delete the selected anchor'
+              onClick={rig.deleteAnchor}
+              style={smallButtonStyle}
+            >
+              Delete
+            </button>
+            <span style={{ fontFamily: MONO, fontSize: 10, color: FAINT }}>
+              {rig.anchorCount} anchors
+            </span>
+          </div>
+
+          {/* Tracking targets */}
+          <SubLabel>Targets</SubLabel>
+          {rig.targets.length === 0 && (
+            <span style={{ fontSize: 10, color: MUTED, marginLeft: 12 }}>
+              No targets yet — add one, then drag it into place.
+            </span>
+          )}
+          {rig.targets.map(target => (
+            <NavRow
+              key={target.id}
+              indent
+              label={target.name ?? target.id}
+              active={target.id === rig.selectedTarget}
+              onSelect={() => {
+                rig.selectTarget(
+                  target.id === rig.selectedTarget ? null : target.id
+                )
+              }}
+              onRename={value => {
+                rig.selectTarget(target.id)
+                rig.renameTarget(value)
+              }}
+              onDelete={() => {
+                rig.selectTarget(target.id)
+                rig.deleteTarget()
+              }}
+              deleteTitle='Delete target'
+            />
+          ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              type='button'
+              className='au-btn'
+              onClick={rig.addTarget}
+              style={smallButtonStyle}
+            >
+              Add target
+            </button>
+            {selectedTarget != null && (
+              <span style={{ fontFamily: MONO, fontSize: 10, color: FAINT }}>
+                {selectedTarget.name ?? selectedTarget.id} selected
+              </span>
+            )}
+          </div>
+        </>
+      )}
+      {rig.saving && (
+        <span style={{ fontFamily: MONO, fontSize: 10, color: FAINT }}>
+          saving…
+        </span>
+      )}
+      {!rig.saving && rig.savedAt != null && (
+        <span style={{ fontFamily: MONO, fontSize: 10, color: FAINT }}>
+          saved{' '}
+          {new Date(rig.savedAt).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          })}
+        </span>
+      )}
+      <ErrorLine message={rig.saveError} />
+    </CollapsibleGroup>
   )
 }
 

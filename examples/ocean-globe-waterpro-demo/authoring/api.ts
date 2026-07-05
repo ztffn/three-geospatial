@@ -25,6 +25,7 @@ import {
   reorderScenarioDecks,
   reorderSlides
 } from './slideshowStore'
+import { getRigManifest, MAX_RIG_BYTES, putRig } from './rigStore'
 import { getSiteManifest, MAX_SITE_BYTES, putSite } from './siteStore'
 import type {
   AddCodeSlideInput,
@@ -265,6 +266,39 @@ async function routeAuthoringRequest(
       site: manifest.sites.find(site => site.id === parts[1]),
       updatedAt: manifest.updatedAt
     })
+    return
+  }
+
+  // Authored path-rig manifest (@huma/path-creator RigDocuments by scenario).
+  // GET is public (committed seeds stay client-side; the client overlays
+  // manifest entries on them). PUT upserts one package-validated document and
+  // is admin-gated, mirroring the site manifest routes above.
+  if (parts[0] === 'rigs' && parts.length === 1) {
+    if (reqMethod !== 'GET') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return
+    }
+    const manifest = await getRigManifest()
+    sendJson(res, 200, {
+      rigs: manifest?.rigs ?? {},
+      updatedAt: manifest?.updatedAt ?? null
+    })
+    return
+  }
+
+  if (parts[0] === 'rigs' && parts.length === 2) {
+    if (reqMethod !== 'PUT') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return
+    }
+    if (!requireAdmin(req, res)) return
+    const declaredLength = Number(req.headers['content-length'])
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_RIG_BYTES) {
+      sendJson(res, 413, { error: 'rig document exceeds 1MB limit' })
+      return
+    }
+    const manifest = await putRig(parts[1], await readJson<unknown>(req))
+    sendJson(res, 200, { updatedAt: manifest.updatedAt })
     return
   }
 

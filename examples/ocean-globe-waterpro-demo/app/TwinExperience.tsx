@@ -15,6 +15,13 @@ import {
   type ReactNode
 } from 'react'
 
+import { BezierPath, VertexPath, type RigDocument, type Vec3 } from '@huma/path-creator/core'
+import {
+  createTimelinePlayer,
+  seekTimelinePlayer,
+  type TimelinePlayer
+} from '@huma/path-creator/timeline'
+
 import {
   Content,
   locationPresets,
@@ -22,6 +29,23 @@ import {
   type SelectedVesselNav,
   type VesselMarker
 } from '../../../storybook-webgpu/src/ocean/GlobeWaterproOcean-Story'
+import type { EditableTarget } from '../../../storybook-webgpu/src/pathrig/PathRigDriver'
+import {
+  addRigPointTarget,
+  applyRigBezier,
+  listRigTargets,
+  moveRigPointTarget,
+  removeRigTarget,
+  renameRigTarget,
+  rigVcamAimTargetId,
+  rigVcamFov,
+  setRigShowDuration,
+  setRigVcamAimTarget,
+  setRigVcamFov,
+  suggestedNextAnchor
+} from '../rig/rigEdit'
+import { RIG_SEEDS } from '../rig/rigSeeds'
+import { putRigDocument, useAuthoredRigs } from '../ui/useAuthoredRigs'
 import type { CameraPose } from '../sites/enu'
 import type { SiteDefinition } from '../sites/types'
 import {
@@ -30,7 +54,8 @@ import {
   type CameraMode,
   type InstallControlsState,
   type ScenarioControlsState,
-  type SelectedVessel
+  type SelectedVessel,
+  type TimelineShowState
 } from '../ui/DigitalTwinUI'
 import { IDLE_CLIP, INSTALL_CLIPS } from '../ui/rigPhases'
 import { SCENARIOS, type Scenario, type Viewpoint } from '../ui/scenarios'
@@ -168,6 +193,48 @@ export interface AuthorSlotContext {
   // the scene has mounted its controls.
   getCameraPose: () => CameraPose | null
   dispatchCamera: (command: CameraCommand) => void
+  // Dolly transport + path/target/camera editing for the active scenario's rig
+  // (seed or server-authored). `player` is the LIVE clock the scene's driver
+  // steps — read time/playing from it for display (poll, don't subscribe);
+  // drive changes through the callbacks. Path anchors and targets are selected
+  // IN-SCENE (click a handle/target, drag its gizmo); the sidebar acts on the
+  // selection and every edit persists. null when the scenario has no rig.
+  rig: {
+    duration: number
+    player: TimelinePlayer
+    play: () => void
+    pause: () => void
+    stop: () => void
+    seek: (timeSeconds: number) => void
+    // Live preview: hand the camera to the dolly cam (orbit suspended).
+    cameraFollow: boolean
+    setCameraFollow: (on: boolean) => void
+    editing: boolean
+    setEditing: (on: boolean) => void
+    // Path anchors — selectedAnchorPoint is a bezier POINT index (null when a
+    // control handle or nothing is selected in-scene).
+    selectedAnchorPoint: number | null
+    anchorCount: number
+    addAnchor: () => void
+    insertAnchor: () => void
+    deleteAnchor: () => void
+    // Tracking targets the dolly cam can aim at.
+    targets: EditableTarget[]
+    selectedTarget: string | null
+    selectTarget: (id: string | null) => void
+    addTarget: () => void
+    deleteTarget: () => void
+    renameTarget: (name: string) => void
+    // Dolly cam aim (a target id or null=free) + lens fov.
+    aimTargetId: string | null
+    setAimTarget: (targetId: string | null) => void
+    fov: number
+    setFov: (fov: number) => void
+    setDuration: (seconds: number) => void
+    saving: boolean
+    saveError: string | null
+    savedAt: string | null
+  } | null
 }
 
 // Width of the docked author sidebar. The scene pane takes the rest.
@@ -648,6 +715,438 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
   // the markers, so the panel and the markers always swap together.
   const [aisOverview, setAisOverview] = useState(false)
 
+  // Path-rig (dolly + timeline): committed seeds overlaid by the server rig
+  // manifest, overlaid by this session's edit drafts; edits persist on commit
+  // (gizmo drag end / structural ops). The player is a mutable clock shared
+  // with the scene's PathRigDriver (which steps it while playing); play/pause/
+  // seek mutate it directly — no React state, the sidebar polls for display.
+  // cameraFollow/editing are state: they swap the scene's camera writer and
+  // mount the gizmo layer, so the scene must re-render on change.
+  const rigPlayer = useMemo<TimelinePlayer>(() => createTimelinePlayer(), [])
+  const [rigCameraFollow, setRigCameraFollow] = useState(false)
+  const [rigEditing, setRigEditing] = useState(false)
+  // Path selection is by bezier POINT index (anchors at index%3===0), matching
+  // the package PathEditor; midpoint is a segment index; target is an id.
+  const [rigSelHandle, setRigSelHandle] = useState<number | null>(null)
+  const [rigSelMidpoint, setRigSelMidpoint] = useState<number | null>(null)
+  const [rigSelTarget, setRigSelTarget] = useState<string | null>(null)
+  const [rigTransforming, setRigTransforming] = useState(false)
+  // Visitor cinematic: the active scenario's dolly-cam show is running (launched
+  // from the scenario panel, like a slideshow). Drives the camera + swaps the
+  // forecast scrubber for the timeline scrubber.
+  const [timelineShowActive, setTimelineShowActive] = useState(false)
+  const [rigDrafts, setRigDrafts] = useState<Record<string, RigDocument>>({})
+  const [rigSaving, setRigSaving] = useState(false)
+  const [rigSaveError, setRigSaveError] = useState<string | null>(null)
+  const [rigSavedAt, setRigSavedAt] = useState<string | null>(null)
+  // Rigs load in BOTH modes now: author edits them; visitors run the cinematic.
+  const authoredRigs = useAuthoredRigs(true)
+  const rigDocument = useMemo(() => {
+    if (activeScenario == null) return null
+    return (
+      rigDrafts[activeScenario] ??
+      authoredRigs.rigs[activeScenario] ??
+      RIG_SEEDS[activeScenario] ??
+      null
+    )
+  }, [activeScenario, rigDrafts, authoredRigs.rigs])
+  // Edit-time reads: gizmo drags stream faster than React re-renders, so chained
+  // edits and saves read refs, never a stale closure.
+  const rigDocRef = useRef<RigDocument | null>(null)
+  rigDocRef.current = rigDocument
+  const rigScenarioRef = useRef(activeScenario)
+  rigScenarioRef.current = activeScenario
+  // The LIVE BezierPath the package PathEditor mutates in place; bump the
+  // version to force redraws (package-demo model). vertexPath is derived from
+  // it (its own line + editor helpers).
+  const rigBezierRef = useRef<BezierPath | null>(null)
+  const [rigPathVersion, setRigPathVersion] = useState(0)
+  const rigVertexPath = useMemo(
+    () =>
+      rigBezierRef.current != null
+        ? new VertexPath(rigBezierRef.current)
+        : null,
+    // Re-derive on every geometry mutation (the ref instance is stable).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rigPathVersion]
+  )
+
+  const rigStop = useCallback(() => {
+    rigPlayer.playing = false
+    seekTimelinePlayer(rigPlayer, 0)
+  }, [rigPlayer])
+
+  // Scenario switch: stop playback, release the camera, leave edit mode — a
+  // stale shot must never resume and a gizmo must never drag the wrong site.
+  useEffect(() => {
+    rigStop()
+    setRigCameraFollow(false)
+    setRigEditing(false)
+    setRigSelHandle(null)
+    setRigSelMidpoint(null)
+    setRigSelTarget(null)
+    setRigSaveError(null)
+    setTimelineShowActive(false)
+  }, [activeScenario, rigStop])
+
+  // Any commanded fly-to (clicking a viewpoint — even within the SAME scenario,
+  // which the reset above doesn't catch — or a vessel) exits a running
+  // cinematic, so the camera returns to the orbit rig and the fly takes effect.
+  // Keyed ONLY on flyTo (a new fly command) — reading `active` via ref, NOT as
+  // a dep, so ENTERING the cinematic (which flips the flag but doesn't touch
+  // flyTo) can't re-fire this and instantly exit itself.
+  const timelineActiveRef = useRef(false)
+  timelineActiveRef.current = timelineShowActive
+  useEffect(() => {
+    if (flyTo != null && timelineActiveRef.current) {
+      setTimelineShowActive(false)
+      setRigCameraFollow(false)
+      rigStop()
+    }
+  }, [flyTo, rigStop])
+
+  // Entering edit mode: seed the live bezier from the persisted geometry
+  // (drafts already hold saved edits). Camera-follow is NOT force-released here
+  // so "Preview through dolly cam" can be flipped on to check framing while
+  // editing (flip it off to grab a gizmo — follow drives the camera each frame,
+  // so the orbit rig is only free when preview is off). Leaving: drop the live
+  // bezier + selection.
+  useEffect(() => {
+    if (rigEditing && rigDocRef.current?.paths[0] != null) {
+      rigBezierRef.current = BezierPath.fromJSON(rigDocRef.current.paths[0].bezier)
+      setRigPathVersion(v => v + 1)
+    } else {
+      rigBezierRef.current = null
+      setRigSelHandle(null)
+      setRigSelMidpoint(null)
+      setRigSelTarget(null)
+    }
+  }, [rigEditing, activeScenario])
+
+  const applyRigEdit = useCallback((next: RigDocument) => {
+    const scenarioId = rigScenarioRef.current
+    if (scenarioId == null) return
+    rigDocRef.current = next
+    setRigDrafts(prev => ({ ...prev, [scenarioId]: next }))
+  }, [])
+
+  const refreshRigs = authoredRigs.refresh
+  const saveRig = useCallback(async () => {
+    const scenarioId = rigScenarioRef.current
+    const document = rigDocRef.current
+    if (scenarioId == null || document == null) return
+    setRigSaving(true)
+    setRigSaveError(null)
+    try {
+      setRigSavedAt(await putRigDocument(scenarioId, document))
+      await refreshRigs()
+    } catch (err: unknown) {
+      setRigSaveError(err instanceof Error ? err.message : 'failed to save')
+    } finally {
+      setRigSaving(false)
+    }
+  }, [refreshRigs])
+
+  // Commit the live bezier into the draft doc (rescaling cart keys); the driver
+  // reads the draft, so the rail/dolly track edits live. Persist separately on
+  // drag-end.
+  const rigCommitGeometry = useCallback(() => {
+    const bezier = rigBezierRef.current
+    const doc = rigDocRef.current
+    if (bezier == null || doc == null) return
+    applyRigEdit(applyRigBezier(doc, bezier.toJSON()))
+  }, [applyRigEdit])
+
+  // Any gizmo drag end (path point OR target) persists the current draft. Also
+  // gates OrbitControls off during a drag so the camera can't fight the gizmo.
+  const rigOnTransforming = useCallback(
+    (transforming: boolean) => {
+      setRigTransforming(transforming)
+      if (!transforming) void saveRig()
+    },
+    [saveRig]
+  )
+
+  const rigTargets = useMemo(
+    () =>
+      rigDocument == null
+        ? []
+        : listRigTargets(rigDocument).flatMap(t =>
+            t.type === 'group'
+              ? []
+              : [
+                  {
+                    id: t.id,
+                    name: t.name,
+                    ...(t.type === 'point'
+                      ? { type: 'point' as const, position: t.position }
+                      : { type: 'cart' as const, cartId: t.cartId })
+                  }
+                ]
+          ),
+    [rigDocument]
+  )
+
+  const rigContext = useMemo<AuthorSlotContext['rig']>(() => {
+    if (rigDocument == null) return null
+    // The selected bezier point is an anchor when index % 3 === 0.
+    const selectedAnchorPoint =
+      rigSelHandle != null && rigSelHandle % 3 === 0 ? rigSelHandle : null
+    return {
+      duration: rigDocument.timelines?.[0]?.duration ?? 0,
+      player: rigPlayer,
+      play: () => {
+        rigPlayer.playing = true
+      },
+      pause: () => {
+        rigPlayer.playing = false
+      },
+      stop: rigStop,
+      seek: (timeSeconds: number) => {
+        seekTimelinePlayer(rigPlayer, timeSeconds)
+      },
+      cameraFollow: rigCameraFollow,
+      setCameraFollow: setRigCameraFollow,
+      editing: rigEditing,
+      setEditing: setRigEditing,
+      // path anchors
+      selectedAnchorPoint,
+      addAnchor: () => {
+        const bezier = rigBezierRef.current
+        if (bezier == null) return
+        if (bezier.isClosed) bezier.setClosed(false)
+        bezier.addSegmentToEnd(suggestedNextAnchor(bezier))
+        setRigSelHandle(bezier.numPoints - 1)
+        setRigSelMidpoint(null)
+        setRigPathVersion(v => v + 1)
+        rigCommitGeometry()
+        void saveRig()
+      },
+      insertAnchor: () => {
+        const bezier = rigBezierRef.current
+        if (bezier == null || selectedAnchorPoint == null) return
+        let segment = Math.floor(selectedAnchorPoint / 3)
+        if (!bezier.isClosed && segment >= bezier.numSegments) {
+          segment = Math.max(0, bezier.numSegments - 1)
+        }
+        const newPoint = bezier.splitSegment(segment, 0.5)
+        setRigSelHandle(newPoint)
+        setRigSelMidpoint(null)
+        setRigPathVersion(v => v + 1)
+        rigCommitGeometry()
+        void saveRig()
+      },
+      deleteAnchor: () => {
+        const bezier = rigBezierRef.current
+        if (bezier == null || selectedAnchorPoint == null) return
+        if (!bezier.deleteAnchor(selectedAnchorPoint)) return
+        setRigSelHandle(null)
+        setRigPathVersion(v => v + 1)
+        rigCommitGeometry()
+        void saveRig()
+      },
+      anchorCount:
+        rigVertexPath != null && rigBezierRef.current != null
+          ? rigBezierRef.current.numAnchorPoints
+          : (rigDocument.paths[0] != null
+              ? BezierPath.fromJSON(rigDocument.paths[0].bezier).numAnchorPoints
+              : 0),
+      // tracking targets
+      targets: rigTargets,
+      selectedTarget: rigSelTarget,
+      selectTarget: setRigSelTarget,
+      addTarget: () => {
+        const doc = rigDocRef.current
+        const bezier = rigBezierRef.current
+        if (doc == null) return
+        // Seed the new target at the path midpoint (or origin) so it lands in
+        // view, then let the author drag it.
+        const at =
+          bezier != null
+            ? bezier.getAnchor(Math.floor(bezier.numAnchorPoints / 2))
+            : { x: 0, y: 0, z: 0 }
+        const added = addRigPointTarget(doc, { x: at.x, y: at.y, z: at.z })
+        applyRigEdit(added.document)
+        setRigSelTarget(added.targetId)
+        void saveRig()
+      },
+      deleteTarget: () => {
+        const doc = rigDocRef.current
+        if (doc == null || rigSelTarget == null) return
+        applyRigEdit(removeRigTarget(doc, rigSelTarget))
+        setRigSelTarget(null)
+        void saveRig()
+      },
+      renameTarget: (name: string) => {
+        const doc = rigDocRef.current
+        if (doc == null || rigSelTarget == null) return
+        applyRigEdit(renameRigTarget(doc, rigSelTarget, name))
+        void saveRig()
+      },
+      // dolly cam aim + lens
+      aimTargetId: rigVcamAimTargetId(rigDocument),
+      setAimTarget: (targetId: string | null) => {
+        const doc = rigDocRef.current
+        if (doc == null) return
+        applyRigEdit(setRigVcamAimTarget(doc, targetId))
+        void saveRig()
+      },
+      fov: rigVcamFov(rigDocument),
+      setFov: (fov: number) => {
+        const doc = rigDocRef.current
+        if (doc == null) return
+        applyRigEdit(setRigVcamFov(doc, fov))
+        void saveRig()
+      },
+      setDuration: (seconds: number) => {
+        const doc = rigDocRef.current
+        if (doc == null) return
+        applyRigEdit(setRigShowDuration(doc, seconds))
+        void saveRig()
+      },
+      saving: rigSaving,
+      saveError: rigSaveError ?? authoredRigs.error,
+      savedAt: rigSavedAt ?? authoredRigs.updatedAt
+    }
+  }, [
+    rigDocument,
+    rigPlayer,
+    rigStop,
+    rigCameraFollow,
+    rigEditing,
+    rigSelHandle,
+    rigSelTarget,
+    rigVertexPath,
+    rigTargets,
+    applyRigEdit,
+    rigCommitGeometry,
+    saveRig,
+    rigSaving,
+    rigSaveError,
+    rigSavedAt,
+    authoredRigs.error,
+    authoredRigs.updatedAt
+  ])
+
+  // Visitor cinematic controls (the launcher in the scenario panel + the
+  // timeline scrubber). Present whenever the active scenario has a rig.
+  const timelineShow = useMemo<TimelineShowState | undefined>(() => {
+    if (rigDocument == null) return undefined
+    return {
+      available: true,
+      active: timelineShowActive,
+      duration: rigDocument.timelines?.[0]?.duration ?? 0,
+      player: rigPlayer,
+      onEnter: () => {
+        setTimelineShowActive(true)
+        setRigCameraFollow(true)
+        seekTimelinePlayer(rigPlayer, 0)
+        rigPlayer.playing = true
+      },
+      onExit: () => {
+        setTimelineShowActive(false)
+        setRigCameraFollow(false)
+        rigStop()
+      },
+      onSeek: (seconds: number) => {
+        rigPlayer.playing = false
+        seekTimelinePlayer(rigPlayer, seconds)
+      },
+      onTogglePlay: () => {
+        rigPlayer.playing = !rigPlayer.playing
+      }
+    }
+  }, [rigDocument, timelineShowActive, rigPlayer, rigStop])
+
+  // The rig mounts in the scene for authoring OR while a visitor cinematic
+  // runs. Guides (rail + dolly marker) show only in author mode — a visitor
+  // cinematic is a clean shot. Camera-follow is on for both the author preview
+  // and the visitor cinematic (rigCameraFollow, set true on cinematic enter).
+  const pathRig = useMemo(() => {
+    if (rigDocument == null || !(isAuthorMode || timelineShowActive)) return null
+    return {
+      rig: rigDocument,
+      player: rigPlayer,
+      cameraFollow: rigCameraFollow,
+      showGuides: isAuthorMode,
+      // Suspend OrbitControls while a gizmo is dragging (can't fight the pivot).
+      transforming: rigEditing && rigTransforming,
+      editing:
+        rigEditing && rigBezierRef.current != null && rigVertexPath != null
+          ? {
+              bezier: rigBezierRef.current,
+              vertexPath: rigVertexPath,
+              pathVersion: rigPathVersion,
+              selectedHandle: rigSelHandle,
+              selectedMidpoint: rigSelMidpoint,
+              onSelectHandle: (index: number | null) => {
+                setRigSelHandle(index)
+                setRigSelMidpoint(null)
+                setRigSelTarget(null)
+              },
+              onSelectMidpoint: (index: number | null) => {
+                setRigSelMidpoint(index)
+                setRigSelHandle(null)
+                setRigSelTarget(null)
+              },
+              onMovePoint: (index: number, point: Vec3) => {
+                rigBezierRef.current?.movePoint(index, point)
+                setRigPathVersion(v => v + 1)
+                rigCommitGeometry()
+              },
+              onRotateMidpointNormal: (segment: number, deltaDeg: number) => {
+                const b = rigBezierRef.current
+                if (b == null) return
+                const a = segment
+                const nb = b.isClosed
+                  ? (segment + 1) % b.numAnchorPoints
+                  : segment + 1
+                if (a >= b.numAnchorPoints || nb >= b.numAnchorPoints) return
+                b.setAnchorNormalAngle(a, b.getAnchorNormalAngle(a) + deltaDeg * 0.5)
+                b.setAnchorNormalAngle(nb, b.getAnchorNormalAngle(nb) + deltaDeg * 0.5)
+                setRigPathVersion(v => v + 1)
+                rigCommitGeometry()
+              },
+              onClearSelection: () => {
+                setRigSelHandle(null)
+                setRigSelMidpoint(null)
+                setRigSelTarget(null)
+              },
+              targets: rigTargets,
+              selectedTarget: rigSelTarget,
+              onSelectTarget: (id: string | null) => {
+                setRigSelTarget(id)
+                setRigSelHandle(null)
+                setRigSelMidpoint(null)
+              },
+              onMoveTarget: (id: string, position: Vec3) => {
+                const doc = rigDocRef.current
+                if (doc == null) return
+                applyRigEdit(moveRigPointTarget(doc, id, position))
+              },
+              onTransformingChange: rigOnTransforming
+            }
+          : null
+    }
+  }, [
+    rigDocument,
+    isAuthorMode,
+    timelineShowActive,
+    rigPlayer,
+    rigCameraFollow,
+    rigEditing,
+    rigTransforming,
+    rigVertexPath,
+    rigPathVersion,
+    rigSelHandle,
+    rigSelMidpoint,
+    rigSelTarget,
+    rigTargets,
+    rigCommitGeometry,
+    rigOnTransforming,
+    applyRigEdit
+  ])
+
   // Author slot context, memoized: liveZoom re-renders this component every
   // frame while the camera moves, and a stable ctx (with memo'd AuthorSidebar)
   // keeps that churn out of the author chrome.
@@ -679,7 +1178,8 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
         openDeck
       },
       getCameraPose,
-      dispatchCamera
+      dispatchCamera,
+      rig: rigContext
     }),
     [
       activeScenario,
@@ -694,7 +1194,8 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
       slideshows.refresh,
       openDeck,
       getCameraPose,
-      dispatchCamera
+      dispatchCamera,
+      rigContext
     ]
   )
 
@@ -759,6 +1260,7 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
             onOverviewChange={setAisOverview}
             wingsEnabled={wingsOn}
             heroCover={coverOn}
+            pathRig={pathRig}
           />
         )}
       </SceneHost>
@@ -825,7 +1327,9 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
           {
             scenarios: visibleScenarios,
             activeScenario,
-            activeViewpoint,
+            // No viewpoint is "active" while the cinematic owns the camera —
+            // the cinematic launcher is the highlighted control instead.
+            activeViewpoint: timelineShowActive ? null : activeViewpoint,
             onSelect: handleScenarioSelect,
             // Registry the scenarios' `settings` ids resolve against — the
             // wind-farm toggles live here now (moved from the camera panel).
@@ -837,7 +1341,8 @@ export const TwinExperience: FC<TwinExperienceProps> = ({
               },
               cover: { label: 'Cover', on: coverOn, onChange: setCoverOn }
             },
-            slideshows: slideshowControls
+            slideshows: slideshowControls,
+            timeline: timelineShow
           } satisfies ScenarioControlsState
         }
       />

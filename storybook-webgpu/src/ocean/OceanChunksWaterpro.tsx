@@ -44,6 +44,8 @@ import {
   type UniformNode
 } from 'three/webgpu'
 
+import { EDITOR_HELPERS_LAYER } from '@huma/path-creator/three'
+
 import type { AtmosphereContext } from '@takram/three-atmosphere/webgpu'
 import { smoothstep } from '@takram/three-geospatial'
 
@@ -566,6 +568,12 @@ export default function OceanChunksWaterpro({
       const prevAlpha = r.getClearAlpha()
       const prevEnv = (defaultScene as any).environmentNode
       ;(defaultScene as any).environmentNode = null
+      // Author-mode editor helpers (path gizmos, fat lines, target glyphs) sit
+      // on EDITOR_HELPERS_LAYER; exclude them from the depth pre-pass — the
+      // material override + instanced fat-line geometry produces an infinite
+      // draw count under depthMaterial (drawIndexed crash). Restored after.
+      const prevLayerMask = camera.layers.mask
+      camera.layers.disable(EDITOR_HELPERS_LAYER)
       try {
         defaultScene.background = null
         r.setRenderTarget(depthTarget)
@@ -573,6 +581,7 @@ export default function OceanChunksWaterpro({
         r.clear(true, true, false)
         r.render(defaultScene, camera)
       } finally {
+        camera.layers.mask = prevLayerMask
         r.setRenderTarget(null)
         r.setClearColor(prevClear.getHex(), prevAlpha)
         defaultScene.background = prevBackground
@@ -649,6 +658,11 @@ export default function OceanChunksWaterpro({
     const prevAlpha = r.getClearAlpha()
     const prevEnv = (defaultScene as any).environmentNode
     ;(defaultScene as any).environmentNode = null
+    // Exclude author-mode editor helpers from the depth pre-pass (see the
+    // stage-3 path above): their instanced fat-line geometry crashes under the
+    // depthMaterial override with an infinite drawIndexed count.
+    const prevLayerMask = camera.layers.mask
+    camera.layers.disable(EDITOR_HELPERS_LAYER)
 
     try {
       defaultScene.background = null
@@ -657,6 +671,7 @@ export default function OceanChunksWaterpro({
       r.clear(true, true, false)
       r.render(defaultScene, camera)
     } finally {
+      camera.layers.mask = prevLayerMask
       r.setRenderTarget(null)
       r.setClearColor(prevClear.getHex(), prevAlpha)
       defaultScene.background = prevBackground

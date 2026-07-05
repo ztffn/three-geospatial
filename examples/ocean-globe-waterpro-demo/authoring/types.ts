@@ -127,3 +127,29 @@ export interface PutSiteResponse {
   site: SiteDefinition
   updatedAt: string
 }
+
+// --- authored path-rig manifest -------------------------------------------------
+// Server-persisted @huma/path-creator RigDocuments (rigs.json in the
+// twin-authoring store), keyed by the scenario whose author panel edits them.
+// Committed seeds in rig/rigSeeds.ts are the defaults; a manifest entry with
+// the same scenario id supersedes its seed. Reads public, writes admin-gated.
+
+export const RIG_MANIFEST_VERSION = 1
+
+export interface StoredRigManifest {
+  version: typeof RIG_MANIFEST_VERSION
+  updatedAt: string
+  // scenarioId → serialized RigDocument (opaque to the server beyond
+  // validation; the schema is owned by @huma/path-creator).
+  rigs: Record<string, unknown>
+}
+
+export interface RigsResponse {
+  rigs: Record<string, unknown>
+  // Null when no authored manifest exists yet (client should use its seeds).
+  updatedAt: string | null
+}
+
+export interface PutRigResponse {
+  updatedAt: string
+}
