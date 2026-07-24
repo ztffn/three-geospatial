@@ -356,3 +356,7 @@ storybook-webgpu/assets/*.spz
 
 # Twin authoring runtime data (dev storage root — manifests + uploaded media)
 .local/
+
+# Large WebGPU storybook binary assets (not tracked in git)
+storybook-webgpu/assets/fuelstation.glb
+storybook-webgpu/assets/troll-platform.glb
